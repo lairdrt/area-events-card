@@ -118,3 +118,21 @@ Data in the volume is kept across updates and restarts.
 - `/health` `source_errors` lists failing sources; their previous events are kept for 3 days (`retention_days`).
 - `unhealthy` with a feed older than 3 hours means refreshes are failing: check outbound DNS/HTTPS from the host.
 - Settings: `AREA_EVENTS_INTERVAL_SECONDS` (minimum 300). To change sources, edit `discovery.config.json`, rebuild, and `up -d`.
+
+## Runtime verification record
+
+**Accepted baseline: commit `44d6b65`**, deployed on 2026-10-20 and tagged `area-events-cubi-runtime-accepted-2026-10-20`.
+
+| | |
+|---|---|
+| Host | MSI Cubi, Debian 13 |
+| Compose project / container | `area-events` / `area-events` |
+| Deployed commit | `44d6b65` |
+| `/health` status | `ok` |
+| Unique events in the feed | 227 |
+| Discovery sources | all four succeeded (KPBS, San Diego Reader, DoSD, City of San Diego) |
+| Refresh duration (first run) | 295.6 s |
+| Scheduling | hourly refresh configured |
+| Other services | Frigate (separate Compose project) remained healthy |
+
+These figures were reported from the live deployment. Later versions should be compared against this record, and `git checkout area-events-cubi-runtime-accepted-2026-10-20` returns to the accepted code.
