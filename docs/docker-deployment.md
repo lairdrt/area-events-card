@@ -172,3 +172,19 @@ Setting `AREA_EVENTS_API_KEY` in `.env` turns on the authenticated `GET`/`PUT /a
 `deploy.ps1` copies `data\events.json` to Home Assistant if that file exists locally. Home Assistant's feed comes from the Cubi, so keep no local `data\events.json` when deploying the card.
 
 To finish activation, reload the YAML in Home Assistant (Developer tools > YAML > check configuration, then reload all YAML configuration), run `script.area_events_location` from Developer tools > Actions (expect status 200), and add `location_control: true` to the card ([examples/location-control-card.yaml](../examples/location-control-card.yaml)).
+
+### Home Assistant check after the reload (2026-10-20, 16:50 PDT)
+
+Verified without an HA token (read-only inspection of the configuration share and a private copy of the recorder database; no credentials were read or used):
+
+- `script.area_events_location`, `script.area_events_set_location` and `script.area_events_sync_now` are loaded (registered at 16:44:37, state `off`), and `automation.area_events_sync_feed_from_cubi` is `on`.
+- The sync automation works: its startup trigger copied the Cubi's latest feed to `Z:\www\area-events-card\events.json` at 16:45:57 (San Diego, CA, 201 events, same generation time as the Cubi).
+- The Cubi is healthy (four San Diego sources ok, last refresh exit 0, next refresh scheduled), the active location is still San Diego, and Frigate is `Up 5 weeks (healthy)`.
+
+Not yet verified (needs an authorized Home Assistant session, which is not available to the tooling used for deployment):
+
+- That a script reaches the Cubi through its `rest_command` and that the card receives the result in the expected shape; no script has run yet (`last_triggered` is empty for all three).
+- The card's location controls, and switching San Diego -> Austin -> San Diego through the card.
+- The card on dashboard `test_2` (stored in `.storage/lovelace.dashboard_test_2`) does not have `location_control: true` yet. That file is not edited from outside because Home Assistant keeps dashboards in memory and would overwrite or ignore the change; edit the card in the dashboard UI instead.
+
+No runtime-accepted tag has been created, because that path is not verified.
