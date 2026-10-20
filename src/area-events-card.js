@@ -5,7 +5,7 @@
  * `config.entity`. Contains no sample data; see examples/demo-card.yaml.
  */
 
-const CARD_VERSION = "__BUILD_VERSION__";
+const AREA_EVENTS_CARD_BUILD = "__AREA_EVENTS_CARD_BUILD__";
 const CARD_TAG = "area-events-card";
 
 const STYLES = `
@@ -118,7 +118,7 @@ class AreaEventsCard extends HTMLElement {
       events.forEach((event) => grid.append(this._renderEvent(event)));
       card.append(grid);
     }
-    card.append(this._el("div", "footer", `Area Events Card v${CARD_VERSION}`));
+    card.append(this._el("div", "footer", `Area Events Card ${AREA_EVENTS_CARD_BUILD}`));
     root.append(style, card);
   }
 
@@ -177,7 +177,7 @@ window.customCards.push({
 });
 
 console.info(
-  `%c AREA-EVENTS-CARD %c v${CARD_VERSION} `,
+  `%c AREA-EVENTS-CARD %c ${AREA_EVENTS_CARD_BUILD} `,
   "color:#fff;background:#03a9f4;font-weight:700",
   "color:#03a9f4;background:#fff;font-weight:700"
 );

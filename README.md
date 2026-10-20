@@ -1,6 +1,6 @@
 # Area Events Card
 
-A vanilla JavaScript custom Lovelace card for Home Assistant that shows local area events as a responsive, theme-aware grid. Each event shows an image (placeholder if none), category, date, location and a verification indicator. The footer shows the build version.
+A vanilla JavaScript custom Lovelace card for Home Assistant that shows local area events as a responsive, theme-aware grid. Each event shows an image (placeholder if none), category, date, location and a verification indicator. The footer shows the build identifier.
 
 **Status:** initial foundation (v0.1.0). The card renders events supplied to it; there is no event discovery yet.
 
@@ -27,20 +27,31 @@ Requires Node.js 18+; no dependencies.
 npm run build
 ```
 
-Reads `src/area-events-card.js`, stamps the version (`package.json` version + git short hash), and writes `dist/area-events-card.js`. `dist/` is committed so the card can be installed without building.
+Copies `src/area-events-card.js` to `dist/area-events-card.js` (generated, not stored in Git). The source keeps a `__AREA_EVENTS_CARD_BUILD__` placeholder, which the deploy script replaces in the deployed copy only. The identifier looks like `AREA-EVENTS <git short hash>-<file hash>` and is shown in the card footer and logged to the browser console.
 
 ## Local installation in Home Assistant
 
-1. Run `npm run build`.
-2. Copy `dist/area-events-card.js` to `<HA config>/www/area-events-card/area-events-card.js` (create the folder; `www` maps to `/local/`).
-3. In HA: **Settings > Dashboards > ⋮ > Resources > Add resource**
-   (enable Advanced Mode in your user profile if Resources is missing).
-   - URL: `/local/area-events-card/area-events-card.js?v=0.1.0`
-   - Type: **JavaScript module**
-4. Hard-refresh the browser (Ctrl+Shift+R). Bump the `?v=` value after each rebuild to bypass caching.
-5. Edit a dashboard > **Add card > Manual**, paste the contents of [examples/demo-card.yaml](examples/demo-card.yaml).
+This uses the same mechanism as the sibling `temperature-card` project: a small `loader.js` is the only registered resource, and it imports the card with a fresh `?ts=` timestamp on every page load, so a redeployed card is never served from the browser cache.
 
-Testing: confirm the demo banner, three event tiles, placeholder images, verified/unverified indicators, and `Area Events Card v0.1.0+<hash>` in the footer. Check a light and a dark theme and a narrow (phone) width. The browser console should show an `AREA-EVENTS-CARD` version line.
+One-time setup:
+
+1. Map the Home Assistant `config` share (Samba) as drive `Z:`, or edit `$HaConfigShare` at the top of [deploy.ps1](deploy.ps1).
+2. Create the folder `www\area-events-card` on the share. The script deliberately does not create it.
+3. Run the deploy once (below), then add the dashboard resource: **Settings > Dashboards > ⋮ > Resources > Add resource** (turn on Advanced Mode in your user profile if missing).
+   - URL: `/local/area-events-card/loader.js`
+   - Type: **JavaScript module**
+   - Register only `loader.js`, never `area-events-card.js`.
+4. Edit a dashboard > **Add card > Manual**, paste [examples/demo-card.yaml](examples/demo-card.yaml).
+
+Deploy (build, stamp, copy, verify):
+
+```
+npm run deploy
+```
+
+The script builds the card, replaces the placeholder, writes `area-events-card.js` and `loader.js` to `Z:\www\area-events-card\`, and verifies file sizes and that the build identifier is present in the deployed file. After deploying, reload the dashboard page and confirm the footer shows the identifier the script printed. The resource itself never needs to change.
+
+Testing: confirm the demo banner, three event tiles, placeholder images, verified/unverified indicators and the build identifier in the footer. Check a light and a dark theme and a narrow (phone) width.
 
 ## Planned: Python integration (not implemented)
 
