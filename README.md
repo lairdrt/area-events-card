@@ -53,6 +53,28 @@ The script builds the card, replaces the placeholder, writes `area-events-card.j
 
 Testing: confirm the demo banner, three event tiles, placeholder images, verified/unverified indicators and the build identifier in the footer. Check a light and a dark theme and a narrow (phone) width.
 
+## Event discovery proof of concept (Python, standard library only)
+
+`discovery/` fetches public San Diego events from one source (KPBS, https://www.kpbs.org/events/all) and writes `data/events.json`. It is separate from the card and from the future Home Assistant integration. No API keys, accounts, AI or browser automation.
+
+Requires Python 3.9+ (tested on 3.14).
+
+```
+python -m discovery               # refresh data/events.json (first run ~75 s)
+python -m discovery --dry-run     # fetch and report without writing
+python -m discovery --no-details  # listing only, skip per-event page requests
+python -m discovery --limit 3     # first 3 events, for testing
+python -m unittest discover -s tests -t .
+```
+
+Exit code 0 = refreshed, 2 = partially refreshed, 1 = nothing refreshed. If the source is unreachable, blocked by robots.txt or yields no events, the existing `data/events.json` is left untouched. Writes are atomic.
+
+**How it works.** KPBS publishes no JSON-LD, feed or documented API, so the adapter reads its server-rendered HTML (`discovery/sources/kpbs.py`). Exact start/end times come from the "add to calendar" links (UTC) and are converted to `America/Los_Angeles` with built-in US daylight-saving rules (no `tzdata` needed). Each event page adds venue, address, description and a large image. Recurring "ongoing" exhibits are skipped, and past events are dropped. Requests send a descriptive User-Agent, honor robots.txt, and wait 2 s between requests; event pages already stored are not re-fetched.
+
+**Verification policy.** `verified` is always `false` in this proof of concept. Each event instead carries `verification.evidence` (for example: URL date matches the calendar start; listing text matches the UTC start in Pacific time; the event page's own ICS start agrees; `og:url` equals the listing URL), `verification.missing` (fields not found, never invented), and a `status` of `corroborated` (the source's own signals agree) or `unverified`. Real verification needs an independent second source.
+
+**Adding a source.** Add a module under `discovery/sources/` that provides `NAME` and `discover(fetcher, previous, details, limit) -> (events, notes)`, then list it in `SOURCES` in `discovery/__main__.py`.
+
 ## Planned: Python integration (not implemented)
 
 A separate Home Assistant custom integration (own repository/component, Python) is planned to supply the events. Intended shape:
