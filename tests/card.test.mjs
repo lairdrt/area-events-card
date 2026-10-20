@@ -169,6 +169,21 @@ test("selecting categories filters client side; multiple selection; Other; Show 
   assert.equal(created.img, images); // no image elements were created
 });
 
+test("Show all comes first, before Filters; the header timestamp has no icon", async () => {
+  const card = await make({ feed: "/f.json" });
+  const root = card.shadowRoot;
+  const bar = byClass(root, "filter-bar")[0];
+  assert.deepEqual(bar.children.slice(0, 2).map((c) => c.className), ["show-all", "filter-toggle"]);
+  assert.equal(byClass(root, "show-all")[0].attrs["aria-pressed"], "true");
+  openFilters(root);
+  click(chip(root, "Music"));
+  assert.equal(byClass(root, "show-all")[0].attrs["aria-pressed"], "false");
+  assert.equal(byClass(root, "filter-bar")[0].children[0].className, "show-all");
+  const updated = byClass(root, "updated")[0];
+  assert.ok(!updated.children.some((c) => c.tag === "ha-icon"));
+  assert.match(text(updated), /^Updated /);
+});
+
 test("a selection matching nothing shows an explanatory message", async () => {
   const card = await make({ feed: "/f.json" });
   openFilters(card.shadowRoot);

@@ -602,7 +602,7 @@ class AreaEventsCard extends HTMLElement {
     if (!Number.isNaN(generatedMs)) {
       const age = Math.max(0, Date.now() - generatedMs);
       const updated = this._el("span", "updated");
-      updated.append(this._icon("mdi:update"), document.createTextNode(` Updated ${this._formatDate(generated)} (${this._ago(age)})`));
+      updated.append(document.createTextNode(`Updated ${this._formatDate(generated)} (${this._ago(age)})`));
       meta.append(updated);
       if (age > FEED_STALE_MS) meta.append(this._el("span", "badge", "Stale"));
     }
@@ -658,12 +658,9 @@ class AreaEventsCard extends HTMLElement {
     toggle.className = "filter-toggle";
     toggle.setAttribute("aria-expanded", String(this._filterOpen));
     const names = categories.filter((c) => selected.has(c.id)).map((c) => c.name);
-    bar.append(toggle, this._el("span", "filter-summary", selected.size ? `Showing: ${names.join(", ")}` : "Showing all categories"));
-    if (selected.size) {
-      const all = this._button("Show all", () => this._setPrefs({ ...this._prefs, selected: [] }));
-      all.className = "show-all";
-      bar.append(all);
-    }
+    const all = this._button("Show all", () => this._setPrefs({ ...this._prefs, selected: [] }), selected.size === 0);
+    all.className = "show-all";
+    bar.append(all, toggle, this._el("span", "filter-summary", selected.size ? `Showing: ${names.join(", ")}` : "Showing all categories"));
     host.append(bar);
     if (!this._filterOpen) return;
 
