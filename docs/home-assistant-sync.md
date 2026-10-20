@@ -12,11 +12,11 @@ Copies the Cubi's validated feed (`http://192.168.1.88:8765/events.json`) to `/c
 ## Install (Home Assistant OS)
 
 1. **Copy the script** to `/config/scripts/sync_area_events.py` (create the `scripts` folder). Any of: the Samba share (`\\<ha>\config\scripts`, which is your `Z:\scripts`), the File editor add-on, or the Terminal & SSH add-on. The `homeassistant/sync_area_events.py` file is the only thing to copy.
-2. **Add the shell commands** from `homeassistant/configuration.example.yaml` to `/config/configuration.yaml` (merge into an existing `shell_command:` block). Check the URL still points at the Cubi. Then Developer tools > YAML > **Check configuration**, and **restart** Home Assistant (shell commands are loaded at startup).
+2. **Add the shell commands** from `homeassistant/configuration.example.yaml` to `/config/configuration.yaml` (merge into an existing `shell_command:` block). Check the URL still points at the Cubi. Then Developer tools > YAML > **Check configuration**, and reload with **Shell commands** on the same page (no restart needed; a restart also works).
 3. **Confirm Python exists.** Developer tools > Actions > `shell_command.area_events_python_check` > Perform action. The response should show `returncode: 0` and `stdout: Python 3.x`. If it fails, stop here (see Blockers).
 4. **Run the sync once by hand.** Developer tools > Actions > `shell_command.sync_area_events` > Perform action. Expect `returncode: 0` and `stdout: published: NNN events, generated_at ...` (or `unchanged: ...` on later runs).
 5. **Check the file** at `/config/www/area-events-card/events.json` (timestamp updated, no `.events.json.*.tmp` left behind) and reload the dashboard; the card's footer shows the new "feed updated" time.
-6. **Add the automation** from `homeassistant/automations.example.yaml` (Settings > Automations & scenes > Create > Edit in YAML, or append to `automations.yaml` and reload automations).
+6. **Add the automation** from `homeassistant/automations.example.yaml` (Settings > Automations & scenes > Create > Edit in YAML, or append to `automations.yaml` and use Developer tools > YAML > **Automations** to reload). Reload shell commands first, then automations.
 7. Remove the `area_events_python_check` command once step 3 has passed (optional).
 
 ## Test failure handling (in Home Assistant)
@@ -40,4 +40,4 @@ If step 3 fails (no `python3`), do not build workarounds in the container. The s
 
 ## Rollback
 
-Delete the automation and the `sync_area_events` / `area_events_python_check` entries from `configuration.yaml`, restart, and optionally delete `/config/scripts/sync_area_events.py`. The last copied `events.json` stays in place and the card keeps working; `.\refresh-events.ps1` or `.\deploy.ps1` from Windows still work as before.
+Delete the automation and the `sync_area_events` / `area_events_python_check` entries from `configuration.yaml`, reload shell commands and automations (or restart), and optionally delete `/config/scripts/sync_area_events.py`. The last copied `events.json` stays in place and the card keeps working; `.\refresh-events.ps1` or `.\deploy.ps1` from Windows still work as before.
