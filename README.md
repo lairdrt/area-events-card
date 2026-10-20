@@ -58,9 +58,8 @@ Testing: confirm the demo banner, three event tiles, placeholder images, verifie
 
 The card can read the feed produced by the discovery tool, so no event data is embedded in the card:
 
-1. `python -m discovery` (updates `data/events.json`).
-2. `.\deploy.ps1` (also copies `data\events.json` to `Z:\www\area-events-card\events.json`).
-3. Use [examples/kpbs-feed-card.yaml](examples/kpbs-feed-card.yaml):
+1. `.\refresh-events.ps1` updates `data\events.json` and publishes it to `Z:\www\area-events-card\events.json` (see Hourly refresh below; `.\deploy.ps1` also copies `data\events.json` if present).
+2. Use the YAML below ([examples/kpbs-feed-card.yaml](examples/kpbs-feed-card.yaml)). The feed now merges several sources, so the example title is generic:
 
 ```yaml
 type: custom:area-events-card
@@ -70,33 +69,88 @@ feed: /local/area-events-card/events.json
 
 To switch from the demo card, replace the demo YAML (`demo: true` plus inline `events:`) with the YAML above. Demo mode is only active when a card has `demo: true` with its own inline `events`; the feed card never shows demo events.
 
-Behavior: the feed is fetched on load and every 30 minutes with a unique query string and `cache: no-store`. Past events are hidden. If the feed cannot be loaded the card shows an error; if a later refresh fails it keeps showing the last data with a "stale" notice. The footer shows the build identifier and when the feed was generated. Events show image, date, venue/address, a description excerpt, category and a source link. Discovery events show **Source corroborated** (the source's own signals agree; hover for the evidence) or **Unverified**. **Verified** appears only for events whose `verified` is `true`, which nothing in the discovery tool sets.
+Behavior: the feed is fetched on load and every 30 minutes with a unique query string and `cache: no-store`. Past events are hidden. If the feed cannot be loaded the card shows an error; if a later refresh fails it keeps showing the last data with a "stale" notice. The footer shows the build identifier and when the feed was generated. Events show image, date, venue/address, a description excerpt, category and a source link. Discovery events show **Verified** only when two or more independent publishers agree on title, start and venue (see Merging and verification), otherwise **Source corroborated** (one source's own signals agree; hover for the evidence) or **Unverified**.
 
 The `feed` option accepts either `{ "events": [...] }` (discovery format) or a bare list. Events in the discovery format (`venue`, `address`, `categories`, `image_url`, `description`, `url`, `source`, `verification`) are also accepted in `events:` and `entity` attributes.
 
 Checks: `npm test` (card behavior with a DOM stub) and `python -m unittest discover -s tests -t .`.
 
-## Event discovery proof of concept (Python, standard library only)
+## Event discovery (Python, standard library only)
 
-`discovery/` fetches public San Diego events from one source (KPBS, https://www.kpbs.org/events/all) and writes `data/events.json`. It is separate from the card and from the future Home Assistant integration. No API keys, accounts, AI or browser automation.
+`discovery/` collects public San Diego events from several free sources, merges duplicates, and writes `data/events.json` (the feed the card reads). It is separate from the card and from the future Home Assistant integration. No API keys, accounts, AI or browser automation.
 
 Requires Python 3.9+ (tested on 3.14).
 
+### Sources
+
+Enabled sources and their options live in [discovery.config.json](discovery.config.json) (list order = priority when merging fields):
+
+| Key | Source | Method | Notes |
+|-----|--------|--------|-------|
+| `kpbs` | KPBS events | listing HTML + calendar links + event pages | exact UTC times, venue, address, description, image |
+| `sandiegoreader` | San Diego Reader | day listings + schema.org JSON-LD on event pages | `days` ahead; only path-style day pages are used (robots.txt disallows the search query pages) |
+| `dosd` | DoSD | day listings + JSON-LD on event pages | `days` ahead; the site's generic ticketing blurb is not used as a description |
+| `sandiego_gov` | City of San Diego special events | listing HTML + event pages | `pages` of 10; no images or machine-readable data; multi-day/unparseable dates are skipped |
+
+Per source, `max_details_per_run` caps event-page requests each refresh; the rest are filled in by later refreshes (details are cached). Set `"enabled": false` to turn a source off, or change `retention_days` (how long cached events from a failing source are kept) and `verification.min_independent_publishers`.
+
+All requests send a descriptive User-Agent, honor robots.txt, and wait 2 s between requests. A first refresh takes about 4 minutes; steady state is shorter.
+
+### Running a refresh
+
 ```
-python -m discovery               # refresh data/events.json (first run ~75 s)
-python -m discovery --dry-run     # fetch and report without writing
-python -m discovery --no-details  # listing only, skip per-event page requests
-python -m discovery --limit 3     # first 3 events, for testing
+python -m discovery                       # refresh data/events.json
+python -m discovery --dry-run             # fetch and report without writing
+python -m discovery --offline             # re-merge cached source data, no requests
+python -m discovery --only kpbs dosd      # selected sources
+python -m discovery --publish PATH        # also publish the validated feed to PATH
 python -m unittest discover -s tests -t .
 ```
 
-Exit code 0 = refreshed, 2 = partially refreshed, 1 = nothing refreshed. If the source is unreachable, blocked by robots.txt or yields no events, the existing `data/events.json` is left untouched. Writes are atomic.
+Exit code 0 = all sources refreshed, 2 = some failed (their previous events are kept), 1 = nothing refreshed or publishing failed (feed unchanged). `data/events.json` and `data/source-cache.json` are generated and not stored in Git.
 
-**How it works.** KPBS publishes no JSON-LD, feed or documented API, so the adapter reads its server-rendered HTML (`discovery/sources/kpbs.py`). Exact start/end times come from the "add to calendar" links (UTC) and are converted to `America/Los_Angeles` with built-in US daylight-saving rules (no `tzdata` needed). Each event page adds venue, address, description and a large image. Recurring "ongoing" exhibits are skipped, and past events are dropped. Requests send a descriptive User-Agent, honor robots.txt, and wait 2 s between requests; event pages already stored are not re-fetched.
+### Merging and verification
 
-**Verification policy.** `verified` is always `false` in this proof of concept. Each event instead carries `verification.evidence` (for example: URL date matches the calendar start; listing text matches the UTC start in Pacific time; the event page's own ICS start agrees; `og:url` equals the listing URL), `verification.missing` (fields not found, never invented), and a `status` of `corroborated` (the source's own signals agree) or `unverified`. Real verification needs an independent second source.
+Records are the same event only if they come from **different sources**, start at the **same minute**, have **matching titles** (one title may be the other plus a lineup, tour name or year) **and** a matching venue or street address. A missing venue never matches. Same-source records never merge, so separate showtimes stay separate. Each merged event keeps every contributing source in `sources` (publisher, URL, retrieval time, evidence, missing fields).
 
-**Adding a source.** Add a module under `discovery/sources/` that provides `NAME` and `discover(fetcher, previous, details, limit) -> (events, notes)`, then list it in `SOURCES` in `discovery/__main__.py`.
+`verified` is `true` only when at least `min_independent_publishers` (default 2) *different publishers* agree on title, start and venue and nothing conflicts; several pages from one publisher count once. Otherwise `verification.status` is `corroborated` (the one source's own signals agree) or `unverified`. Limitation: two publishers can still repeat the same upstream listing (for example a venue's own calendar), so "Verified" means independent publishers agree, not that the organizer was contacted.
+
+### Adding a source
+
+Add a module under `discovery/sources/` providing `KEY`, `NAME`, `PUBLISHER` and `discover(fetcher, previous, details, limit, **options) -> (events, notes)`, register it in `discovery/sources/__init__.py`, and list its key in `discovery.config.json`.
+
+### Hourly refresh on Windows (Task Scheduler)
+
+`.\refresh-events.ps1` runs the refresh and publishes the feed straight to `Z:\www\area-events-card\events.json` (atomic replace, JSON validated first, previous feed untouched on any failure). It does not deploy the card; `.\deploy.ps1` remains the software deployment command and must have been run once so the `www\area-events-card` folder exists. A lock file prevents overlapping runs; output is appended to `data\refresh.log`.
+
+```
+.\refresh-events.ps1                 # refresh and publish
+.\refresh-events.ps1 -DryRun         # fetch and report only
+.\refresh-events.ps1 -NoPublish      # update data\events.json only
+```
+
+Nothing installs a scheduled task for you. To create one yourself (PowerShell, as your normal user; adjust the path):
+
+```
+$action  = New-ScheduledTaskAction -Execute "powershell.exe" `
+  -Argument '-NoProfile -ExecutionPolicy Bypass -File "C:\Users\laird\Documents\Projects\area-events-card\refresh-events.ps1"' `
+  -WorkingDirectory "C:\Users\laird\Documents\Projects\area-events-card"
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Hours 1)
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 25)
+Register-ScheduledTask -TaskName "Area Events Refresh" -Action $action -Trigger $trigger -Settings $settings
+```
+
+This registers the task to run as you, only while you are logged on, with no stored password. Remove it with `Unregister-ScheduledTask -TaskName "Area Events Refresh"`.
+
+**Execution identity and the share.** The Home Assistant share needs credentials. A task that runs *only when you are logged on* reuses your session, so `Z:` normally works. A task set to "run whether user is logged on or not" has no mapped drives and no access to your session's saved share logon; it would need the share's credentials stored for that account (`cmdkey /add:<host> ...`, run as that account), which this project never does for you. The script therefore tries `Z:` first and then the same share by UNC path (`$HaConfigUnc` at the top of `refresh-events.ps1`, currently `\\192.168.1.48\config`).
+
+**Troubleshooting.**
+- Read `data\refresh.log`; each run logs the user, destination, per-source counts, errors and duration.
+- "no Home Assistant destination reachable": run `Test-Path Z:\www\area-events-card` and `Test-Path \\192.168.1.48\config\www\area-events-card` as the task's user; if only the second works, the scheduled session lacks the mapped drive (the script will use the UNC path); if neither works, the share credentials are not available to that account.
+- "another refresh is running": a previous run is still active, or crashed; a lock older than 30 minutes is ignored automatically.
+- Exit code 2 means some sources failed and their previous events were kept; each source's `ok`, `error` and `last_success_at` are in the feed's `sources` block.
+- "Python was not found": the task's user needs Python 3 on `PATH`.
+- The card shows the old feed until the page reloads or its 30-minute refresh fires.
 
 ## Planned: Python integration (not implemented)
 

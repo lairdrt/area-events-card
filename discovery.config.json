@@ -1,0 +1,12 @@
+{
+  "retention_days": 3,
+  "verification": {
+    "min_independent_publishers": 2
+  },
+  "sources": [
+    { "key": "kpbs", "enabled": true },
+    { "key": "sandiegoreader", "enabled": true, "days": 3, "max_details_per_run": 30 },
+    { "key": "dosd", "enabled": true, "days": 3, "max_details_per_run": 30 },
+    { "key": "sandiego_gov", "enabled": true, "pages": 4, "max_details_per_run": 20 }
+  ]
+}

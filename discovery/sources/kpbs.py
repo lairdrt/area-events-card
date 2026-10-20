@@ -14,7 +14,9 @@ from html import unescape
 
 from ..core import TIMEZONE_NAME, html_to_text, parse_compact_utc, to_pacific
 
+KEY = "kpbs"
 NAME = "KPBS"
+PUBLISHER = "kpbs.org"
 LISTING_URL = "https://www.kpbs.org/events/all"
 PROMO_SPLIT = '<ps-promo class="EventPromoC"'
 MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December"
@@ -166,7 +168,7 @@ def _detail_from_cache(old, start_utc):
     }
 
 
-def discover(fetcher, previous, details=True, limit=None):
+def discover(fetcher, previous, details=True, limit=None, **_):
     """Return (events, notes). Raises FetchError if the listing cannot be read."""
     now = datetime.now(tz=timezone.utc)
     retrieved_at = to_pacific(now).isoformat(timespec="seconds")

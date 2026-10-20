@@ -140,3 +140,74 @@ def save_events(document, path=DATA_FILE):
         json.dump(document, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
     os.replace(temporary, path)
+
+
+# --- shared helpers for adapters ---------------------------------------------
+
+def localize_pacific(naive):
+    """Naive wall-clock time in America/Los_Angeles -> aware datetime."""
+    for hours in (-7, -8):
+        candidate = naive.replace(tzinfo=timezone(timedelta(hours=hours)))
+        if pacific_offset(candidate.astimezone(timezone.utc)) == timedelta(hours=hours):
+            return candidate
+    return naive.replace(tzinfo=timezone(timedelta(hours=-8)))  # nonexistent hour
+
+
+def parse_clock(text, default_meridiem=None):
+    """'5pm', '4:30 PM', '6:30' (with default_meridiem) -> (hour, minute) or None."""
+    match = re.fullmatch(r"\s*(\d{1,2})(?::(\d{2}))?\s*([ap])?\.?m?\.?\s*", text.lower().replace("noon", "12pm"))
+    if not match:
+        return None
+    meridiem = match.group(3) or default_meridiem
+    if not meridiem:
+        return None
+    return int(match.group(1)) % 12 + (12 if meridiem == "p" else 0), int(match.group(2) or 0)
+
+
+def clock_range(text):
+    """'2 - 7pm', '9:30am - 1:30pm', '8 pm', '7:30 pm - 11:30 pm' -> (start, end|None) as (h, m)."""
+    parts = [p.strip() for p in re.split(r"\s*(?:-|–|—|&ndash;|to)\s*", text.strip()) if p.strip()]
+    if not parts or len(parts) > 2:
+        return None, None
+    end_meridiem = re.search(r"([ap])\.?m", parts[-1].lower())
+    end = parse_clock(parts[-1])
+    start = parse_clock(parts[0], end_meridiem.group(1) if end_meridiem else None)
+    if start and len(parts) == 2 and end and not re.search(r"[ap]\.?m", parts[0].lower()) and start > end:
+        start = (start[0] - 12, start[1])  # '11 - 1pm' means 11am
+    return start, (end if len(parts) == 2 else None)
+
+
+def make_event(source_key, source_name, listing_url, url, title, start, **fields):
+    """Uniform adapter output; absent values stay None/empty (never invented)."""
+    event = {
+        "id": f"{source_key}:{fields.pop('local_id')}",
+        "title": title,
+        "start": start.isoformat(),
+        "end": None, "timezone": TIMEZONE_NAME,
+        "venue": None, "address": None, "description": None,
+        "image_url": None, "image_source": None,
+        "url": url, "categories": [], "price": None,
+        "source": {"name": source_name, "listing_url": listing_url},
+        "retrieved_at": None,
+        "verified": False,
+        "verification": {"status": "unverified", "evidence": [], "missing": [], "note": ""},
+        "extraction": {"detail_page": False},
+    }
+    event.update(fields)
+    return event
+
+
+def finish_event(event, retrieved_at, evidence, corroborated):
+    """Fill the verification block and the missing-field list."""
+    event["retrieved_at"] = retrieved_at
+    event["verification"] = {
+        "status": "corroborated" if corroborated else "unverified",
+        "evidence": evidence,
+        "missing": [f for f in ("end", "venue", "address", "description", "image_url") if not event.get(f)],
+        "note": "Single-source; verified stays false until independently confirmed.",
+    }
+    return event
+
+
+def now_pacific():
+    return to_pacific(datetime.now(tz=timezone.utc))

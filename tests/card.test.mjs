@@ -1,7 +1,6 @@
 // Run: node --test tests/   (no dependencies; a tiny DOM stub stands in for the browser)
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 
 class El {
   constructor(tag) { Object.assign(this, { tag, children: [], className: "", textContent: "", attrs: {}, listeners: {} }); }
@@ -21,7 +20,20 @@ globalThis.customElements = { get: () => undefined, define: (_n, c) => { CardCla
 globalThis.window = {};
 await import("../src/area-events-card.js");
 
-const feed = JSON.parse(readFileSync(new URL("../data/events.json", import.meta.url), "utf8"));
+const day = 24 * 3600 * 1000;
+const event = (title, offsetDays, extra) => ({
+  id: title, title, start: new Date(Date.now() + offsetDays * day).toISOString(), url: "https://www.kpbs.org/events/x",
+  source: { name: "KPBS" }, verified: false, verification: { status: "unverified", evidence: [] }, ...extra,
+});
+const feed = {
+  generated_at: new Date().toISOString(),
+  events: [
+    event("Confirmed", 1, { verified: true, verification: { status: "verified", evidence: ["two publishers agree"] } }),
+    event("Corroborated", 2, { verification: { status: "corroborated", evidence: ["dates agree"] } }),
+    event("Unverified", 3),
+    event("Past", -3),
+  ],
+};
 const text = (el) => [el.textContent, el.text, ...(el.children || []).map(text)].filter(Boolean).join(" | ");
 const find = (el, cls) => (el.className.split(" ").includes(cls) ? [el] : []).concat(...el.children.map((c) => (c.children ? find(c, cls) : [])));
 const make = async (config, fetchImpl) => {
@@ -34,14 +46,12 @@ const make = async (config, fetchImpl) => {
 };
 const okFetch = async () => ({ ok: true, json: async () => feed });
 
-test("feed renders real events, corroborated not verified, with source links", async () => {
+test("feed renders upcoming events with honest verification labels and source links", async () => {
   const root = await make({ feed: "/local/area-events-card/events.json" }, okFetch);
-  const tiles = find(root, "event");
-  assert.ok(tiles.length > 0);
-  const out = text(root);
-  assert.match(out, /Source corroborated/);
-  assert.doesNotMatch(out, /\bVerified\b/);
-  assert.doesNotMatch(out, /DEMONSTRATION/);
+  assert.equal(find(root, "event").length, 3); // the past event is hidden
+  const labels = find(root, "verify").map(text);
+  assert.deepEqual(labels.map((l) => l.replace(/\|/g, "").replace(/\s+/g, " ").trim()), ["Verified", "Source corroborated", "Unverified"]);
+  assert.doesNotMatch(text(root), /DEMONSTRATION/);
   assert.ok(find(root, "source").every((a) => a.href.startsWith("https://www.kpbs.org/")));
 });
 

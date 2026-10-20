@@ -9,3 +9,7 @@ Thumbs.db
 .claude/
 __pycache__/
 .venv/
+data/events.json
+data/source-cache.json
+data/.refresh.lock
+data/refresh.log
