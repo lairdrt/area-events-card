@@ -1,0 +1,14 @@
+{
+  "name": "area-events-card",
+  "version": "0.1.0",
+  "description": "Home Assistant Lovelace card showing verified local area events.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "node scripts/build.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
