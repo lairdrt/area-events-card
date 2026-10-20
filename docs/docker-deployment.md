@@ -153,3 +153,22 @@ These figures were reported from the live deployment. Later versions should be c
 ## Location control (optional)
 
 Setting `AREA_EVENTS_API_KEY` in `.env` turns on the authenticated `GET`/`PUT /api/v1/location` API that lets Home Assistant switch the one active location; see [location-control.md](location-control.md). The volume gains `active-location.json`, `location-change.json` and (while a change runs) `staging/`; the previous image (`area-events:previous`) ignores them. Removing the key turns the API off; delete `active-location.json` to return to the configured location.
+
+### Deployment record: single-area location control (commit `6fdc21b`), 2026-10-20
+
+| | |
+|---|---|
+| Deployed commit | `6fdc21b` on the Cubi (replaces `7aacd4f`); card build `AREA-EVENTS 6fdc21b-ae4c3d` via `.\deploy.ps1` |
+| Method | `git archive` + scp, then `docker compose build && docker compose up -d` in `~/area-events`; only the `area-events` container was recreated; the API key was added to the protected `.env` (mode 600) |
+| Cubi | container healthy; `/events.json` and `/health` unchanged and public; four San Diego sources `ok` (KPBS 29, San Diego Reader 102, DoSD 55, City of San Diego 40); 201 events, 24 Verified; next hourly refresh scheduled (`interval_seconds` 3600) |
+| API | no key / wrong key / unauthenticated `PUT` all 401 and changed nothing; authorized `GET /api/v1/location` 200; unknown field 422; invalid place 422 |
+| Switching (same URL and Authorization value the Home Assistant `rest_command` uses, read from HA's `secrets.yaml`) | San Diego 201 events, label San Diego, CA -> **Austin** (35 s): 336 events, UT Austin Events only, label Austin, TX, old feed served while it ran -> **Sydney** (no covering source): change `failed` ("no enabled source applies"), Austin feed byte-identical -> **San Diego** (312 s cold): 201 events from the four San Diego sources, none of the Austin events |
+| HA copy | after each step the feed was copied to `Z:\www\area-events-card\events.json` with `sync_area_events.py` (the script the HA automation runs); the copy carried the same label and event count as the Cubi |
+| Restart | `docker compose restart discovery`: container healthy again, saved place (`active-location.json`, San Diego) and feed intact, startup refresh ok, `/api/v1/location` `source: changed`, change `succeeded` |
+| Frigate | `frigate` stayed `Up 5 weeks (healthy)`; its project was not touched |
+| Rollback | image `area-events:rollback-7aacd4f` (the `7aacd4f` build) and `area-events:previous`; data backup `~/area-events-backups/area-events-data-pre-6fdc21b-20261020-160839.tgz` and `env-pre-6fdc21b` on the Cubi; HA files backed up in `area-events-card-ha-backups` next to the repository |
+| Home Assistant | `configuration.yaml` (`rest_command`), `scripts.yaml` (3 scripts) and `secrets.yaml` (`area_events_authorization`) were installed append-only through `Z:\` and validated as YAML; **not yet loaded by Home Assistant** (a reload is needed), so the card -> script -> server path and the 30-minute sync automation are **unverified** |
+
+`deploy.ps1` copies `data\events.json` to Home Assistant if that file exists locally. Home Assistant's feed comes from the Cubi, so keep no local `data\events.json` when deploying the card.
+
+To finish activation, reload the YAML in Home Assistant (Developer tools > YAML > check configuration, then reload all YAML configuration), run `script.area_events_location` from Developer tools > Actions (expect status 200), and add `location_control: true` to the card ([examples/location-control-card.yaml](../examples/location-control-card.yaml)).
