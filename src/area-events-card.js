@@ -57,7 +57,7 @@ const STYLES = `
   .verify ha-icon { --mdc-icon-size: 16px; vertical-align: -3px; }
   .empty { padding: 16px; color: var(--secondary-text-color); }
   .footer {
-    padding: 0 16px 12px; text-align: right;
+    padding: 0 16px 12px; text-align: left;
     font-size: 11px; color: var(--secondary-text-color);
   }
 `;
@@ -118,7 +118,7 @@ class AreaEventsCard extends HTMLElement {
       events.forEach((event) => grid.append(this._renderEvent(event)));
       card.append(grid);
     }
-    card.append(this._el("div", "footer", `Area Events Card ${AREA_EVENTS_CARD_BUILD}`));
+    card.append(this._el("div", "footer", AREA_EVENTS_CARD_BUILD));
     root.append(style, card);
   }
 
