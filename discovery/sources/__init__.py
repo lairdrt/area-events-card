@@ -1,38 +1,25 @@
-"""Source adapters. To add one, create a module here that provides:
+"""Source adapters. An adapter module provides
 
-    KEY, NAME, PUBLISHER
-    COVERAGE   {"kind": "regional", "region", "latitude", "longitude", "radius_miles"},
-               {"kind": "searchable"} (can search any location; receives location=) or
-               {"kind": "configured"} (user-supplied; the default when omitted)
-    discover(fetcher, previous, details=True, limit=None, **options) -> (events, notes)
+    discover(fetcher, previous, details=True, limit=None, source_id=..., source_name=..., url=..., **options)
+        -> (events, notes)
 
-then register it in MODULES and list its key in discovery.config.json.
-An adapter may set ACCEPTS_LOCATION = True to receive `location=` (see sources/localist.py).
-`previous` holds that source's cached events from the last run; `options`
-come from its config entry. Events are built with core.make_event().
+and may set ACCEPTS_LOCATION = True (to receive `location=`) and MULTIPLE = True (more than one
+registry entry may use it). Which sites to read, where they apply and how they are named lives in the
+configuration's source registry (see discovery/registry.py), not in the adapters. Register a new
+adapter type in ADAPTERS below, then add a registry entry for it in discovery.config.json.
+`previous` holds that source's cached events from the last run. Events are built with core.make_event().
 """
 import importlib
 
-MODULES = {
+ADAPTERS = {
     "kpbs": "kpbs",
     "sandiegoreader": "sandiegoreader",
-    "sandiego_gov": "sandiego_gov",
     "dosd": "dosd",
+    "sandiego_gov": "sandiego_gov",
+    "localist": "localist",
 }
 
 
-def load(key):
-    return importlib.import_module(f".{MODULES[key]}", __name__)
-
-
-# Adapter families that are instantiated per config entry (several sites, one code path):
-# {"key": "ut_austin", "adapter": "localist", "site": "https://calendar.utexas.edu", ...}
-FACTORIES = {"localist": "localist"}
-
-
-def load_spec(spec):
-    """The adapter for a config entry: a built-in module, or a configured instance of a factory family."""
-    family = spec.get("adapter")
-    if family:
-        return importlib.import_module(f".{FACTORIES[family]}", __name__).make_source(spec)
-    return load(spec["key"])
+def adapter_module(kind):
+    target = ADAPTERS[kind]
+    return importlib.import_module(f".{target}", __name__) if isinstance(target, str) else target

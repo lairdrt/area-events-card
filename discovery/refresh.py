@@ -3,11 +3,12 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-from . import sources
-from .core import FetchError, Fetcher, load_events, now_pacific, save_events
-from .location import LocationError, classify_events, resolve_location, select_sources
+from . import registry
+from .place import CityResolver, locate_events
+from .core import FetchError, Fetcher, load_events, save_events
+from .location import LocationError, PROVIDERS, resolve_location
 from .merge import merge_events
 from .publish import FeedError, publish_feed, validate_feed
 
@@ -76,23 +77,22 @@ def _unexpired(events, now):
     return [e for e in events if datetime.fromisoformat(e.get("end") or e["start"]) >= now]
 
 
-def build_document(config, cache, now, keys=None, location=None):
-    keys = keys if keys is not None else [s["key"] for s in config["sources"] if s.get("enabled", True)]
-    by_key = {s["key"]: s for s in config["sources"]}
-    publishers = {k: sources.load_spec(by_key[k]).PUBLISHER for k in keys}
+def build_document(config, cache, now, selected, location=None):
+    """Merge the cached events of the `selected` registry sources into the feed document."""
     retention = timedelta(days=config.get("retention_days", 3))
+    publishers = {source.id: source.publisher for source in selected}
     records, status = {}, {}
-    for key in keys:
-        entry = cache.get(key, {})
+    for source in selected:
+        entry = cache.get(source.id, {})
         events = _unexpired(entry.get("events", []), now)
         last_ok = entry.get("last_success_at")
         stale = bool(last_ok) and now - datetime.fromisoformat(last_ok) > retention
         if stale:
             events = []  # failing for longer than retention: too old to trust
-        records[key] = events
-        status[key] = {"ok": entry.get("ok", False), "stale": stale, "last_success_at": last_ok,
-                       "last_attempt_at": entry.get("last_attempt_at"), "error": entry.get("error"),
-                       "events": len(events), "notes": entry.get("notes", {})}
+        records[source.id] = events
+        status[source.id] = {"ok": entry.get("ok", False), "stale": stale, "last_success_at": last_ok,
+                             "last_attempt_at": entry.get("last_attempt_at"), "error": entry.get("error"),
+                             "events": len(events), "notes": entry.get("notes", {})}
     minimum = config.get("verification", {}).get("min_independent_publishers", 2)
     merged = merge_events(records, publishers, minimum)
     document = {"generated_at": now.isoformat(timespec="seconds"), "sources": status, "events": merged}
@@ -118,61 +118,63 @@ def refresh(config, options, cache_path=None, output=None, publish_to=None, lock
     try:
         location_cache_path = location_cache_path or os.path.join(os.path.dirname(os.path.abspath(cache_path)), "location-cache.json")
         try:
+            sources = registry.load_sources(config)
+        except registry.RegistryError as error:
+            print(f"Configuration error: {error}. Feed left unchanged.", file=sys.stderr)
+            return 1
+        try:
             location = resolve_location(config.get("location"), fetcher, location_cache_path, location_providers)
         except LocationError as error:
             print(f"Location error: {error}. Feed left unchanged.", file=sys.stderr)
             return 1
-        selected, skipped = select_sources(config["sources"], location, sources.load_spec)
-        for spec, reason in skipped:
-            print(f"[{spec['key']}] skipped: {reason}")
+        selected, skipped = registry.select_sources(sources, location)
+        for source, reason in skipped:
+            print(f"[{source.name}] skipped: {reason}")
         if not selected:
-            print(f"Coverage error: no enabled source covers {location['display_name']} "
+            print(f"Coverage error: no enabled source applies to {location['display_name']} "
                   f"({location['radius_miles']:.0f} mi). Feed left unchanged; it is not replaced by results for another area.", file=sys.stderr)
             return 1
-        selected_keys = {spec["key"] for spec, _ in selected}
+        chosen = [source for source, _ in selected]
 
         cache = _load_cache(cache_path, output)
         place_key = f"{location['latitude']:.4f},{location['longitude']:.4f},{location['radius_miles']:.0f}"
         if cache.get("_location_key", place_key) != place_key:
             cache = {}  # cached events belong to another area: never carry them into this one
         cache["_location_key"] = place_key
-        now = now_pacific()
+        now = datetime.now(timezone.utc)
         stamp = now.isoformat(timespec="seconds")
+        resolver = CityResolver(fetcher, location_cache_path, location_providers or PROVIDERS)
         succeeded = failed = 0
         if options.get("offline"):  # rebuild the feed from cached source data only
             succeeded = 1
-        for spec in config["sources"]:
-            key = spec["key"]
-            if options.get("offline") or key not in selected_keys or (only and key not in only):
+        for source in chosen:
+            if options.get("offline") or (only and source.id not in only):
                 continue
-            adapter = sources.load_spec(spec)
-            entry = cache.setdefault(key, {"events": []})
+            entry = cache.setdefault(source.id, {"events": []})
             entry["last_attempt_at"] = stamp
-            kwargs = {k: v for k, v in spec.items() if k not in ("key", "enabled", "coverage", "adapter")}
-            if getattr(adapter, "ACCEPTS_LOCATION", False) or (getattr(adapter, "COVERAGE", None) or spec.get("coverage") or {}).get("kind") == "searchable":
-                kwargs["location"] = location
             try:
-                found, notes = adapter.discover(fetcher, entry.get("events", []), details=not options.get("no_details"),
-                                                limit=options.get("limit"), **kwargs)
-                found, outside = classify_events(found, location)
-                notes["outside_area"] = outside
+                found, notes = source.discover(fetcher, entry.get("events", []), details=not options.get("no_details"),
+                                               limit=options.get("limit"), location=location)
+                found, summary = locate_events(found, location, resolver)
+                notes["places"] = summary
+                notes["outside_area"] = summary["outside_area"]
                 if not found:
-                    raise FetchError(f"all {outside} events are outside the {location['radius_miles']:.0f} mi search area of {location['display_name']}"
-                                     if outside else "extraction produced no events")
+                    raise FetchError(f"all {summary['outside_area']} events are outside the {location['radius_miles']:.0f} mi search area of {location['display_name']}"
+                                     if summary["outside_area"] else "extraction produced no events")
             except Exception as error:  # a failing source must never lose its previous data
                 entry.update(ok=False, error=str(error))
                 failed += 1
-                print(f"[{adapter.NAME}] FAILED, keeping {len(entry.get('events', []))} cached events: {error}", file=sys.stderr)
+                print(f"[{source.name}] FAILED, keeping {len(entry.get('events', []))} cached events: {error}", file=sys.stderr)
                 continue
             entry.update(ok=True, error=None, events=found, notes=notes, last_success_at=stamp)
             succeeded += 1
-            print(f"[{adapter.NAME}] {len(found)} events; {notes}")
+            print(f"[{source.name}] {len(found)} events; {notes}")
 
         if not succeeded:
             print("No source refreshed; feed and cache left untouched.", file=sys.stderr)
             return 1
 
-        document = build_document(config, cache, now, keys=[k for k in (s['key'] for s in config['sources']) if k in selected_keys], location=location)
+        document = build_document(config, cache, now, chosen, location)
         try:
             validate_feed(document)
         except FeedError as error:

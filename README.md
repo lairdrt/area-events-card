@@ -92,7 +92,7 @@ Requires Python 3.9+ (tested on 3.14).
 
 ### Sources
 
-Enabled sources and their options live in [discovery.config.json](discovery.config.json) (list order = priority when merging fields):
+Enabled sources live in the registry of [discovery.config.json](discovery.config.json) (list order = priority when merging fields; see Location, source registry and event locations below):
 
 | Key | Source | Method | Notes |
 |-----|--------|--------|-------|
@@ -101,7 +101,7 @@ Enabled sources and their options live in [discovery.config.json](discovery.conf
 | `dosd` | DoSD | day listings + JSON-LD on event pages | `days` ahead; the site's generic ticketing blurb is not used as a description |
 | `sandiego_gov` | City of San Diego special events | listing HTML + event pages | `pages` of 10; no images or machine-readable data; multi-day/unparseable dates are skipped |
 
-Per source, `max_details_per_run` caps event-page requests each refresh; the rest are filled in by later refreshes (details are cached). Set `"enabled": false` to turn a source off, or change `retention_days` (how long cached events from a failing source are kept) and `verification.min_independent_publishers`.
+Per source, the `max_details_per_run` option caps event-page requests each refresh; the rest are filled in by later refreshes (details are cached). Set `"enabled": false` to turn a source off, or change `retention_days` (how long cached events from a failing source are kept) and `verification.min_independent_publishers`.
 
 All requests send a descriptive User-Agent, honor robots.txt, and wait 2 s between requests. A first refresh takes about 4 minutes; steady state is shorter.
 
@@ -118,39 +118,48 @@ python -m unittest discover -s tests -t .
 
 Exit code 0 = all sources refreshed, 2 = some failed (their previous events are kept), 1 = nothing refreshed or publishing failed (feed unchanged). `data/events.json` and `data/source-cache.json` are generated and not stored in Git.
 
-### Location and source coverage
+### Location, source registry and event locations
 
-`discovery.config.json` has a `location` block (the default is San Diego, 25 miles, resolved without any network call). Use exactly one of:
+Nothing about a place is built into the code. `discovery.config.json` holds the search area and the source registry; [examples/discovery.san-diego.json](examples/discovery.san-diego.json) (the shipped configuration) and [examples/discovery.austin.json](examples/discovery.austin.json) are complete examples, and any other area is just another file (`--config`, with its own `--data-dir`).
 
-```json
-"location": { "query": "San Diego, CA", "radius_miles": 25 }
-"location": { "zip": "92101", "country": "US", "radius_miles": 25 }
-"location": { "latitude": 32.7157, "longitude": -117.1611, "name": "Downtown", "radius_miles": 25 }
-```
-
-It is normalized to `{display_name, latitude, longitude, radius_miles, timezone, country, region, source}` and written to the feed as `location`. City queries use OpenStreetMap Nominatim and ZIP codes use Zippopotam.us (both free, no API key, behind an interchangeable provider interface in `discovery/location.py`; set `"provider"` to choose). Nominatim's policy is followed: identifying User-Agent, at most one request per second, and results cached in `location-cache.json` (next to the source cache; reused for 180 days and also when a later lookup fails), so hourly refreshes do not geocode again. Geocoded data (c) OpenStreetMap contributors (ODbL). The timezone comes from the US state; give `timezone` explicitly with coordinates for other places.
-
-Each source adapter declares `COVERAGE`: `regional` (a center and radius; runs only when that circle overlaps the requested area), `searchable` (can search any place and receives `location=`) or `configured` (a user-supplied source, always runs; the default if undeclared). A source entry in the config may carry its own `coverage` block. The four built-in sources are regional to San Diego County (the city source: the city), so the default configuration is unchanged, and any other city or ZIP runs none of them.
-
-Errors never fall back to San Diego: an unresolvable location, or one that no enabled source covers, logs a clear error, exits 1 and leaves the last valid feed untouched. Cached source events are discarded when the location changes, so they cannot leak into another area's feed. Limitation: the radius selects sources; it does not filter individual events by distance, and no sources exist yet outside San Diego.
-
-### Other cities (Austin example) and Localist calendars
-
-`localist` is a reusable adapter for any [Localist](https://localist.com) calendar (universities, cities, libraries): every Localist site has a free, key-less JSON API (`/api/2/events`) with exact start/end times, venue, address, image and usually the venue's latitude/longitude. Each site is its own source entry in the config, with a distinct publisher for verification:
+**Search area (`location`)**: exactly one of a name, a postal code or coordinates, plus optional details:
 
 ```json
-{ "key": "ut_austin", "adapter": "localist", "site": "https://calendar.utexas.edu", "name": "UT Austin Events", "days": 14 }
+"location": { "query": "Austin, TX", "country": "US", "region": "TX", "radius_miles": 25 }
+"location": { "zip": "78701", "country": "US", "radius_miles": 25 }
+"location": { "latitude": 32.7157, "longitude": -117.1611, "name": "San Diego, CA", "country": "US", "region": "CA", "timezone": "America/Los_Angeles", "radius_miles": 25 }
 ```
 
-`discovery.austin.example.json` is a complete Austin, TX configuration. Run it in its own folder so it never touches the San Diego feed or caches:
+Coordinates need no geocoding. Names use OpenStreetMap Nominatim and ZIP codes use Zippopotam.us (free, no key, interchangeable providers in `discovery/location.py`; the identifying User-Agent, one request per second and on-disk caching required by Nominatim's policy are followed; (c) OpenStreetMap contributors, ODbL). Results are cached in `location-cache.json` for 180 days (and reused if a later lookup fails). A timezone is used only if configured or looked up from the coordinates (timeapi.io, cached); it is never inferred from a country or state, and without one event times keep the UTC offsets their sources give. A missing, invalid or unresolvable location is a clear error and the previous feed is kept.
+
+**Source registry (`sources`)**: one entry per source.
+
+```json
+{ "id": "ut_austin", "name": "UT Austin Events", "adapter": "localist", "url": "https://calendar.utexas.edu",
+  "enabled": true, "publisher": "utexas.edu",
+  "coverage": { "type": "area", "name": "UT Austin campus", "latitude": 30.2849, "longitude": -97.7341, "radius_miles": 10 },
+  "options": { "days": 14 } }
+```
+
+`adapter` picks the code (`kpbs`, `sandiegoreader`, `dosd`, `sandiego_gov`, `localist`; Localist can be registered many times). `id` is unique and keys the cache; `url` is the site read; `publisher` (default: the URL's domain) is what verification counts as independent. `coverage` says where the source has events: `area` (center and radius; the source runs only when that circle overlaps the search area), `global` (searchable anywhere; always runs and receives the search location) or `unknown`/omitted, which is **never selected**: unknown coverage is not assumed to cover everything. Disabled sources and invalid entries are reported; if no source applies, the run logs a coverage error and keeps the last valid feed. Cached events are discarded when the search area changes, so areas never mix.
+
+**Event locations (`place`).** Every event carries a `place`, separate from event verification:
+
+- `confirmed`: the source supplied event-specific coordinates (precision `venue`, confidence `high`). Inside the radius: kept; outside: dropped.
+- `estimated`: no coordinates, but the event's own address names a city. The city is geocoded (cached, at most 10 new lookups per refresh) for an approximate position (precision `city`; confidence `medium` if the address also states a region or postal code, otherwise `low`, and the search area's region is then used as geocoding context). Estimates are always kept, labeled with their evidence, and flagged when the estimated position falls outside the radius.
+- `unknown`: nothing defensible; venue, neighborhood and address text are preserved and no coordinates are ever invented. The search area's center is never used as an event position.
+
+Duplicates keep the best-supported place with the other sources' evidence; sources that put an event more than 50 miles apart, or in different cities, are flagged `conflict` with confidence `low`. A verified event may have an estimated or unknown location. Limitations: the San Diego adapters still interpret their sites' local times as US Pacific time; estimates are city-level only (street addresses are not geocoded); and a city name can be ambiguous, which is why estimates are labeled.
+
+### Localist calendars (Austin example)
+
+`localist` is a reusable adapter for any [Localist](https://localist.com) calendar (universities, cities, libraries): every Localist site has a free, key-less JSON API (`/api/2/events`) with exact times, venue, address, image and usually the venue's coordinates. Register each site as its own source. Run Austin in its own folder so it never touches the San Diego feed or caches:
 
 ```
-python -m discovery --config discovery.austin.example.json --data-dir data/austin
+python -m discovery --config examples/discovery.austin.json --data-dir data/austin
 ```
 
-**Geographic filtering.** Location and radius decide which events are returned, not only which adapters run. After each source returns, events that carry their own coordinates are kept when within `radius_miles` of the location (`location_status: "within"`, `distance_miles`) and dropped when outside. Events without coordinates are kept but marked `location_status: "unknown"`: nothing proves they are nearby, and coordinates are never guessed. If every event is outside the area, the run reports that and keeps the previous feed. The four San Diego sources publish no coordinates, so their results are unchanged (all `unknown`). Cached events are discarded when the location changes, and `--data-dir` keeps separate feeds, caches and geocode results per location.
-
-Limitations: the Localist sites found for Austin are campus calendars (UT Austin), so the Austin feed is mostly university events; citywide Austin sources were not usable (Do512 blocks automated access with a 403, which is respected; Visit Austin and others publish no complete machine-readable listing). The adapter reads at most 5 pages (500 events) per site.
+Limitations: the only Austin source found is the UT Austin campus calendar (Do512 returns 403 to automated requests, which is respected), so the feed is mostly university events; the adapter reads at most 5 pages (500 events) per site.
 
 ### Merging and verification
 
@@ -166,7 +175,7 @@ Start times must be equal, or within 30 minutes for door time vs show time when 
 
 ### Adding a source
 
-Add a module under `discovery/sources/` providing `KEY`, `NAME`, `PUBLISHER` and `discover(fetcher, previous, details, limit, **options) -> (events, notes)`, register it in `discovery/sources/__init__.py`, and list its key in `discovery.config.json`.
+Add a module under `discovery/sources/` providing `discover(fetcher, previous, details, limit, source_id, source_name, url, **options) -> (events, notes)`, register its adapter type in `ADAPTERS` in `discovery/sources/__init__.py`, and add a registry entry (id, name, adapter, url, coverage, options) to the configuration. Coverage and names are data, not code.
 
 ### Docker service (always-on host)
 

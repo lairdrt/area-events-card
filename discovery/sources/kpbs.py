@@ -16,8 +16,6 @@ from ..core import TIMEZONE_NAME, html_to_text, parse_compact_utc, to_pacific
 
 KEY = "kpbs"
 NAME = "KPBS"
-PUBLISHER = "kpbs.org"
-COVERAGE = {"kind": "regional", "region": "San Diego County, CA", "latitude": 32.7157, "longitude": -117.1611, "radius_miles": 45}
 LISTING_URL = "https://www.kpbs.org/events/all"
 PROMO_SPLIT = '<ps-promo class="EventPromoC"'
 MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December"
@@ -92,7 +90,7 @@ def _parse_detail(page):
     }
 
 
-def _normalize(promo, detail, retrieved_at):
+def _normalize(promo, detail, retrieved_at, source_id, source_name, listing_url):
     start_utc, end_utc = promo["start_utc"], promo["end_utc"]
     start = to_pacific(start_utc)
     end = to_pacific(end_utc) if end_utc else None
@@ -128,7 +126,7 @@ def _normalize(promo, detail, retrieved_at):
     corroborated = (len(evidence) >= 3 and not any(e.startswith("CONFLICT") for e in evidence)
                     and bool(detail.get("start_utc")))
     return {
-        "id": "kpbs:" + promo["url"].split("/events/", 1)[1],
+        "id": f"{source_id}:" + promo["url"].split("/events/", 1)[1],
         "title": promo["title"],
         "start": start.isoformat(),
         "end": end.isoformat() if end else None,
@@ -141,7 +139,7 @@ def _normalize(promo, detail, retrieved_at):
         "url": promo["url"],
         "categories": promo["categories"],
         "price": promo["price"],
-        "source": {"name": NAME, "listing_url": LISTING_URL},
+        "source": {"name": source_name, "listing_url": listing_url},
         "retrieved_at": retrieved_at,
         # Verification policy: extraction from one site never sets verified=True.
         # "corroborated" only means this site's own signals agree with each other.
@@ -169,15 +167,15 @@ def _detail_from_cache(old, start_utc):
     }
 
 
-def discover(fetcher, previous, details=True, limit=None, **_):
+def discover(fetcher, previous, details=True, limit=None, source_id=KEY, source_name=NAME, url=LISTING_URL, **_):
     """Return (events, notes). Raises FetchError if the listing cannot be read."""
     now = datetime.now(tz=timezone.utc)
     retrieved_at = to_pacific(now).isoformat(timespec="seconds")
-    page = fetcher.get(LISTING_URL)
+    page = fetcher.get(url)
     notes = {"listing_promos": 0, "ongoing_skipped": 0, "past_skipped": 0, "no_time_skipped": 0,
              "detail_fetched": 0, "detail_reused": 0, "detail_failed": 0}
 
-    cached = {e["url"]: e for e in previous if e.get("source", {}).get("name") == NAME}
+    cached = {e["url"]: e for e in previous if e.get("source", {}).get("name") == source_name}
     events = []
     for block in page.split(PROMO_SPLIT)[1:]:
         notes["listing_promos"] += 1
@@ -208,5 +206,5 @@ def discover(fetcher, previous, details=True, limit=None, **_):
             except Exception as error:  # one bad event page must not sink the run
                 notes["detail_failed"] += 1
                 notes.setdefault("detail_errors", []).append(f"{promo['url']}: {error}")
-        events.append(_normalize(promo, detail, retrieved_at))
+        events.append(_normalize(promo, detail, retrieved_at, source_id, source_name, url))
     return events, notes

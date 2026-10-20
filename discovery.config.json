@@ -1,13 +1,29 @@
 {
-  "location": { "query": "San Diego, CA", "radius_miles": 25 },
-  "retention_days": 3,
-  "verification": {
-    "min_independent_publishers": 2
+  "location": {
+    "name": "San Diego, CA", "latitude": 32.7157, "longitude": -117.1611,
+    "country": "US", "region": "CA", "timezone": "America/Los_Angeles", "radius_miles": 25
   },
+  "retention_days": 3,
+  "verification": { "min_independent_publishers": 2 },
   "sources": [
-    { "key": "kpbs", "enabled": true },
-    { "key": "sandiegoreader", "enabled": true, "days": 3, "max_details_per_run": 30 },
-    { "key": "dosd", "enabled": true, "days": 3, "max_details_per_run": 30 },
-    { "key": "sandiego_gov", "enabled": true, "pages": 4, "max_details_per_run": 20 }
+    {
+      "id": "kpbs", "name": "KPBS", "adapter": "kpbs", "url": "https://www.kpbs.org/events/all",
+      "coverage": { "type": "area", "name": "San Diego County, CA", "latitude": 32.7157, "longitude": -117.1611, "radius_miles": 45 }
+    },
+    {
+      "id": "sandiegoreader", "name": "San Diego Reader", "adapter": "sandiegoreader", "url": "https://www.sandiegoreader.com",
+      "coverage": { "type": "area", "name": "San Diego County, CA", "latitude": 32.7157, "longitude": -117.1611, "radius_miles": 45 },
+      "options": { "days": 3, "max_details_per_run": 30 }
+    },
+    {
+      "id": "dosd", "name": "DoSD", "adapter": "dosd", "url": "https://dosd.com",
+      "coverage": { "type": "area", "name": "San Diego County, CA", "latitude": 32.7157, "longitude": -117.1611, "radius_miles": 45 },
+      "options": { "days": 3, "max_details_per_run": 30 }
+    },
+    {
+      "id": "sandiego_gov", "name": "City of San Diego", "adapter": "sandiego_gov", "url": "https://www.sandiego.gov/events",
+      "coverage": { "type": "area", "name": "City of San Diego, CA", "latitude": 32.7157, "longitude": -117.1611, "radius_miles": 20 },
+      "options": { "pages": 4, "max_details_per_run": 20 }
+    }
   ]
 }

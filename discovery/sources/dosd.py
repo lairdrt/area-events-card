@@ -16,8 +16,6 @@ from ..core import FetchError, clock_range, finish_event, localize_pacific, make
 
 KEY = "dosd"
 NAME = "DoSD"
-PUBLISHER = "dosd.com"
-COVERAGE = {"kind": "regional", "region": "San Diego County, CA", "latitude": 32.7157, "longitude": -117.1611, "radius_miles": 45}
 BASE = "https://dosd.com"
 
 
@@ -25,7 +23,7 @@ def _clean(value):
     return re.sub(r"\s+", " ", unescape(value)).strip() if value else None
 
 
-def _parse_cards(page):
+def _parse_cards(page, base=BASE):
     feed = page.split('class="feed', 1)[-1]
     for block in feed.split('data-card-kind="event"')[1:]:
         href = re.search(r'class="card-link[^"]*" href="([^"]+)"', block)
@@ -38,7 +36,7 @@ def _parse_cards(page):
         venue = next((p for p in paragraphs if p and p != _clean(date_line.group(1)) and "·" not in p and "�" not in p and " · " not in p), None)
         enrichment = re.search(r'class="svelte-[a-z0-9]+ enrichment">(.*?)</p>', block, re.S)
         yield {
-            "url": urljoin(BASE + "/events/", unescape(href.group(1))),
+            "url": urljoin(base + "/events/", unescape(href.group(1))),
             "title": _clean(title.group(1)),
             "time_text": (_clean(date_line.group(1)).split("|", 1) + [""])[1].strip(),
             "venue": venue,
@@ -73,7 +71,8 @@ def _parse_detail(page):
     return None
 
 
-def discover(fetcher, previous, details=True, limit=None, days=3, max_details_per_run=30, **_):
+def discover(fetcher, previous, details=True, limit=None, days=3, max_details_per_run=30, source_id=KEY, source_name=NAME, url=BASE, **_):
+    base = url.rstrip("/")
     retrieved_at = now_pacific().isoformat(timespec="seconds")
     today, now = now_pacific().date(), now_pacific()
     cached = {e["url"]: e for e in previous if e.get("extraction", {}).get("detail_page")}
@@ -83,14 +82,14 @@ def discover(fetcher, previous, details=True, limit=None, days=3, max_details_pe
 
     for offset in range(days):
         day = today + timedelta(days=offset)
-        listing_url = f"{BASE}/events/{day.year}/{day.month:02d}/{day.day:02d}"
+        listing_url = f"{base}/events/{day.year}/{day.month:02d}/{day.day:02d}"
         try:
             page = fetcher.get(listing_url)
         except Exception as error:
             notes.setdefault("listing_errors", []).append(str(error))
             continue
         listings_ok += 1
-        for card in _parse_cards(page):
+        for card in _parse_cards(page, base):
             notes["listing_items"] += 1
             start_hm, end_hm = clock_range(card["time_text"])
             if not start_hm:
@@ -125,7 +124,7 @@ def discover(fetcher, previous, details=True, limit=None, days=3, max_details_pe
 
             detail = detail or {}
             event = make_event(
-                KEY, NAME, listing_url, card["url"], card["title"], start,
+                source_id, source_name, listing_url, card["url"], card["title"], start,
                 local_id=card["url"].split("/events/", 1)[-1], end=end.isoformat() if end else None,
                 venue=detail.get("venue") or card["venue"], address=detail.get("address"),
                 categories=card["categories"], image_url=detail.get("image") or card["image"],

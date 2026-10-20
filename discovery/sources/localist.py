@@ -15,13 +15,13 @@ All-day entries (exhibits, deadlines) have no start time and are skipped.
 """
 import json
 import re
-from datetime import datetime
-from types import SimpleNamespace
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from ..core import FetchError, finish_event, make_event, now_pacific
+from ..core import FetchError, finish_event, make_event
 
 ACCEPTS_LOCATION = True
+MULTIPLE = True  # any number of Localist sites can be registered
 PAGE_SIZE = 100
 
 
@@ -56,8 +56,8 @@ def _event_from(event, instance, key, name, site, listing_url, retrieved_at, tim
         image_url=event.get("photo_url") or None, image_source="Localist API photo_url" if event.get("photo_url") else None,
         price="Free" if event.get("free") else _clean(event.get("ticket_cost")),
     )
-    if timezone_name:
-        record["timezone"] = timezone_name
+    # The start/end strings carry the site's own UTC offset; the zone name is only known if the location says so.
+    record["timezone"] = timezone_name
     if geo:
         record["geo"] = geo
     evidence = [f"start time from the {_host(site)} Localist API event instance ({instance['start']})"]
@@ -70,12 +70,11 @@ def _event_from(event, instance, key, name, site, listing_url, retrieved_at, tim
     return finish_event(record, retrieved_at, evidence, corroborated=bool(in_range and page_host == _host(site)))
 
 
-def discover(fetcher, previous, details=True, limit=None, days=14, max_pages=5, site=None, key="localist", name=None,
-             location=None, **_):
-    """Return (events, notes). Raises FetchError if the API cannot be read."""
-    site = site.rstrip("/")
-    name = name or _host(site)
-    retrieved_at = now_pacific().isoformat(timespec="seconds")
+def discover(fetcher, previous, details=True, limit=None, days=14, max_pages=5, source_id="localist", source_name="Localist",
+             url=None, location=None, **_):
+    """Return (events, notes). `url` is the Localist site. Raises FetchError if the API cannot be read."""
+    site, key, name = url.rstrip("/"), source_id, source_name
+    retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     now = datetime.now().astimezone()
     timezone_name = (location or {}).get("timezone")
     notes = {"site": site, "api_events": 0, "instances": 0, "all_day_skipped": 0, "not_live_skipped": 0, "ended_skipped": 0, "pages": 0}
@@ -119,22 +118,3 @@ def discover(fetcher, previous, details=True, limit=None, days=14, max_pages=5, 
         if page >= total_pages:
             break
     return events, notes
-
-
-def make_source(spec):
-    """Bind the shared adapter to one configured Localist site."""
-    site = spec.get("site")
-    if not isinstance(site, str) or not site.startswith(("http://", "https://")):
-        raise ValueError(f"source '{spec.get('key')}' needs a 'site' URL")
-    host = _host(site)
-    labels = host.split(".")
-    key, name = spec["key"], spec.get("name") or host
-
-    def bound(fetcher, previous, **options):
-        options = {k: v for k, v in options.items() if k not in ("adapter", "site", "name", "key")}
-        return discover(fetcher, previous, site=site, key=key, name=name, **options)
-
-    return SimpleNamespace(
-        KEY=key, NAME=name, PUBLISHER=".".join(labels[-2:]) if len(labels) > 2 else host,
-        COVERAGE=spec.get("coverage") or {"kind": "configured"}, ACCEPTS_LOCATION=True, discover=bound,
-    )

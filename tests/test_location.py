@@ -6,15 +6,15 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from discovery import refresh as refresh_module
-from discovery import sources
+from discovery import registry
+from discovery import sources as sources_module
 from discovery.core import FetchError, finish_event, make_event
-from discovery.location import (
-    LocationError, NominatimProvider, ZippopotamProvider, covers, parse_spec, resolve_location, select_sources,
-)
+from discovery.location import LocationError, NominatimProvider, ZippopotamProvider, parse_spec, resolve_location
 from discovery.refresh import load_config
 
 PDT = timezone(timedelta(hours=-7))
-SAN_DIEGO_KEYS = ["kpbs", "sandiegoreader", "dosd", "sandiego_gov"]
+SHIPPED = load_config()
+AUSTIN = {"display_name": "Austin, Texas, United States", "latitude": 30.2672, "longitude": -97.7431, "country": "US", "region": "TX"}
 
 
 class FakeProvider:
@@ -28,212 +28,315 @@ class FakeProvider:
         return self.place
 
 
-AUSTIN = {"display_name": "Austin, Texas, United States", "latitude": 30.2672, "longitude": -97.7431, "country": "US", "region": "TX"}
+class FakeFetcher:
+    def __init__(self, body=None):
+        self.body, self.urls = body, []
+
+    def get(self, url, check_robots=True):
+        self.urls.append(url)
+        if self.body is None:
+            raise FetchError("offline")
+        return self.body
 
 
 class Resolution(unittest.TestCase):
     def setUp(self):
         self.cache = os.path.join(tempfile.mkdtemp(), "location-cache.json")
 
-    def test_default_and_san_diego_query_need_no_network(self):
-        for raw in (None, {"query": "San Diego, CA", "radius_miles": 25}, {"query": "san  diego, california"}):
-            place = resolve_location(raw, fetcher=None, cache_path=self.cache, providers={})
-            self.assertEqual((place["latitude"], place["longitude"]), (32.7157, -117.1611))
-            self.assertEqual((place["timezone"], place["country"], place["region"], place["source"]), ("America/Los_Angeles", "US", "CA", "builtin"))
-            self.assertIn("San Diego", place["display_name"])
-        self.assertEqual(resolve_location(None)["radius_miles"], 25)
+    def test_nothing_is_built_in(self):
+        with self.assertRaisesRegex(LocationError, "no location configured"):
+            resolve_location(None, providers={})
+        # even the well-known city this project started with must be configured, then geocoded or given coordinates
+        provider = FakeProvider({"display_name": "San Diego", "latitude": 32.7, "longitude": -117.1, "country": "US", "region": "CA"}, name="nominatim")
+        resolve_location({"query": "San Diego, CA"}, None, self.cache, {"nominatim": provider})
+        self.assertEqual(provider.calls, 1)
+
+    def test_coordinates_need_no_network_and_keep_the_configured_details(self):
+        fetcher = FakeFetcher()
+        place = resolve_location({"latitude": -33.8688, "longitude": 151.2093, "name": "Sydney CBD", "country": "au", "region": "NSW",
+                                  "timezone": "Australia/Sydney", "radius_miles": 10}, fetcher, self.cache, providers={})
+        self.assertEqual((place["display_name"], place["country"], place["region"], place["timezone"], place["timezone_source"], place["source"]),
+                         ("Sydney CBD", "AU", "NSW", "Australia/Sydney", "config", "config"))
+        self.assertEqual(fetcher.urls, [])
         self.assertFalse(os.path.exists(self.cache))
 
-    def test_coordinates(self):
-        place = resolve_location({"latitude": 40.7128, "longitude": -74.006, "radius_miles": 10, "name": "NYC", "country": "US", "region": "NY"}, providers={})
-        self.assertEqual((place["display_name"], place["radius_miles"], place["timezone"], place["source"]), ("NYC", 10.0, "America/New_York", "config"))
-        self.assertEqual(resolve_location({"latitude": 1, "longitude": 2})["display_name"], "1.0000, 2.0000")
+    def test_timezone_is_never_assumed(self):
+        no_zone = resolve_location({"latitude": 30.27, "longitude": -97.74, "country": "US", "region": "TX"}, None, None, providers={})
+        self.assertEqual((no_zone["timezone"], no_zone["timezone_source"]), (None, "unknown"))
+        failed = resolve_location({"latitude": 30.27, "longitude": -97.74}, FakeFetcher(), self.cache, providers={})
+        self.assertEqual(failed["timezone"], None)
+
+    def test_timezone_lookup_is_used_and_cached_when_not_configured(self):
+        fetcher = FakeFetcher(json.dumps({"timeZone": "America/Chicago"}))
+        for _ in range(2):
+            place = resolve_location({"latitude": 30.27, "longitude": -97.74}, fetcher, self.cache, providers={})
+        self.assertEqual((place["timezone"], place["timezone_source"]), ("America/Chicago", "lookup:timeapi"))
+        self.assertEqual(len(fetcher.urls), 1)
+        rejected = resolve_location({"latitude": 10.0, "longitude": 10.0}, FakeFetcher(json.dumps({"timeZone": "../../etc"})), self.cache, providers={})
+        self.assertIsNone(rejected["timezone"])
 
     def test_invalid_configurations_are_clear_errors(self):
         bad = [{"latitude": 95, "longitude": 0}, {"latitude": 1}, {"latitude": "x", "longitude": 1}, {"query": " "}, {"query": "a", "zip": "1"},
-               {}, {"query": "Austin", "radius_miles": 0}, {"query": "Austin", "radius_miles": 9999}, {"zip": "", "country": "US"},
-               {"zip": "78701", "country": "USA"}, "Austin", {"query": "Austin", "radius_miles": True}]
+               {}, {"query": "Austin", "radius_miles": 0}, {"query": "Austin", "radius_miles": 9999}, {"zip": "78701"},
+               {"zip": "78701", "country": "USA"}, "Austin", {"query": "Austin", "radius_miles": True}, {"query": "Austin", "country": "United States"},
+               {"latitude": 1, "longitude": 2, "timezone": "Central"}]
         for raw in bad:
             with self.subTest(raw=raw), self.assertRaises(LocationError):
                 parse_spec(raw)
 
-    def test_city_query_uses_the_provider_once_then_the_cache(self):
+    def test_city_zip_and_country_handling(self):
         provider = FakeProvider(AUSTIN, name="nominatim")
         for _ in range(3):
-            place = resolve_location({"query": "Austin, TX", "radius_miles": 15}, None, self.cache, {"nominatim": provider})
-        self.assertEqual(provider.calls, 1)
-        self.assertEqual((place["timezone"], place["radius_miles"], place["source"]), ("America/Chicago", 15.0, "cache"))
-        self.assertTrue(json.load(open(self.cache, encoding="utf-8")))
-
-    def test_zip_uses_the_postal_provider(self):
-        zippo, nominatim = FakeProvider(AUSTIN, name="zippopotam"), FakeProvider(error="should not be used")
-        place = resolve_location({"zip": "78701"}, None, self.cache, {"zippopotam": zippo, "nominatim": nominatim})
+            place = resolve_location({"query": "Austin, TX", "country": "US", "radius_miles": 15}, None, self.cache, {"nominatim": provider})
+        self.assertEqual((provider.calls, place["source"], place["radius_miles"]), (1, "cache", 15.0))
+        zippo, nominatim = FakeProvider(AUSTIN, name="zippopotam"), FakeProvider(error="unused")
+        place = resolve_location({"zip": "78701", "country": "US", "timezone": "America/Chicago"}, None, self.cache, {"zippopotam": zippo, "nominatim": nominatim})
         self.assertEqual((zippo.calls, nominatim.calls, place["source"]), (1, 0, "geocoded:zippopotam"))
+        with self.assertRaisesRegex(LocationError, "resolved to country US, but GB is configured"):
+            resolve_location({"query": "Austin", "country": "GB"}, None, self.cache, {"nominatim": FakeProvider(AUSTIN, name="nominatim")})
 
     def test_unresolvable_locations_raise_and_are_not_cached(self):
+        cache = os.path.join(tempfile.mkdtemp(), "c.json")
         with self.assertRaisesRegex(LocationError, "could not resolve location 'Nowhereville'.*found no match"):
-            resolve_location({"query": "Nowhereville"}, None, self.cache, {"nominatim": FakeProvider(None, name="nominatim")})
+            resolve_location({"query": "Nowhereville"}, None, cache, {"nominatim": FakeProvider(None, name="nominatim")})
         with self.assertRaisesRegex(LocationError, "could not resolve location 'Austin'.*offline"):
-            resolve_location({"query": "Austin"}, None, self.cache, {"nominatim": FakeProvider(error="offline")})
-        self.assertFalse(os.path.exists(self.cache))
+            resolve_location({"query": "Austin"}, None, cache, {"nominatim": FakeProvider(error="offline")})
+        self.assertFalse(os.path.exists(cache))
         with self.assertRaisesRegex(LocationError, "unknown geocoding provider"):
-            resolve_location({"query": "Austin", "provider": "nope"}, None, self.cache, {"nominatim": FakeProvider()})
+            resolve_location({"query": "Austin", "provider": "nope"}, None, cache, {"nominatim": FakeProvider()})
 
     def test_stale_cache_entry_is_used_when_the_lookup_fails(self):
-        provider = FakeProvider(AUSTIN, name="nominatim")
-        resolve_location({"query": "Austin"}, None, self.cache, {"nominatim": provider}, now=lambda: 1000.0)
+        resolve_location({"query": "Austin"}, None, self.cache, {"nominatim": FakeProvider(AUSTIN, name="nominatim")}, now=lambda: 1000.0)
         later = 1000.0 + 400 * 24 * 3600
         place = resolve_location({"query": "Austin"}, None, self.cache, {"nominatim": FakeProvider(error="down")}, now=lambda: later)
         self.assertEqual(place["source"], "cache (stale)")
-        refreshed = FakeProvider({**AUSTIN, "latitude": 30.3}, name="nominatim")
-        place = resolve_location({"query": "Austin"}, None, self.cache, {"nominatim": refreshed}, now=lambda: later)
-        self.assertEqual((refreshed.calls, place["latitude"]), (1, 30.3))
 
     def test_provider_response_parsing(self):
         nominatim = NominatimProvider().parse(
-            [{"lat": "30.2711", "lon": "-97.7437", "display_name": "Austin, Travis County, Texas, United States",
+            [{"lat": "30.2711", "lon": "-97.7437", "display_name": "Austin, Texas",
               "address": {"country_code": "us", "ISO3166-2-lvl4": "US-TX"}}], {"query": "Austin"})
         self.assertEqual((nominatim["latitude"], nominatim["country"], nominatim["region"]), (30.2711, "US", "TX"))
+        self.assertIn("countrycodes=us", NominatimProvider().url({"query": "Austin", "country": "US"}))
+        self.assertNotIn("countrycodes", NominatimProvider().url({"query": "Austin", "country": None}))
         self.assertIsNone(NominatimProvider().parse([], {"query": "x"}))
         zippo = ZippopotamProvider().parse(
-            {"post code": "78701", "country abbreviation": "US",
-             "places": [{"place name": "Austin", "longitude": "-97.7431", "latitude": "30.2672", "state": "Texas", "state abbreviation": "TX"}]},
-            {"zip": "78701", "country": "US"})
-        self.assertEqual((zippo["display_name"], zippo["region"], zippo["longitude"]), ("Austin, TX 78701", "TX", -97.7431))
-        self.assertIsNone(ZippopotamProvider().parse({}, {"zip": "00000", "country": "US"}))
-
-    def test_provider_lookup_wraps_fetch_errors(self):
-        class Fetcher:
-            def get(self, url, check_robots=True):
-                raise FetchError("boom")
-        with self.assertRaises(LocationError):
-            NominatimProvider().lookup(Fetcher(), {"query": "x"})
+            {"country abbreviation": "US", "places": [{"place name": "Austin", "longitude": "-97.7431", "latitude": "30.2672",
+                                                       "state": "Texas", "state abbreviation": "TX"}]}, {"zip": "78701", "country": "US"})
+        self.assertEqual((zippo["display_name"], zippo["region"]), ("Austin, TX 78701", "TX"))
 
 
-class Coverage(unittest.TestCase):
-    def selected(self, raw):
-        location = resolve_location(raw, providers={})
-        config = load_config()
-        chosen, skipped = select_sources(config["sources"], location, sources.load_spec)
-        return [s["key"] for s, _ in chosen], [s["key"] for s, _ in skipped]
-
-    def test_default_configuration_keeps_all_four_san_diego_sources(self):
-        self.assertEqual(self.selected(load_config()["location"]), (SAN_DIEGO_KEYS, []))
-        self.assertEqual(self.selected(None), (SAN_DIEGO_KEYS, []))
-
-    def test_other_regions_select_nothing(self):
-        for raw in ({"latitude": 34.05, "longitude": -118.24}, {"latitude": 30.27, "longitude": -97.74}, {"latitude": 40.7, "longitude": -74.0}):
-            self.assertEqual(self.selected(raw), ([], SAN_DIEGO_KEYS))
-
-    def test_nearby_area_selects_overlapping_sources_only(self):
-        # Escondido is ~28 mi from downtown San Diego: inside the county sources' reach (45 + 5 mi), beyond the city source's (20 + 5 mi)
-        chosen, skipped = self.selected({"latitude": 33.12, "longitude": -117.09, "radius_miles": 5})
-        self.assertEqual(chosen, ["kpbs", "sandiegoreader", "dosd"])
-        self.assertEqual(skipped, ["sandiego_gov"])
-
-    def test_coverage_kinds(self):
-        austin = resolve_location({"latitude": 30.27, "longitude": -97.74}, providers={})
-        self.assertTrue(covers({"kind": "searchable"}, austin)[0])
-        self.assertTrue(covers({"kind": "configured"}, austin)[0])
-        self.assertTrue(covers(None, austin)[0])  # undeclared = user-configured
-        self.assertFalse(covers({"kind": "regional", "latitude": 32.7, "longitude": -117.1, "radius_miles": 45}, austin)[0])
-        self.assertFalse(covers({"kind": "mystery"}, austin)[0])
-
-    def test_source_spec_can_override_coverage(self):
-        austin = resolve_location({"latitude": 30.27, "longitude": -97.74}, providers={})
-        spec = {"key": "kpbs", "coverage": {"kind": "regional", "region": "Austin", "latitude": 30.27, "longitude": -97.74, "radius_miles": 30}}
-        self.assertEqual(len(select_sources([spec], austin, sources.load_spec)[0]), 1)
-        self.assertEqual(select_sources([{"key": "kpbs", "enabled": False}], austin, sources.load_spec), ([], []))
+def entry(id, adapter, **extra):
+    return {"id": id, "name": id.upper(), "adapter": adapter, "url": f"https://{id}.example/events", **extra}
 
 
-class Adapter:
-    NAME, PUBLISHER = "Fake", "fake.example"
+AREA = {"type": "area", "name": "Somewhere", "latitude": 32.7157, "longitude": -117.1611, "radius_miles": 45}
 
-    def __init__(self, key, title, coverage=None):
-        self.KEY, self.title = key, title
-        if coverage:
-            self.COVERAGE = coverage
-        self.seen_location = None
 
-    def discover(self, fetcher, previous, location=None, **_):
-        self.seen_location = location
-        start = datetime.now(PDT) + timedelta(days=1)
-        event = make_event(self.KEY, self.KEY, "https://x.example", f"https://{self.KEY}.example/{self.title}", self.title, start,
-                           local_id=self.title, venue="Venue")
+class Adapters:
+    """Stand-ins registered under fake adapter names so registry tests need no real site."""
+
+    class One:
+        def discover(self, *a, **k):
+            return [], {}
+
+    class Many:
+        MULTIPLE = True
+
+        def discover(self, *a, **k):
+            return [], {}
+
+
+class Registry(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.dict(sources_module.ADAPTERS, {"one": Adapters.One(), "two": Adapters.One(), "many": Adapters.Many()})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def load(self, *entries):
+        return registry.load_sources({"sources": list(entries)})
+
+    def test_shipped_configuration_is_valid_and_data_driven(self):
+        sources = registry.load_sources(SHIPPED)
+        self.assertEqual([s.id for s in sources], ["kpbs", "sandiegoreader", "dosd", "sandiego_gov"])
+        self.assertEqual([s.name for s in sources], ["KPBS", "San Diego Reader", "DoSD", "City of San Diego"])
+        self.assertTrue(all(s.coverage["type"] == "area" and s.url.startswith("https://") for s in sources))
+        for module in ("kpbs", "sandiegoreader", "dosd", "sandiego_gov", "localist"):
+            adapter = sources_module.adapter_module(module)
+            self.assertFalse(hasattr(adapter, "COVERAGE"), module)  # coverage lives in configuration, not adapters
+
+    def test_example_configurations_load(self):
+        for name in ("discovery.san-diego.json", "discovery.austin.json"):
+            with open(os.path.join(os.path.dirname(__file__), "..", "examples", name), encoding="utf-8") as handle:
+                config = json.load(handle)
+            parse_spec(config["location"])
+            registry.load_sources(config)
+
+    def test_validation_errors(self):
+        bad = {
+            "duplicate id": [entry("a", "one"), entry("a", "many")],
+            "bad id": [entry("Bad Id", "one")],
+            "unknown adapter": [entry("a", "nope")],
+            "single-use adapter twice": [entry("a", "one"), entry("b", "one")],
+            "no url": [{"id": "a", "adapter": "one"}],
+            "relative url": [entry("a", "one", url="/events")],
+            "bad scheme": [entry("a", "one", url="ftp://x.example")],
+            "enabled type": [entry("a", "one", enabled="yes")],
+            "reserved option": [entry("a", "one", options={"url": "x"})],
+            "bad coverage type": [entry("a", "one", coverage={"type": "everywhere"})],
+            "area without radius": [entry("a", "one", coverage={"type": "area", "latitude": 1, "longitude": 2})],
+            "area out of range": [entry("a", "one", coverage={"type": "area", "latitude": 99, "longitude": 2, "radius_miles": 5})],
+            "legacy key format": [{"key": "kpbs", "enabled": True}],
+            "empty name": [entry("a", "one", name=" ")],
+        }
+        for label, entries in bad.items():
+            with self.subTest(label), self.assertRaises(registry.RegistryError):
+                self.load(*entries)
+        for config in ({}, {"sources": []}, {"sources": "x"}):
+            with self.assertRaises(registry.RegistryError):
+                registry.load_sources(config)
+
+    def test_multiple_instances_of_a_reusable_adapter(self):
+        sources = self.load(entry("a", "many"), entry("b", "many"))
+        self.assertEqual({s.publisher for s in sources}, {"a.example", "b.example"})
+
+    def test_selection_by_coverage(self):
+        east = {"latitude": 40.7, "longitude": -74.0, "radius_miles": 25}
+        san_diego = {"latitude": 32.7157, "longitude": -117.1611, "radius_miles": 25}
+        sources = self.load(
+            entry("regional", "one", coverage=AREA), entry("everywhere", "two", coverage={"type": "global"}),
+            entry("undeclared", "many"), entry("explicit_unknown", "many", coverage={"type": "unknown"}),
+            entry("off", "many", enabled=False, coverage={"type": "global"}))
+        for location, expected in ((san_diego, ["regional", "everywhere"]), (east, ["everywhere"])):
+            chosen, skipped = registry.select_sources(sources, location)
+            self.assertEqual([s.id for s, _ in chosen], expected)
+            reasons = {s.id: r for s, r in skipped}
+            self.assertIn("not assumed", reasons["undeclared"])  # unknown coverage never means "everywhere"
+            self.assertIn("not assumed", reasons["explicit_unknown"])
+            self.assertEqual(reasons["off"], "disabled")
+
+    def test_coverage_boundary_is_the_sum_of_both_radii(self):
+        from discovery.location import distance_miles
+        gap = distance_miles(32.7157, -117.1611, 33.12, -117.09)
+        near = {"latitude": 33.12, "longitude": -117.09}
+        area = registry._coverage({**AREA, "radius_miles": 20}, "test")
+        self.assertTrue(registry.covers(area, {**near, "radius_miles": gap - 20 + 0.1})[0])
+        self.assertFalse(registry.covers(area, {**near, "radius_miles": gap - 20 - 0.1})[0])
+
+    def test_adapter_receives_registry_values(self):
+        seen = {}
+
+        class Spy:
+            ACCEPTS_LOCATION = True
+
+            def discover(self, fetcher, previous, details=True, limit=None, **options):
+                seen.update(options, details=details, limit=limit)
+                return [], {}
+
+        with mock.patch.dict(sources_module.ADAPTERS, {"spy": Spy()}):
+            source = self.load(entry("s", "spy", name="Spy Source", options={"days": 5}, coverage={"type": "global"}))[0]
+            source.discover(None, [], details=False, limit=3, location={"latitude": 1})
+        self.assertEqual((seen["source_id"], seen["source_name"], seen["url"], seen["days"], seen["location"], seen["limit"]),
+                         ("s", "Spy Source", "https://s.example/events", 5, {"latitude": 1}, 3))
+
+
+class FakeSource:
+    def __init__(self, title, lat=None, lon=None, address=None, hours=24, **extra):
+        self.title, self.lat, self.lon, self.address, self.hours, self.extra, self.seen = title, lat, lon, address, hours, extra, None
+
+    def discover(self, fetcher, previous, source_id="x", source_name="X", url=None, location=None, **_):
+        self.seen = location
+        start = datetime.now(PDT) + timedelta(hours=self.hours)
+        event = make_event(source_id, source_name, url, f"{url}/{self.title}", self.title, start, local_id=self.title, venue="Venue",
+                           address=self.address, **self.extra)
+        if self.lat is not None:
+            event["geo"] = {"latitude": self.lat, "longitude": self.lon, "source": "test feed"}
         return [finish_event(event, "2030-01-01T00:00:00-08:00", ["e"], False)], {}
 
 
-SD = {"kind": "regional", "region": "San Diego", "latitude": 32.7157, "longitude": -117.1611, "radius_miles": 45}
+def area(name, lat, lon, tz, radius=25, **extra):
+    return {"name": name, "latitude": lat, "longitude": lon, "timezone": tz, "radius_miles": radius, **extra}
 
 
-class RefreshIntegration(unittest.TestCase):
+AREAS = {
+    "austin": area("Austin", 30.2672, -97.7431, "America/Chicago"),
+    "sydney": area("Sydney", -33.8688, 151.2093, "Australia/Sydney", country="AU"),
+    "london": area("London", 51.5072, -0.1276, "Europe/London", country="GB"),
+    "nairobi": area("Nairobi", -1.2921, 36.8219, "Africa/Nairobi", country="KE"),
+}
+
+
+class RefreshAcrossAreas(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.mkdtemp()
         self.paths = dict(cache_path=os.path.join(self.folder, "cache.json"), output=os.path.join(self.folder, "events.json"),
-                          lock_path=os.path.join(self.folder, "lock"))
-        self.adapters = {"sd": Adapter("sd", "San Diego Concert", SD),
-                         "search": Adapter("search", "Searchable Event", {"kind": "searchable"})}
-        self.config = {"sources": [{"key": "sd"}, {"key": "search"}]}
+                          lock_path=os.path.join(self.folder, "lock"), location_cache_path=os.path.join(self.folder, "loc.json"))
+        self.adapters = {
+            "local_a": FakeSource("Austin Show", 30.27, -97.74),
+            "local_s": FakeSource("Sydney Show", -33.87, 151.21),
+            "local_l": FakeSource("London Show", 51.51, -0.12),
+            "world": FakeSource("Worldwide Show"),
+            "world2": FakeSource("Mystery Show"),
+        }
+        self.config_sources = [
+            entry("local_a", "local_a", coverage={"type": "area", "latitude": 30.27, "longitude": -97.74, "radius_miles": 30}),
+            entry("local_s", "local_s", coverage={"type": "area", "latitude": -33.87, "longitude": 151.21, "radius_miles": 30}),
+            entry("local_l", "local_l", coverage={"type": "area", "latitude": 51.5, "longitude": -0.12, "radius_miles": 30}),
+            entry("world", "world", coverage={"type": "global"}),
+            entry("mystery", "world2"),
+        ]
 
-    def run_refresh(self, location=None, providers=None):
-        config = {**self.config, **({"location": location} if location is not None else {})}
-        with mock.patch.object(refresh_module.sources, "load", side_effect=lambda k: self.adapters[k]):
-            return refresh_module.refresh(config, {}, fetcher=object(), location_providers=providers, **self.paths)
+    def run_refresh(self, location, sources=None):
+        config = {"location": location, "sources": sources or self.config_sources}
+        with mock.patch.dict(sources_module.ADAPTERS, self.adapters):
+            return refresh_module.refresh(config, {}, fetcher=object(), **self.paths)
 
     def feed(self):
         with open(self.paths["output"], encoding="utf-8") as handle:
             return json.load(handle)
 
-    def test_san_diego_default_runs_regional_and_searchable_sources(self):
-        self.assertEqual(self.run_refresh(), 0)
-        feed = self.feed()
-        self.assertEqual(sorted(e["title"] for e in feed["events"]), ["San Diego Concert", "Searchable Event"])
-        self.assertEqual(feed["location"]["display_name"].split(",")[0], "San Diego")
-        self.assertEqual(self.adapters["search"].seen_location["latitude"], 32.7157)
-        self.assertIsNone(self.adapters["sd"].seen_location)  # regional adapters do not receive a location
+    def titles(self):
+        return sorted(e["title"] for e in self.feed()["events"])
 
-    def test_other_city_never_gets_san_diego_events(self):
-        self.assertEqual(self.run_refresh(), 0)
-        self.assertEqual(self.run_refresh({"latitude": 30.27, "longitude": -97.74, "name": "Austin"}), 0)
-        feed = self.feed()
-        self.assertEqual([e["title"] for e in feed["events"]], ["Searchable Event"])  # the cached San Diego event did not leak
-        self.assertEqual(feed["location"]["display_name"], "Austin")
-        self.assertNotIn("sd", feed["sources"])
-        self.assertEqual(self.adapters["search"].seen_location["display_name"], "Austin")
+    def test_unrelated_areas_each_get_only_their_own_events(self):
+        expected = {"austin": ["Austin Show", "Worldwide Show"], "sydney": ["Sydney Show", "Worldwide Show"],
+                    "london": ["London Show", "Worldwide Show"], "nairobi": ["Worldwide Show"]}
+        for name in ("austin", "sydney", "london", "nairobi", "austin"):
+            self.assertEqual(self.run_refresh(AREAS[name]), 0, name)
+            self.assertEqual(self.titles(), expected[name], name)  # nothing from the previous area leaks in
+            self.assertEqual(self.feed()["location"]["display_name"], AREAS[name]["name"])
+        self.assertEqual(self.adapters["world"].seen["timezone"], "America/Chicago")
+        self.assertIsNone(self.adapters["world2"].seen)  # unknown coverage: never run
 
-    def test_back_to_san_diego_rebuilds_from_fresh_data(self):
-        self.run_refresh()
-        self.run_refresh({"latitude": 30.27, "longitude": -97.74})
-        self.assertEqual(self.run_refresh(), 0)
-        self.assertEqual(sorted(e["title"] for e in self.feed()["events"]), ["San Diego Concert", "Searchable Event"])
-
-    def test_uncovered_location_is_an_error_and_keeps_the_last_feed(self):
-        del self.adapters["search"], self.config["sources"][1]
-        self.assertEqual(self.run_refresh(), 0)
+    def test_unknown_coverage_alone_selects_nothing(self):
+        self.assertEqual(self.run_refresh(AREAS["austin"]), 0)
         before = open(self.paths["output"], encoding="utf-8").read()
-        self.assertEqual(self.run_refresh({"latitude": 40.7, "longitude": -74.0}), 1)
+        self.assertEqual(self.run_refresh(AREAS["austin"], [entry("mystery", "world2")]), 1)
         self.assertEqual(open(self.paths["output"], encoding="utf-8").read(), before)
 
-    def test_unresolvable_location_is_an_error_and_keeps_the_last_feed(self):
-        self.assertEqual(self.run_refresh(), 0)
+    def test_disabled_sources_do_not_run(self):
+        self.adapters["world"].seen = "never"
+        sources = [{**e, "enabled": False} if e["id"] == "world" else e for e in self.config_sources]
+        self.assertEqual(self.run_refresh(AREAS["austin"], sources), 0)
+        self.assertEqual(self.adapters["world"].seen, "never")
+        self.assertEqual(self.titles(), ["Austin Show"])
+
+    def test_missing_or_bad_location_and_registry_keep_the_last_feed(self):
+        self.assertEqual(self.run_refresh(AREAS["austin"]), 0)
         before = open(self.paths["output"], encoding="utf-8").read()
-        providers = {"nominatim": FakeProvider(None, name="nominatim")}
-        self.assertEqual(self.run_refresh({"query": "Nowhereville"}, providers), 1)
+        for location in (None, {"latitude": 100, "longitude": 0}, {"query": "Nowhere"}):
+            with self.subTest(location=location):
+                self.assertEqual(self.run_refresh(location), 1)
+                self.assertEqual(open(self.paths["output"], encoding="utf-8").read(), before)
+        self.assertEqual(self.run_refresh(AREAS["austin"], [{"key": "old-format"}]), 1)
         self.assertEqual(open(self.paths["output"], encoding="utf-8").read(), before)
-        self.assertEqual(self.run_refresh({"latitude": 100, "longitude": 0}), 1)
-        self.assertEqual(open(self.paths["output"], encoding="utf-8").read(), before)
-        for adapter in self.adapters.values():
-            adapter.seen_location = "unchanged"
-        self.run_refresh({"query": "Nowhereville"}, providers)
-        self.assertTrue(all(a.seen_location == "unchanged" for a in self.adapters.values()))  # no adapter ran
 
-    def test_resolved_city_is_cached_between_refreshes(self):
+    def test_geocoded_areas_are_cached_per_data_dir(self):
         provider = FakeProvider(AUSTIN, name="nominatim")
-        self.config["sources"] = [{"key": "search"}]
+        config = {"location": {"query": "Austin, TX", "country": "US", "timezone": "America/Chicago"}, "sources": self.config_sources}
         for _ in range(3):
-            self.assertEqual(self.run_refresh({"query": "Austin, TX"}, {"nominatim": provider}), 0)
+            with mock.patch.dict(sources_module.ADAPTERS, self.adapters):
+                self.assertEqual(refresh_module.refresh(config, {}, fetcher=object(), location_providers={"nominatim": provider}, **self.paths), 0)
         self.assertEqual(provider.calls, 1)
-        self.assertEqual(self.feed()["location"]["timezone"], "America/Chicago")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,0 @@
-{
-  "location": { "query": "Austin, TX", "radius_miles": 25 },
-  "retention_days": 3,
-  "verification": { "min_independent_publishers": 2 },
-  "sources": [
-    { "key": "ut_austin", "adapter": "localist", "site": "https://calendar.utexas.edu", "name": "UT Austin Events", "days": 14 }
-  ]
-}

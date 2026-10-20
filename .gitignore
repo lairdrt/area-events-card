@@ -15,3 +15,4 @@ data/.refresh.lock
 data/refresh.log
 .env
 data/austin/
+data/sd-check/

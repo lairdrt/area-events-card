@@ -16,14 +16,12 @@ from ..core import clock_range, finish_event, html_to_text, localize_pacific, ma
 
 KEY = "sandiegoreader"
 NAME = "San Diego Reader"
-PUBLISHER = "sandiegoreader.com"
-COVERAGE = {"kind": "regional", "region": "San Diego County, CA", "latitude": 32.7157, "longitude": -117.1611, "radius_miles": 45}
 BASE = "https://www.sandiegoreader.com"
 MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 
 
-def _day_url(day):
-    return f"{BASE}/events/{day.year}/{MONTHS[day.month - 1]}/{day.day:02d}/"
+def _day_url(day, base=BASE):
+    return f"{base}/events/{day.year}/{MONTHS[day.month - 1]}/{day.day:02d}/"
 
 
 def _first(pattern, text):
@@ -35,7 +33,7 @@ def _clean(value):
     return re.sub(r"\s+", " ", unescape(value)).strip() if value else None
 
 
-def _parse_items(page, day):
+def _parse_items(page, day, base=BASE):
     for block in page.split('class="event-item')[1:]:
         href = _first(r'href="([^"]+)" class="event-title"', block)
         title = _clean(_first(r'class="event-title">(.*?)</a>', block))
@@ -46,7 +44,8 @@ def _parse_items(page, day):
         if image and "events_default_icon" in image:
             image = None  # the site's generic placeholder, not event imagery
         yield {
-            "url": urljoin(BASE, unescape(href)),
+            "neighborhood": _clean(_first(r'event-content.*?<a href="/events/search/\?category=\d+">([^<]+)</a>', block)),
+            "url": urljoin(base + "/", unescape(href)),
             "title": title,
             "time_text": time_text,
             "location": _clean(_first(r'class="event-location">(.*?)</div>', block)),
@@ -80,20 +79,22 @@ def _parse_detail(page):
     return None
 
 
-def _build(item, detail, retrieved_at, listing_url):
+def _build(item, detail, retrieved_at, listing_url, source_id=KEY, source_name=NAME):
     start_hm, end_hm = clock_range(item["time_text"] or "")
     start = localize_pacific(datetime.combine(item["day"], datetime.min.time()).replace(hour=start_hm[0], minute=start_hm[1]))
     end = localize_pacific(datetime.combine(item["day"], datetime.min.time()).replace(hour=end_hm[0], minute=end_hm[1])) if end_hm else None
     detail = detail or {}
     event_id = _first(r"[?&]et=(\d+)", item["url"]) or item["url"].rstrip("/").rsplit("/", 1)[-1]
     event = make_event(
-        KEY, NAME, listing_url, item["url"], item["title"], start,
+        source_id, source_name, listing_url, item["url"], item["title"], start,
         local_id=event_id, end=end.isoformat() if end else None,
         venue=detail.get("venue") or item["location"], address=detail.get("address"),
         description=detail.get("description"), categories=item["categories"],
         image_url=detail.get("image") or item["image"],
         image_source="event page JSON-LD" if detail.get("image") else ("listing" if item["image"] else None),
     )
+    if item.get("neighborhood"):
+        event["neighborhood"] = item["neighborhood"]
     event["extraction"]["detail_page"] = bool(detail)
     evidence = []
     if f"/events/{item['day'].year}/{MONTHS[item['day'].month - 1]}/{item['day'].day:02d}/" in item["url"]:
@@ -108,7 +109,8 @@ def _build(item, detail, retrieved_at, listing_url):
     return finish_event(event, retrieved_at, evidence, corroborated)
 
 
-def discover(fetcher, previous, details=True, limit=None, days=3, max_details_per_run=30, **_):
+def discover(fetcher, previous, details=True, limit=None, days=3, max_details_per_run=30, source_id=KEY, source_name=NAME, url=BASE, **_):
+    base = url.rstrip("/")
     """Return (events, notes). Raises FetchError if no day listing could be read."""
     retrieved_at = now_pacific().isoformat(timespec="seconds")
     today = now_pacific().date()
@@ -121,14 +123,14 @@ def discover(fetcher, previous, details=True, limit=None, days=3, max_details_pe
 
     for offset in range(days):
         day = today + timedelta(days=offset)
-        listing_url = _day_url(day)
+        listing_url = _day_url(day, base)
         try:
             page = fetcher.get(listing_url)
         except Exception as error:
             notes.setdefault("listing_errors", []).append(str(error))
             continue
         listings_ok += 1
-        for item in _parse_items(page, day):
+        for item in _parse_items(page, day, base):
             notes["listing_items"] += 1
             start_hm, _ = clock_range(item["time_text"] or "")
             if not start_hm:
@@ -156,7 +158,7 @@ def discover(fetcher, previous, details=True, limit=None, days=3, max_details_pe
                     notes.setdefault("detail_errors", []).append(f"{item['url']}: {error}")
             elif details:
                 notes["detail_deferred"] += 1  # picked up by a later refresh
-            event = _build(item, detail, retrieved_at, listing_url)
+            event = _build(item, detail, retrieved_at, listing_url, source_id, source_name)
             if datetime.fromisoformat(event["end"] or event["start"]) < now:
                 notes["past_skipped"] += 1
                 continue

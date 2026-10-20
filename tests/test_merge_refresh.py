@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 from discovery import refresh as refresh_module
+from discovery import sources as sources_module
 from discovery.core import FetchError, make_event, finish_event
 from discovery.merge import merge_events, titles_match, venues_match
 from discovery.publish import FeedError, publish_feed, validate_feed
@@ -77,7 +78,6 @@ class Provenance(unittest.TestCase):
 
 
 class Adapter:
-    NAME, PUBLISHER = "Fake", "fake.example"
 
     def __init__(self, events=None, error=None):
         self.events, self.error = events, error
@@ -100,12 +100,14 @@ class RefreshRetention(unittest.TestCase):
         self.folder = tempfile.mkdtemp()
         self.paths = dict(cache_path=os.path.join(self.folder, "cache.json"), output=os.path.join(self.folder, "events.json"),
                           lock_path=os.path.join(self.folder, "lock"))
-        self.config = {"sources": [{"key": "a"}, {"key": "b"}], "retention_days": 3}
+        self.config = {"retention_days": 3,
+                       "location": {"latitude": 40.0, "longitude": -100.0, "timezone": "America/Chicago", "radius_miles": 25},
+                       "sources": [{"id": i, "name": i.upper(), "adapter": f"fake_{i}", "url": f"https://{i}.example", "coverage": {"type": "global"}}
+                                   for i in ("a", "b")]}
         self.adapters = {"a": Adapter([future_record("a", "One")]), "b": Adapter([future_record("b", "Two")])}
 
     def run_refresh(self, **extra):
-        modules = {k: v for k, v in self.adapters.items()}
-        with mock.patch.object(refresh_module.sources, "load", side_effect=lambda k: modules[k]):
+        with mock.patch.dict(sources_module.ADAPTERS, {f"fake_{k}": v for k, v in self.adapters.items()}):
             return refresh_module.refresh(self.config, {}, fetcher=object(), **self.paths, **extra)
 
     def titles(self):

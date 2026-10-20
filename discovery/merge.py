@@ -20,6 +20,8 @@ import re
 import unicodedata
 from datetime import datetime
 
+from .place import combine_places
+
 NEAR_START_MINUTES = 30
 STOPWORDS = {"the", "a", "an", "and", "at", "of", "in", "live", "tickets", "presents", "present", "with", "featuring", "annual"}
 VENUE_NOISE = {"the", "san", "diego", "center", "centre", "theatre", "theater", "hall", "of", "at", "and", "hotel", "park", "bar",
@@ -238,11 +240,11 @@ def _combine(group, publishers, min_publishers, reasons):
     })
     if len(locations) > 1:
         merged["locations"] = locations
-    located = next((r for r in group if r.get("location_status") == "within"), None)
-    if located:
-        merged.update(geo=located["geo"], location_status="within", distance_miles=located["distance_miles"])
-    else:
-        merged.update(location_status="unknown", distance_miles=None)
+    place = combine_places([(r["source"]["name"], r.get("place")) for r in group])
+    if place:
+        merged["place"] = place
+        if place["classification"] == "confirmed" and primary.get("geo") is None:
+            merged["geo"] = next((r["geo"] for r in group if r.get("geo")), None)
     merged["verification"] = {
         "status": status,
         "evidence": evidence,
