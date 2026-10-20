@@ -17,6 +17,7 @@ from ..core import clock_range, finish_event, html_to_text, localize_pacific, ma
 KEY = "sandiegoreader"
 NAME = "San Diego Reader"
 PUBLISHER = "sandiegoreader.com"
+COVERAGE = {"kind": "regional", "region": "San Diego County, CA", "latitude": 32.7157, "longitude": -117.1611, "radius_miles": 45}
 BASE = "https://www.sandiegoreader.com"
 MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 

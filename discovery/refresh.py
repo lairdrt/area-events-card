@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 from . import sources
 from .core import FetchError, Fetcher, load_events, now_pacific, save_events
+from .location import LocationError, resolve_location, select_sources
 from .merge import merge_events
 from .publish import FeedError, publish_feed, validate_feed
 
@@ -75,8 +76,8 @@ def _unexpired(events, now):
     return [e for e in events if datetime.fromisoformat(e.get("end") or e["start"]) >= now]
 
 
-def build_document(config, cache, now):
-    keys = [s["key"] for s in config["sources"] if s.get("enabled", True)]
+def build_document(config, cache, now, keys=None, location=None):
+    keys = keys if keys is not None else [s["key"] for s in config["sources"] if s.get("enabled", True)]
     publishers = {k: sources.load(k).PUBLISHER for k in keys}
     retention = timedelta(days=config.get("retention_days", 3))
     records, status = {}, {}
@@ -93,10 +94,14 @@ def build_document(config, cache, now):
                        "events": len(events), "notes": entry.get("notes", {})}
     minimum = config.get("verification", {}).get("min_independent_publishers", 2)
     merged = merge_events(records, publishers, minimum)
-    return {"generated_at": now.isoformat(timespec="seconds"), "sources": status, "events": merged}
+    document = {"generated_at": now.isoformat(timespec="seconds"), "sources": status, "events": merged}
+    if location:
+        document["location"] = location
+    return document
 
 
-def refresh(config, options, cache_path=None, output=None, publish_to=None, lock_path=None, fetcher=None):
+def refresh(config, options, cache_path=None, output=None, publish_to=None, lock_path=None, fetcher=None,
+            location_cache_path=None, location_providers=None):
     """Return an exit code: 0 all ok, 2 partial, 1 nothing refreshed / error."""
     cache_path = cache_path or os.path.join(DATA_DIR, "source-cache.json")
     output = output or os.path.join(DATA_DIR, "events.json")
@@ -110,7 +115,26 @@ def refresh(config, options, cache_path=None, output=None, publish_to=None, lock
         print(error, file=sys.stderr)
         return 1
     try:
+        location_cache_path = location_cache_path or os.path.join(os.path.dirname(os.path.abspath(cache_path)), "location-cache.json")
+        try:
+            location = resolve_location(config.get("location"), fetcher, location_cache_path, location_providers)
+        except LocationError as error:
+            print(f"Location error: {error}. Feed left unchanged.", file=sys.stderr)
+            return 1
+        selected, skipped = select_sources(config["sources"], location, sources.load)
+        for spec, reason in skipped:
+            print(f"[{spec['key']}] skipped: {reason}")
+        if not selected:
+            print(f"Coverage error: no enabled source covers {location['display_name']} "
+                  f"({location['radius_miles']:.0f} mi). Feed left unchanged; it is not replaced by results for another area.", file=sys.stderr)
+            return 1
+        selected_keys = {spec["key"] for spec, _ in selected}
+
         cache = _load_cache(cache_path, output)
+        place_key = f"{location['latitude']:.4f},{location['longitude']:.4f},{location['radius_miles']:.0f}"
+        if cache.get("_location_key", place_key) != place_key:
+            cache = {}  # cached events belong to another area: never carry them into this one
+        cache["_location_key"] = place_key
         now = now_pacific()
         stamp = now.isoformat(timespec="seconds")
         succeeded = failed = 0
@@ -118,12 +142,14 @@ def refresh(config, options, cache_path=None, output=None, publish_to=None, lock
             succeeded = 1
         for spec in config["sources"]:
             key = spec["key"]
-            if options.get("offline") or not spec.get("enabled", True) or (only and key not in only):
+            if options.get("offline") or key not in selected_keys or (only and key not in only):
                 continue
             adapter = sources.load(key)
             entry = cache.setdefault(key, {"events": []})
             entry["last_attempt_at"] = stamp
-            kwargs = {k: v for k, v in spec.items() if k not in ("key", "enabled")}
+            kwargs = {k: v for k, v in spec.items() if k not in ("key", "enabled", "coverage")}
+            if (getattr(adapter, "COVERAGE", None) or spec.get("coverage") or {}).get("kind") == "searchable":
+                kwargs["location"] = location
             try:
                 found, notes = adapter.discover(fetcher, entry.get("events", []), details=not options.get("no_details"),
                                                 limit=options.get("limit"), **kwargs)
@@ -142,7 +168,7 @@ def refresh(config, options, cache_path=None, output=None, publish_to=None, lock
             print("No source refreshed; feed and cache left untouched.", file=sys.stderr)
             return 1
 
-        document = build_document(config, cache, now)
+        document = build_document(config, cache, now, keys=[k for k in (s['key'] for s in config['sources']) if k in selected_keys], location=location)
         try:
             validate_feed(document)
         except FeedError as error:

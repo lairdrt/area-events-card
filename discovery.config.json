@@ -1,4 +1,5 @@
 {
+  "location": { "query": "San Diego, CA", "radius_miles": 25 },
   "retention_days": 3,
   "verification": {
     "min_independent_publishers": 2

@@ -16,6 +16,7 @@ from ..core import FetchError, clock_range, finish_event, html_to_text, localize
 KEY = "sandiego_gov"
 NAME = "City of San Diego"
 PUBLISHER = "sandiego.gov"
+COVERAGE = {"kind": "regional", "region": "City of San Diego, CA", "latitude": 32.7157, "longitude": -117.1611, "radius_miles": 20}
 LISTING_URL = "https://www.sandiego.gov/events"
 MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December"
 DATE_LINE = re.compile(rf"^\w+, ({MONTHS}) (\d{{1,2}}), (\d{{4}}),\s*(.+)$")

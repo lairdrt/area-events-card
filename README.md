@@ -118,6 +118,22 @@ python -m unittest discover -s tests -t .
 
 Exit code 0 = all sources refreshed, 2 = some failed (their previous events are kept), 1 = nothing refreshed or publishing failed (feed unchanged). `data/events.json` and `data/source-cache.json` are generated and not stored in Git.
 
+### Location and source coverage
+
+`discovery.config.json` has a `location` block (the default is San Diego, 25 miles, resolved without any network call). Use exactly one of:
+
+```json
+"location": { "query": "San Diego, CA", "radius_miles": 25 }
+"location": { "zip": "92101", "country": "US", "radius_miles": 25 }
+"location": { "latitude": 32.7157, "longitude": -117.1611, "name": "Downtown", "radius_miles": 25 }
+```
+
+It is normalized to `{display_name, latitude, longitude, radius_miles, timezone, country, region, source}` and written to the feed as `location`. City queries use OpenStreetMap Nominatim and ZIP codes use Zippopotam.us (both free, no API key, behind an interchangeable provider interface in `discovery/location.py`; set `"provider"` to choose). Nominatim's policy is followed: identifying User-Agent, at most one request per second, and results cached in `location-cache.json` (next to the source cache; reused for 180 days and also when a later lookup fails), so hourly refreshes do not geocode again. Geocoded data (c) OpenStreetMap contributors (ODbL). The timezone comes from the US state; give `timezone` explicitly with coordinates for other places.
+
+Each source adapter declares `COVERAGE`: `regional` (a center and radius; runs only when that circle overlaps the requested area), `searchable` (can search any place and receives `location=`) or `configured` (a user-supplied source, always runs; the default if undeclared). A source entry in the config may carry its own `coverage` block. The four built-in sources are regional to San Diego County (the city source: the city), so the default configuration is unchanged, and any other city or ZIP runs none of them.
+
+Errors never fall back to San Diego: an unresolvable location, or one that no enabled source covers, logs a clear error, exits 1 and leaves the last valid feed untouched. Cached source events are discarded when the location changes, so they cannot leak into another area's feed. Limitation: the radius selects sources; it does not filter individual events by distance, and no sources exist yet outside San Diego.
+
 ### Merging and verification
 
 Candidates are chosen cheaply: records are sorted by start time and only records from different sources starting within 30 minutes of each other are compared. A pair is the same event only when titles agree (ignoring punctuation, curly quotes, years, ordinals and words like "annual"; one title may be the other plus a lineup or tour name) **and** there is evidence beyond the title:

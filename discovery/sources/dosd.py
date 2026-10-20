@@ -17,6 +17,7 @@ from ..core import FetchError, clock_range, finish_event, localize_pacific, make
 KEY = "dosd"
 NAME = "DoSD"
 PUBLISHER = "dosd.com"
+COVERAGE = {"kind": "regional", "region": "San Diego County, CA", "latitude": 32.7157, "longitude": -117.1611, "radius_miles": 45}
 BASE = "https://dosd.com"
 
 

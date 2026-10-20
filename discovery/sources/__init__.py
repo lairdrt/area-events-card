@@ -1,6 +1,9 @@
 """Source adapters. To add one, create a module here that provides:
 
     KEY, NAME, PUBLISHER
+    COVERAGE   {"kind": "regional", "region", "latitude", "longitude", "radius_miles"},
+               {"kind": "searchable"} (can search any location; receives location=) or
+               {"kind": "configured"} (user-supplied; the default when omitted)
     discover(fetcher, previous, details=True, limit=None, **options) -> (events, notes)
 
 then register it in MODULES and list its key in discovery.config.json.

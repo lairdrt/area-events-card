@@ -17,6 +17,7 @@ from ..core import TIMEZONE_NAME, html_to_text, parse_compact_utc, to_pacific
 KEY = "kpbs"
 NAME = "KPBS"
 PUBLISHER = "kpbs.org"
+COVERAGE = {"kind": "regional", "region": "San Diego County, CA", "latitude": 32.7157, "longitude": -117.1611, "radius_miles": 45}
 LISTING_URL = "https://www.kpbs.org/events/all"
 PROMO_SPLIT = '<ps-promo class="EventPromoC"'
 MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December"
