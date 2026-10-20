@@ -11,6 +11,11 @@ $HaWwwDirectory = Join-Path $HaConfigShare "www\$CardDirectoryName"
 $DestinationFile = Join-Path $HaWwwDirectory "area-events-card.js"
 $LoaderDestinationFile = Join-Path $HaWwwDirectory "loader.js"
 
+# Optional event feed produced by `python -m discovery`; served at
+# /local/area-events-card/events.json and fetched by the card with no-store.
+$FeedSourceFile = Join-Path $PSScriptRoot "data\events.json"
+$FeedDestinationFile = Join-Path $HaWwwDirectory "events.json"
+
 # Guard against an edit above pointing this script at another card's
 # directory (e.g. www\yardian-card), whose loader.js it would overwrite.
 if ((Split-Path -Leaf $HaWwwDirectory) -ne $CardDirectoryName) {
@@ -117,6 +122,9 @@ try {
     $DeployedBytes = $Utf8NoBom.GetBytes($DeployedContent)
     [System.IO.File]::WriteAllBytes($DestinationFile, $DeployedBytes)
     Copy-Item -LiteralPath $LoaderSourceFile -Destination $LoaderDestinationFile -Force -ErrorAction Stop
+    if (Test-Path -LiteralPath $FeedSourceFile -PathType Leaf) {
+        Copy-Item -LiteralPath $FeedSourceFile -Destination $FeedDestinationFile -Force -ErrorAction Stop
+    }
 }
 catch {
     Write-Error "Failed to deploy area events card files: $($_.Exception.Message)"
@@ -164,6 +172,17 @@ $ExpectedBuildLine = 'const AREA_EVENTS_CARD_BUILD = "' + $BuildIdentifier + '";
 if (-not $DestinationContent.Contains($ExpectedBuildLine)) {
     Write-Error "Build identifier verification failed. Expected to find: $ExpectedBuildLine"
     exit 1
+}
+
+if (Test-Path -LiteralPath $FeedSourceFile -PathType Leaf) {
+    if ((Get-Item -LiteralPath $FeedSourceFile).Length -ne (Get-Item -LiteralPath $FeedDestinationFile).Length) {
+        Write-Error "Feed file size verification failed: $FeedDestinationFile"
+        exit 1
+    }
+    Write-Host "Deployed event feed: $FeedDestinationFile"
+}
+else {
+    Write-Host "No data\events.json found; event feed not deployed (run: python -m discovery)."
 }
 
 Write-Host "Deployment succeeded with build identifier: $BuildIdentifier"

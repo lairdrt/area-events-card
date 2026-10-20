@@ -13,6 +13,7 @@ Registers as `custom:area-events-card`.
 | `title`  | Optional header text. |
 | `entity` | Entity whose `events` attribute is a list of events. |
 | `events` | Inline list of events (takes precedence over `entity`). |
+| `feed`   | URL of a JSON feed (`/local/area-events-card/events.json`). |
 | `demo`   | If `true`, shows a "demonstration data" banner. |
 
 Event fields: `title`, `start` (ISO 8601), `location`, `category`, `image` (URL, optional), `verified` (boolean).
@@ -52,6 +53,28 @@ Deploy (build, stamp, copy, verify):
 The script builds the card, replaces the placeholder, writes `area-events-card.js` and `loader.js` to `Z:\www\area-events-card\`, and verifies file sizes and that the build identifier is present in the deployed file. After deploying, reload the dashboard page and confirm the footer shows the identifier the script printed. The resource itself never needs to change.
 
 Testing: confirm the demo banner, three event tiles, placeholder images, verified/unverified indicators and the build identifier in the footer. Check a light and a dark theme and a narrow (phone) width.
+
+### Showing real events
+
+The card can read the feed produced by the discovery tool, so no event data is embedded in the card:
+
+1. `python -m discovery` (updates `data/events.json`).
+2. `.\deploy.ps1` (also copies `data\events.json` to `Z:\www\area-events-card\events.json`).
+3. Use [examples/kpbs-feed-card.yaml](examples/kpbs-feed-card.yaml):
+
+```yaml
+type: custom:area-events-card
+title: San Diego Events
+feed: /local/area-events-card/events.json
+```
+
+To switch from the demo card, replace the demo YAML (`demo: true` plus inline `events:`) with the YAML above. Demo mode is only active when a card has `demo: true` with its own inline `events`; the feed card never shows demo events.
+
+Behavior: the feed is fetched on load and every 30 minutes with a unique query string and `cache: no-store`. Past events are hidden. If the feed cannot be loaded the card shows an error; if a later refresh fails it keeps showing the last data with a "stale" notice. The footer shows the build identifier and when the feed was generated. Events show image, date, venue/address, a description excerpt, category and a source link. Discovery events show **Source corroborated** (the source's own signals agree; hover for the evidence) or **Unverified**. **Verified** appears only for events whose `verified` is `true`, which nothing in the discovery tool sets.
+
+The `feed` option accepts either `{ "events": [...] }` (discovery format) or a bare list. Events in the discovery format (`venue`, `address`, `categories`, `image_url`, `description`, `url`, `source`, `verification`) are also accepted in `events:` and `entity` attributes.
+
+Checks: `npm test` (card behavior with a DOM stub) and `python -m unittest discover -s tests -t .`.
 
 ## Event discovery proof of concept (Python, standard library only)
 
