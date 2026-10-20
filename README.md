@@ -15,6 +15,7 @@ Registers as `custom:area-events-card`.
 | `events` | Inline list of events (takes precedence over `entity`). |
 | `feed`   | URL of a JSON feed (`/local/area-events-card/events.json`). |
 | `id`     | Optional short name (letters, digits, `-`, `_`) that keeps this card's saved filters separate from other cards with identical settings on the same dashboard. |
+| `area`   | Optional `{name, latitude, longitude, radius_miles, timezone}` for this card (see Choosing the area). |
 | `demo`   | If `true`, shows a "demonstration data" banner. |
 
 Event fields: `title`, `start` (ISO 8601), `location`, `category`, `image` (URL, optional), `verified` (boolean).
@@ -84,6 +85,26 @@ The sticky header shows the card title, **Updated <date time> (<age>)** taken fr
 
 Use **New category** to add your own with comma-separated keywords (with none, the category name itself is the keyword); custom categories can be edited and deleted. Choices are saved per card: in your Home Assistant user data (so they follow you across devices, as the NVR Card does) with the browser's local storage as a cache and fallback. The saved key combines the dashboard path with the card's `id`, or else a hash of its title, feed and entity. Give cards that are otherwise identical on one dashboard different `id` values, or they will share filters.
 
+### Choosing the area (Home Assistant home / browser location)
+
+Open **Filters** to see the **Area** panel. The card decides which area applies in this order:
+
+1. an area **you chose in the card** ("Use Home Assistant home" or "Use my location"), saved per card (HA user data with a local cache, isolated by dashboard and card `id`, like the filters);
+2. an `area` in the card configuration;
+3. the **Home Assistant home location** (`hass.config`: latitude, longitude, time zone), read live. It is never hardcoded or copied into settings, and it is the home you configured in Home Assistant, not where you are now. A missing, zero or out-of-range home location counts as unavailable;
+4. otherwise the panel says no location is available and offers the choices above.
+
+**Browser location** is requested only when you click "Use my location", never on page load, and only if the browser supports it. Denial, timeout, an unusable position or an insecure (non-https, non-localhost) page produce a message and save nothing; no coordinates are substituted. A granted position is saved for that card only, with its reported accuracy and the browser's own time zone.
+
+**What this does and does not do.** The area chosen in the card is for the card. **It does not change what the discovery service searches**, and the card says so. The service runs on a server and cannot read Home Assistant's or a browser's location, and it deliberately has no endpoint that accepts one (that would let anyone on the network redirect discovery). There is **no automatic, authenticated channel from a card or Home Assistant to the discovery service yet**; building one (for example an authenticated Home Assistant integration) is future work. Today the supported route is manual: the panel shows the discovery area the feed was produced for, whether your area is inside it, and the command to hand a location to the server:
+
+```
+python -m discovery.hint --source home_assistant --latitude 30.2672 --longitude -97.7431 --timezone America/Chicago   # Home Assistant home
+python -m discovery.hint --source browser --latitude 51.5072 --longitude -0.1276 --accuracy-m 40                      # browser location
+```
+
+(In Docker: `docker compose exec discovery python -m discovery.hint --data-dir /data ...`.) The service resolves its own area by priority: an explicit `location` in `discovery.config.json`, then the Home Assistant hint, then the browser hint, otherwise it stops with "no location available" and keeps the last feed. Remove `location` from the configuration to let a hint take effect (hints use `default_radius_miles`, default 25). The hint lives in the data directory as `location-hint.json`, changing it starts a clean area (cached events are never mixed between areas), and the feed's `location.basis` says which rule applied (`configured`, `home_assistant` or `browser`).
+
 ## Event discovery (Python, standard library only)
 
 `discovery/` collects public San Diego events from several free sources, merges duplicates, and writes `data/events.json` (the feed the card reads). It is separate from the card and from the future Home Assistant integration. No API keys, accounts, AI or browser automation.
@@ -130,7 +151,7 @@ Nothing about a place is built into the code. `discovery.config.json` holds the 
 "location": { "latitude": 32.7157, "longitude": -117.1611, "name": "San Diego, CA", "country": "US", "region": "CA", "timezone": "America/Los_Angeles", "radius_miles": 25 }
 ```
 
-Coordinates need no geocoding. Names use OpenStreetMap Nominatim and ZIP codes use Zippopotam.us (free, no key, interchangeable providers in `discovery/location.py`; the identifying User-Agent, one request per second and on-disk caching required by Nominatim's policy are followed; (c) OpenStreetMap contributors, ODbL). Results are cached in `location-cache.json` for 180 days (and reused if a later lookup fails). A timezone is used only if configured or looked up from the coordinates (timeapi.io, cached); it is never inferred from a country or state, and without one event times keep the UTC offsets their sources give. A missing, invalid or unresolvable location is a clear error and the previous feed is kept.
+Coordinates need no geocoding. Names use OpenStreetMap Nominatim and ZIP codes use Zippopotam.us (free, no key, interchangeable providers in `discovery/location.py`; the identifying User-Agent, one request per second and on-disk caching required by Nominatim's policy are followed; (c) OpenStreetMap contributors, ODbL). Results are cached in `location-cache.json` for 180 days (and reused if a later lookup fails). A timezone is used only if configured or looked up from the coordinates (timeapi.io, cached); it is never inferred from a country or state, and without one event times keep the UTC offsets their sources give. A missing, invalid or unresolvable location is a clear error and the previous feed is kept (`location` may be left out when a Home Assistant or browser location hint exists; see Choosing the area).
 
 **Source registry (`sources`)**: one entry per source.
 

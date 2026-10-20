@@ -2,7 +2,7 @@
 
 Each entry of the configuration's `sources` list describes one source:
 
-    {"id": "kpbs", "name": "KPBS Events", "adapter": "kpbs", "url": "https://www.kpbs.org/events/all",
+    {"id": "kpbs", "name": "KPBS Events", "description": "Public media community calendar", "adapter": "kpbs", "url": "https://www.kpbs.org/events/all",
      "enabled": true, "publisher": "kpbs.org",
      "coverage": {"type": "area", "latitude": 32.7157, "longitude": -117.1611, "radius_miles": 45, "name": "San Diego County"},
      "options": {"days": 3}}
@@ -29,8 +29,9 @@ class RegistryError(ValueError):
 
 
 class Source:
-    def __init__(self, id, name, adapter, url, publisher, enabled, coverage, options, module):
+    def __init__(self, id, name, adapter, url, publisher, enabled, coverage, options, module, description=""):
         self.id, self.name, self.adapter, self.url, self.publisher = id, name, adapter, url, publisher
+        self.description = description
         self.enabled, self.coverage, self.options, self.module = enabled, coverage, options, module
 
     @property
@@ -105,7 +106,10 @@ def load_sources(config):
         if not isinstance(name, str) or not name.strip():
             raise RegistryError(f"{where}: name must be a non-empty string")
         publisher = raw.get("publisher") or _publisher(url)
-        sources.append(Source(source_id, name.strip(), kind, url, publisher, enabled, _coverage(raw.get("coverage"), where), options, module))
+        description = raw.get("description", "")
+        if not isinstance(description, str):
+            raise RegistryError(f"{where}: description must be a string")
+        sources.append(Source(source_id, name.strip(), kind, url, publisher, enabled, _coverage(raw.get("coverage"), where), options, module, description))
     return sources
 
 

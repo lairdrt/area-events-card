@@ -97,6 +97,12 @@ const STYLES = `
   .editor .error { color: var(--error-color, var(--primary-text-color)); font-size: 0.8125rem; }
   .editor .actions { display: flex; gap: 6px; }
   .no-match { padding: 12px 4px; color: var(--secondary-text-color); }
+  .area { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--divider-color); font-size: 0.875rem; }
+  .area-line { color: var(--primary-text-color); overflow-wrap: anywhere; }
+  .area-detail, .area-note { color: var(--secondary-text-color); font-size: 0.8125rem; overflow-wrap: anywhere; }
+  .area-message { color: var(--primary-text-color); font-weight: min(var(--ha-font-weight-medium, 500), 600); overflow-wrap: anywhere; }
+  .area-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .hint-command { font-family: var(--code-font-family, monospace); font-size: 0.8125rem; color: var(--secondary-text-color); overflow-wrap: anywhere; user-select: all; }
 
   .grid {
     display: grid; gap: 8px;
@@ -245,7 +251,92 @@ function normalizePrefs(raw) {
   }
   const known = new Set([...DEFAULT_CATEGORIES, ...custom].map((c) => c.id));
   const selected = (Array.isArray(raw.selected) ? raw.selected : []).filter((id) => typeof id === "string" && known.has(id));
-  return { v: 1, selected: [...new Set(selected)], custom };
+  const prefs = { v: 1, selected: [...new Set(selected)], custom };
+  const area = normalizeArea(raw.area);
+  if (area && area.kind !== "configured") prefs.area = area;
+  return prefs;
+}
+
+/*
+ * Area (where the user is interested in events). Resolution order, highest first:
+ *   1. an area the user chose in the card (saved per card instance): "Home Assistant home" or "my location"
+ *   2. an `area` set in the card configuration
+ *   3. the Home Assistant home location (hass.config), read live and never hardcoded or persisted
+ *   4. unavailable: the card says so and offers the choices above
+ * The browser location is requested ONLY from a click on "Use my location", never on load. An area chosen
+ * here is for this card; it does not change what the discovery service searches (see the area panel text).
+ */
+const TIMEZONE_NAME = /^(UTC|[A-Za-z]+(\/[A-Za-z0-9_+-]+)+)$/;
+const GEO_TIMEOUT_MS = 10000;
+const GEO_MAX_AGE_MS = 10 * 60 * 1000;
+
+function validCoordinates(latitude, longitude) {
+  return Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180 &&
+    !(latitude === 0 && longitude === 0);
+}
+
+/** Home Assistant's configured home location, or undefined when it is missing or invalid. */
+function haHomeArea(hass) {
+  const config = hass && hass.config;
+  if (!config || typeof config.latitude !== "number" || typeof config.longitude !== "number") return undefined;
+  if (!validCoordinates(config.latitude, config.longitude)) return undefined;
+  return {
+    source: "home_assistant", latitude: config.latitude, longitude: config.longitude,
+    name: (typeof config.location_name === "string" && config.location_name.trim()) || "Home Assistant home",
+    timezone: typeof config.time_zone === "string" && TIMEZONE_NAME.test(config.time_zone) ? config.time_zone : undefined,
+  };
+}
+
+/** Validate a saved or configured area; returns a clean object or undefined. */
+function normalizeArea(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  if (raw.kind === "ha_home") return { kind: "ha_home" };
+  const latitude = Number(raw.latitude);
+  const longitude = Number(raw.longitude);
+  if (raw.latitude === null || raw.longitude === null || raw.latitude === "" || raw.longitude === "" || !validCoordinates(latitude, longitude)) return undefined;
+  const area = { kind: raw.kind === "browser" ? "browser" : "configured", latitude, longitude };
+  if (typeof raw.name === "string" && raw.name.trim()) area.name = raw.name.trim().slice(0, 60);
+  if (typeof raw.timezone === "string" && TIMEZONE_NAME.test(raw.timezone)) area.timezone = raw.timezone;
+  if (Number.isFinite(raw.radius_miles) && raw.radius_miles > 0 && raw.radius_miles <= 250) area.radius_miles = raw.radius_miles;
+  if (Number.isFinite(raw.accuracy_m) && raw.accuracy_m >= 0) area.accuracy_m = raw.accuracy_m;
+  if (typeof raw.saved_at === "string") area.saved_at = raw.saved_at.slice(0, 40);
+  return area;
+}
+
+/** Decide which area applies. `saved` and `configured` come from normalizeArea. */
+function resolveArea({ saved, configured, hass }) {
+  const home = haHomeArea(hass);
+  if (saved && saved.kind === "ha_home") {
+    if (home) return { source: "selected_home_assistant", area: home };
+  } else if (saved) {
+    return { source: "selected_browser", area: { source: "browser", name: saved.name || "Browser location", ...saved } };
+  }
+  if (configured) return { source: "configured", area: { source: "configured", name: configured.name || "Configured area", ...configured } };
+  if (home) return { source: "home_assistant", area: home };
+  return { source: "unavailable", reason: saved && saved.kind === "ha_home" ? "The Home Assistant home location is not set." : "No location is available." };
+}
+
+function milesBetween(a, b) {
+  const rad = (d) => (d * Math.PI) / 180;
+  const h = Math.sin(rad(b.latitude - a.latitude) / 2) ** 2 +
+    Math.cos(rad(a.latitude)) * Math.cos(rad(b.latitude)) * Math.sin(rad(b.longitude - a.longitude) / 2) ** 2;
+  return 2 * 3958.8 * Math.asin(Math.sqrt(h));
+}
+
+function geolocationProblem(error) {
+  switch (error && error.code) {
+    case 1: return "Location permission was denied. Allow it for this site in the browser, or use the Home Assistant home location. (Browsers only offer location on https pages or localhost.)";
+    case 2: return "The browser could not determine a position.";
+    case 3: return "Finding your location took too long.";
+    default: return "Your location could not be read.";
+  }
+}
+
+function backendHintCommand(area) {
+  const source = area.source === "browser" ? "browser" : "home_assistant";
+  const accuracy = source === "browser" && Number.isFinite(area.accuracy_m) ? ` --accuracy-m ${Math.round(area.accuracy_m)}` : "";
+  const zone = area.timezone ? ` --timezone ${area.timezone}` : "";
+  return `python -m discovery.hint --source ${source} --latitude ${area.latitude.toFixed(5)} --longitude ${area.longitude.toFixed(5)}${zone}${accuracy}`;
 }
 
 function hashString(text) {
@@ -294,6 +385,9 @@ class AreaEventsCard extends HTMLElement {
     if (!config || (!config.entity && !config.feed && !Array.isArray(config.events))) {
       throw new Error("Define 'feed', 'entity' or 'events'.");
     }
+    if (config.area !== undefined && !normalizeArea({ kind: "configured", ...config.area })) {
+      throw new Error("'area' needs valid latitude and longitude (and optionally name, radius_miles, timezone).");
+    }
     this._config = config;
     this._feed = undefined;
     this._feedError = undefined;
@@ -337,7 +431,7 @@ class AreaEventsCard extends HTMLElement {
   }
 
   static get _internals() {
-    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES };
+    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, haHomeArea, normalizeArea, resolveArea, backendHintCommand, milesBetween };
   }
 
   // --- preferences ------------------------------------------------------------
@@ -430,6 +524,7 @@ class AreaEventsCard extends HTMLElement {
         events,
         generatedAt: Array.isArray(data) ? undefined : data.generated_at,
         sources: Array.isArray(data) ? undefined : data.sources,
+        location: Array.isArray(data) ? undefined : data.location,
       };
     } catch (caught) {
       error = caught.message || String(caught);
@@ -642,6 +737,123 @@ class AreaEventsCard extends HTMLElement {
     return button;
   }
 
+  // --- area ----------------------------------------------------------------------
+
+  _area() {
+    const configured = this._config.area ? normalizeArea({ kind: "configured", ...this._config.area }) : undefined;
+    return resolveArea({ saved: this._prefs.area, configured, hass: this._hass });
+  }
+
+  _chooseHomeAssistant() {
+    this._geoRequest = (this._geoRequest || 0) + 1; // a browser answer still pending no longer applies
+    this._geoMessage = undefined;
+    this._setPrefs({ ...this._prefs, area: { kind: "ha_home" } });
+  }
+
+  _clearArea() {
+    this._geoRequest = (this._geoRequest || 0) + 1;
+    this._geoMessage = undefined;
+    const { area, ...rest } = this._prefs;
+    this._setPrefs(rest);
+  }
+
+  /** Only ever called from a click: the browser's permission prompt must follow an explicit user action. */
+  _useMyLocation() {
+    const geolocation = globalThis.navigator && globalThis.navigator.geolocation;
+    if (!geolocation || typeof geolocation.getCurrentPosition !== "function") {
+      this._geoMessage = "This browser does not support location.";
+      this._renderFilterUI();
+      return;
+    }
+    const request = (this._geoRequest = (this._geoRequest || 0) + 1);
+    this._geoMessage = "Waiting for the browser's location permission...";
+    this._renderFilterUI();
+    const finish = (message) => {
+      if (request !== this._geoRequest) return;
+      this._geoMessage = message;
+      this._renderFilterUI();
+    };
+    try {
+      geolocation.getCurrentPosition(
+        (position) => {
+          const coords = position && position.coords;
+          if (!coords || !validCoordinates(coords.latitude, coords.longitude)) return finish("The browser returned an unusable position.");
+          let timezone;
+          try {
+            timezone = Intl.DateTimeFormat().resolvedOptions().timeZone; // this browser's own timezone setting
+          } catch {
+            timezone = undefined;
+          }
+          if (request !== this._geoRequest) return;
+          this._geoMessage = undefined;
+          this._setPrefs({
+            ...this._prefs,
+            area: { kind: "browser", latitude: coords.latitude, longitude: coords.longitude, accuracy_m: coords.accuracy, timezone, saved_at: new Date().toISOString() },
+          });
+        },
+        (error) => finish(geolocationProblem(error)),
+        { enableHighAccuracy: false, timeout: GEO_TIMEOUT_MS, maximumAge: GEO_MAX_AGE_MS },
+      );
+    } catch {
+      finish("Your location could not be read.");
+    }
+  }
+
+  _renderAreaPanel() {
+    const panel = this._el("div", "area");
+    const resolved = this._area();
+    const labels = {
+      selected_home_assistant: "Home Assistant home location (selected)", selected_browser: "your browser location (saved for this card)",
+      configured: "set in the card configuration", home_assistant: "Home Assistant home location",
+    };
+    const line = (text, className = "area-line") => panel.append(this._el("div", className, text));
+
+    if (resolved.area) {
+      const area = resolved.area;
+      line(`Area: ${area.name} - ${labels[resolved.source]}`);
+      line(`${area.latitude.toFixed(4)}, ${area.longitude.toFixed(4)}${area.timezone ? ` - ${area.timezone}` : ""}${Number.isFinite(area.accuracy_m) ? ` - accurate to about ${Math.round(area.accuracy_m)} m` : ""}`, "area-detail");
+    } else {
+      line(`${resolved.reason} Use the Home Assistant home location, or choose "Use my location" (the browser will ask permission).`);
+    }
+
+    const discovered = this._feed && this._feed.location;
+    if (discovered && validCoordinates(Number(discovered.latitude), Number(discovered.longitude))) {
+      line(`Events were discovered for: ${discovered.display_name || "an unnamed area"}, ${Math.round(discovered.radius_miles || 0)} mi radius`, "area-line");
+      if (resolved.area) {
+        const miles = milesBetween(resolved.area, { latitude: Number(discovered.latitude), longitude: Number(discovered.longitude) });
+        line(miles > (discovered.radius_miles || 0)
+          ? `Your area is ${Math.round(miles)} mi from the discovery area, so these events may not be near you.`
+          : "Your area is inside the discovery area.", "area-line");
+      }
+    } else if (this._config.feed) {
+      line("This feed does not say which area its events were discovered for.");
+    }
+    line("Choosing an area here only changes this card. The discovery service searches the area in its own configuration (or a location hint recorded on the server); nothing here is sent to it.", "area-note");
+
+    const buttons = this._el("div", "area-actions");
+    const home = haHomeArea(this._hass);
+    if (home) {
+      const useHome = this._button("Use Home Assistant home", () => this._chooseHomeAssistant(), Boolean(this._prefs.area && this._prefs.area.kind === "ha_home"));
+      useHome.className = "use-home";
+      buttons.append(useHome);
+    }
+    const mine = this._button("Use my location", () => this._useMyLocation());
+    mine.className = "use-mine";
+    buttons.append(mine);
+    if (this._prefs.area) {
+      const clear = this._button("Clear selection", () => this._clearArea());
+      clear.className = "clear-area";
+      buttons.append(clear);
+    }
+    panel.append(buttons);
+    if (this._geoMessage) line(this._geoMessage, "area-message");
+    if (resolved.area && resolved.source !== "unavailable") {
+      line("To make the discovery service use this area, run on the server:", "area-note");
+      line(backendHintCommand(resolved.area), "hint-command");
+    }
+    return panel;
+  }
+
   _renderFilterUI() {
     const host = this._els.filters;
     host.replaceChildren();
@@ -663,6 +875,7 @@ class AreaEventsCard extends HTMLElement {
     bar.append(all, toggle, this._el("span", "filter-summary", selected.size ? `Showing: ${names.join(", ")}` : "Showing all categories"));
     host.append(bar);
     if (!this._filterOpen) return;
+    host.append(this._renderAreaPanel());
 
     const chips = this._el("div", "chips");
     const allChip = this._button(`${selected.size ? "" : "✓ "}All`, () => this._setPrefs({ ...this._prefs, selected: [] }), selected.size === 0);

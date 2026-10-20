@@ -226,6 +226,7 @@ def _timezone_for(spec, latitude, longitude, fetcher, cache_path, now):
 
 def _finish(spec, place, source, timezone_name, timezone_source):
     return {
+        "basis": spec.get("basis", "configured"),
         "display_name": spec["name"] or place["display_name"],
         "latitude": round(place["latitude"], 5), "longitude": round(place["longitude"], 5),
         "radius_miles": spec["radius_miles"],
@@ -260,6 +261,79 @@ def resolve_location(raw, fetcher=None, cache_path=None, providers=None, now=tim
         raise LocationError(f"location '{label}' resolved to country {place['country']}, but {spec['country']} is configured")
     zone, zone_source = _timezone_for(spec, place["latitude"], place["longitude"], fetcher, cache_path, now)
     return _finish(spec, place, how if how != "lookup" else f"geocoded:{name}", zone, zone_source)
+
+
+# --- where the area comes from: configuration, then Home Assistant, then the browser ----------------------------
+
+HINT_FILE = "location-hint.json"
+HINT_SOURCES = ("home_assistant", "browser")  # priority order after an explicit configuration
+HINT_LABELS = {"home_assistant": "Home Assistant home location", "browser": "Browser location"}
+
+
+def read_hints(path):
+    """Read the optional location hint file. Returns (valid hints by source, problems).
+
+    The hint file is the backend's only input for a location that came from Home Assistant or a browser.
+    Nothing remote writes it: an operator (or a future authenticated bridge) does, for example with
+    `python -m discovery.hint`. Malformed entries are ignored and reported, never repaired.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except FileNotFoundError:
+        return {}, []
+    except (OSError, ValueError) as error:
+        return {}, [f"location hint file is unreadable: {error}"]
+    hints, problems = {}, []
+    for source in HINT_SOURCES:
+        entry = raw.get(source) if isinstance(raw, dict) else None
+        if entry is None:
+            continue
+        try:
+            spec = parse_spec({k: entry.get(k) for k in ("latitude", "longitude", "timezone") if entry.get(k) is not None})
+            if spec["kind"] != "coordinates" or (spec["latitude"] == 0 and spec["longitude"] == 0):
+                raise LocationError("needs real latitude and longitude")
+        except (LocationError, AttributeError) as error:
+            problems.append(f"{HINT_LABELS[source]} hint ignored: {error}")
+            continue
+        name = entry.get("display_name")
+        hints[source] = {"latitude": spec["latitude"], "longitude": spec["longitude"], "timezone": spec["timezone"],
+                         "name": name if isinstance(name, str) and name.strip() else None,
+                         "accuracy_m": entry.get("accuracy_m"), "received_at": entry.get("received_at")}
+    return hints, problems
+
+
+def resolve_area(config, hint_path=None, fetcher=None, cache_path=None, providers=None, now=time.time):
+    """The discovery area, by priority:
+
+      1. an explicit `location` in the configuration
+      2. the Home Assistant home location from the hint file
+      3. a browser location from the hint file
+      4. otherwise LocationError asking for configuration
+
+    Hint locations use `default_radius_miles` from the configuration (default 25). The result's `basis` says
+    which rule applied. A hint records where Home Assistant or a browser said a place was; it is never
+    treated as the user's current physical position.
+    """
+    if config.get("location") is not None:
+        return resolve_location(config["location"], fetcher, cache_path, providers, now)
+    hints, problems = read_hints(hint_path) if hint_path else ({}, [])
+    for source in HINT_SOURCES:
+        hint = hints.get(source)
+        if not hint:
+            continue
+        raw = {"latitude": hint["latitude"], "longitude": hint["longitude"], "name": hint["name"] or HINT_LABELS[source],
+               "radius_miles": config.get("default_radius_miles", DEFAULT_RADIUS_MILES), "timezone": hint["timezone"]}
+        spec = parse_spec({k: v for k, v in raw.items() if v is not None})
+        spec["basis"] = source
+        place = {"display_name": f"{hint['latitude']:.4f}, {hint['longitude']:.4f}", "latitude": hint["latitude"], "longitude": hint["longitude"]}
+        zone, zone_source = _timezone_for(spec, spec["latitude"], spec["longitude"], fetcher, cache_path, now)
+        location = _finish(spec, place, f"hint:{source}", zone, zone_source)
+        location.update(received_at=hint["received_at"], accuracy_m=hint["accuracy_m"])
+        return location
+    detail = ("; " + "; ".join(problems)) if problems else ""
+    raise LocationError("no location available: set 'location' in the configuration, or provide a Home Assistant or browser "
+                        f"location hint (python -m discovery.hint){detail}")
 
 
 def distance_miles(lat1, lon1, lat2, lon2):

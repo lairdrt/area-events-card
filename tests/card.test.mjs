@@ -396,3 +396,171 @@ test("inline events show a header without a fabricated update time", async () =>
   assert.match(header, /1 event$/);
   assert.doesNotMatch(header, /Updated/);
 });
+
+
+// --- area: configured / Home Assistant home / browser location -------------------------------
+
+const { haHomeArea, normalizeArea, resolveArea, backendHintCommand } = CardClass._internals;
+const HOME = { latitude: 30.2672, longitude: -97.7431, time_zone: "America/Chicago", location_name: "Home" };
+const hassWith = (config) => ({ states: {}, config });
+const SAN_DIEGO_FEED_LOCATION = { display_name: "San Diego, CA", latitude: 32.7157, longitude: -117.1611, radius_miles: 25 };
+const openArea = (root) => { openFilters(root); return text(byClass(root, "area")[0]); };
+
+function geolocationSpy(behavior) {
+  const spy = { calls: 0, options: undefined, getCurrentPosition(success, failure, options) { spy.calls++; spy.options = options; behavior(success, failure); } };
+  Object.defineProperty(globalThis, "navigator", { value: { geolocation: spy }, configurable: true, writable: true });
+  return spy;
+}
+const noGeolocation = () => Object.defineProperty(globalThis, "navigator", { value: {}, configurable: true, writable: true });
+
+test("area priority: chosen in the card, then card configuration, then Home Assistant home, then unavailable", () => {
+  const hass = hassWith(HOME);
+  const configured = normalizeArea({ kind: "configured", name: "Office", latitude: 40.7, longitude: -74.0 });
+  const browser = normalizeArea({ kind: "browser", latitude: 51.5, longitude: -0.12 });
+  assert.equal(resolveArea({ saved: browser, configured, hass }).source, "selected_browser");
+  assert.equal(resolveArea({ saved: { kind: "ha_home" }, configured, hass }).source, "selected_home_assistant");
+  assert.equal(resolveArea({ configured, hass }).source, "configured");
+  const home = resolveArea({ hass });
+  assert.deepEqual([home.source, home.area.latitude, home.area.timezone], ["home_assistant", HOME.latitude, "America/Chicago"]);
+  assert.equal(resolveArea({ hass: hassWith({}) }).source, "unavailable");
+  assert.equal(resolveArea({ saved: { kind: "ha_home" }, hass: hassWith({}) }).source, "unavailable"); // chosen home, but HA has none
+});
+
+test("a missing or invalid Home Assistant location is treated as unavailable, never guessed", () => {
+  const bad = [undefined, {}, { latitude: 0, longitude: 0 }, { latitude: "30", longitude: "-97" }, { latitude: NaN, longitude: 1 },
+    { latitude: 91, longitude: 0 }, { latitude: 30, longitude: 181 }, { latitude: null, longitude: null }];
+  for (const config of bad) assert.equal(haHomeArea(hassWith(config)), undefined, JSON.stringify(config));
+  assert.equal(haHomeArea(undefined), undefined);
+  assert.equal(haHomeArea(hassWith({ latitude: 30, longitude: -97, time_zone: "Central" })).timezone, undefined); // no timezone is made up
+});
+
+test("without any location the panel says so and offers choices; the browser is not asked on load", async () => {
+  const spy = geolocationSpy(() => {});
+  const card = await make({ feed: "/f.json" }, { hass: hassWith({}) });
+  const out = openArea(card.shadowRoot);
+  assert.match(out, /No location is available/);
+  assert.equal(byClass(card.shadowRoot, "use-home").length, 0); // HA has no home location to offer
+  assert.equal(byClass(card.shadowRoot, "use-mine").length, 1);
+  assert.equal(spy.calls, 0);
+});
+
+test("the Home Assistant home location is used when nothing else is set, and is not stored", async () => {
+  const spy = geolocationSpy(() => {});
+  const card = await make({ feed: "/f.json" }, { hass: hassWith(HOME) });
+  const out = openArea(card.shadowRoot);
+  assert.match(out, /Area: Home - Home Assistant home location/);
+  assert.match(out, /America\/Chicago/);
+  assert.equal(spy.calls, 0);
+  assert.equal(window.localStorage.getItem(card._prefsKey), null); // read live from hass, never saved
+});
+
+test("choosing Home Assistant home saves a reference, not coordinates, and follows hass", async () => {
+  const hass = hassWith(HOME);
+  const card = await make({ feed: "/f.json" }, { hass });
+  openFilters(card.shadowRoot);
+  click(byClass(card.shadowRoot, "use-home")[0]);
+  assert.deepEqual(JSON.parse(window.localStorage.getItem(card._prefsKey)).area, { kind: "ha_home" });
+  hass.config = { ...HOME, latitude: 48.8566, longitude: 2.3522, location_name: "Paris", time_zone: "Europe/Paris" };
+  card.hass = hass;
+  card._renderFilterUI();
+  assert.match(text(byClass(card.shadowRoot, "area")[0]), /Area: Paris - Home Assistant home location \(selected\)/);
+});
+
+test("browser location is requested only by clicking, then saved for this card", async () => {
+  const spy = geolocationSpy((ok) => ok({ coords: { latitude: 51.5072, longitude: -0.1276, accuracy: 42.4 } }));
+  const card = await make({ feed: "/f.json" }, { hass: hassWith(HOME) });
+  openFilters(card.shadowRoot);
+  assert.equal(spy.calls, 0);
+  click(byClass(card.shadowRoot, "use-mine")[0]);
+  assert.equal(spy.calls, 1);
+  assert.equal(spy.options.timeout, 10000);
+  const saved = JSON.parse(window.localStorage.getItem(card._prefsKey)).area;
+  assert.deepEqual([saved.kind, saved.latitude, saved.longitude, saved.accuracy_m], ["browser", 51.5072, -0.1276, 42.4]);
+  const out = text(byClass(card.shadowRoot, "area")[0]);
+  assert.match(out, /Area: Browser location - your browser location \(saved for this card\)/);
+  assert.match(out, /accurate to about 42 m/);
+  const fresh = await make({ feed: "/f.json" }, { hass: hassWith(HOME) });
+  assert.match(openArea(fresh.shadowRoot), /Browser location/); // restored later, without asking the browser again
+  assert.equal(spy.calls, 1);
+});
+
+test("denied, timed-out, unavailable, unusable and unsupported browser locations save nothing", async () => {
+  const cases = [
+    [(ok, fail) => fail({ code: 1 }), /permission was denied/],
+    [(ok, fail) => fail({ code: 3 }), /took too long/],
+    [(ok, fail) => fail({ code: 2 }), /could not determine/],
+    [(ok, fail) => fail({}), /could not be read/],
+    [(ok) => ok({ coords: { latitude: 0, longitude: 0, accuracy: 1 } }), /unusable position/],
+    [(ok) => ok({ coords: { latitude: 200, longitude: 0 } }), /unusable position/],
+    [() => { throw new Error("blocked"); }, /could not be read/],
+  ];
+  for (const [behavior, expected] of cases) {
+    geolocationSpy(behavior);
+    const card = await make({ feed: "/f.json" }, { hass: hassWith({}) });
+    openFilters(card.shadowRoot);
+    click(byClass(card.shadowRoot, "use-mine")[0]);
+    assert.match(text(byClass(card.shadowRoot, "area-message")[0]), expected);
+    assert.equal(window.localStorage.getItem(card._prefsKey), null);
+    assert.match(text(byClass(card.shadowRoot, "area")[0]), /No location is available/); // nothing substituted
+  }
+  noGeolocation();
+  const card = await make({ feed: "/f.json" }, { hass: hassWith({}) });
+  openFilters(card.shadowRoot);
+  click(byClass(card.shadowRoot, "use-mine")[0]);
+  assert.match(text(byClass(card.shadowRoot, "area-message")[0]), /does not support location/);
+});
+
+test("a pending browser request that is superseded does not overwrite the newer choice", async () => {
+  let respond;
+  geolocationSpy((ok) => { respond = ok; });
+  const card = await make({ feed: "/f.json" }, { hass: hassWith(HOME) });
+  openFilters(card.shadowRoot);
+  click(byClass(card.shadowRoot, "use-mine")[0]);
+  click(byClass(card.shadowRoot, "use-home")[0]); // the user changed their mind before the browser answered
+  respond({ coords: { latitude: 51.5, longitude: -0.12, accuracy: 10 } });
+  assert.equal(JSON.parse(window.localStorage.getItem(card._prefsKey)).area.kind, "ha_home");
+});
+
+test("area choices are isolated per card instance and can be cleared", async () => {
+  geolocationSpy((ok) => ok({ coords: { latitude: 51.5, longitude: -0.12, accuracy: 10 } }));
+  const a = await make({ feed: "/f.json", title: "A" }, { hass: hassWith({}) });
+  openFilters(a.shadowRoot);
+  click(byClass(a.shadowRoot, "use-mine")[0]);
+  const b = await make({ feed: "/f.json", title: "B" }, { hass: hassWith({}) });
+  assert.match(openArea(b.shadowRoot), /No location is available/);
+  click(byClass(a.shadowRoot, "clear-area")[0]);
+  assert.equal(JSON.parse(window.localStorage.getItem(a._prefsKey)).area, undefined);
+  assert.match(text(byClass(a.shadowRoot, "area")[0]), /No location is available/);
+});
+
+test("an area in the card configuration is used and validated", async () => {
+  const card = await make({ feed: "/f.json", area: { name: "Office", latitude: 40.7, longitude: -74.0, radius_miles: 10, timezone: "America/New_York" } }, { hass: hassWith(HOME) });
+  assert.match(openArea(card.shadowRoot), /Area: Office - set in the card configuration/);
+  for (const area of [{ latitude: 100, longitude: 0 }, { latitude: 1 }, { latitude: 0, longitude: 0 }, "x"]) {
+    assert.throws(() => new CardClass().setConfig({ feed: "/f.json", area }), /'area' needs valid latitude and longitude/);
+  }
+});
+
+test("the card never claims the chosen area reaches the discovery service", async () => {
+  const feed = makeFeed({ location: SAN_DIEGO_FEED_LOCATION });
+  const near = await make({ feed: "/f.json", area: { latitude: 32.8, longitude: -117.1 } }, { feed });
+  const nearText = openArea(near.shadowRoot);
+  assert.match(nearText, /Events were discovered for: San Diego, CA, 25 mi radius/);
+  assert.match(nearText, /inside the discovery area/);
+  assert.match(nearText, /nothing here is sent to it/);
+  const far = await make({ feed: "/f.json", area: { name: "Austin", latitude: 30.2672, longitude: -97.7431 } }, { feed });
+  assert.match(openArea(far.shadowRoot), /Your area is \d+ mi from the discovery area, so these events may not be near you/);
+  assert.match(text(byClass(far.shadowRoot, "hint-command")[0]), /^python -m discovery.hint --source home_assistant --latitude 30.26720 --longitude -97.74310/);
+  const unlabeled = await make({ feed: "/f.json", area: { latitude: 30.27, longitude: -97.74 } });
+  assert.match(openArea(unlabeled.shadowRoot), /does not say which area/);
+});
+
+test("backend hint command and stored areas are validated", () => {
+  assert.equal(backendHintCommand({ source: "browser", latitude: 51.5, longitude: -0.12, accuracy_m: 41.6, timezone: "Europe/London" }),
+    "python -m discovery.hint --source browser --latitude 51.50000 --longitude -0.12000 --timezone Europe/London --accuracy-m 42");
+  assert.deepEqual(normalizePrefs({ selected: [], custom: [], area: { kind: "ha_home" } }).area, { kind: "ha_home" });
+  assert.equal(normalizePrefs({ selected: [], custom: [], area: { kind: "browser", latitude: 0, longitude: 0 } }).area, undefined);
+  assert.equal(normalizePrefs({ selected: [], custom: [], area: { kind: "configured", latitude: 1, longitude: 2 } }).area, undefined); // configuration is not stored
+  assert.equal(normalizeArea({ kind: "browser", latitude: null, longitude: 5 }), undefined);
+  assert.equal(normalizeArea({ kind: "browser", latitude: "", longitude: 5 }), undefined);
+});
