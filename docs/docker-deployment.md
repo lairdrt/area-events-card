@@ -136,3 +136,16 @@ Data in the volume is kept across updates and restarts.
 | Other services | Frigate (separate Compose project) remained healthy |
 
 These figures were reported from the live deployment. Later versions should be compared against this record, and `git checkout area-events-cubi-runtime-accepted-2026-10-20` returns to the accepted code.
+
+### Deployment record: evidence-based deduplication (commit `7aacd4f`), 2026-10-20
+
+| | |
+|---|---|
+| Deployed commit | `7aacd4f` (replaces `44d6b65`) |
+| Method | `git archive` + scp, `docker compose build && docker compose up -d` in `~/area-events` (only the `area-events` container was recreated) |
+| `/health` | `ok`; refresh exit code 0 in 125 s (cached details reused) |
+| Sources | KPBS 29, San Diego Reader 106, DoSD 57, City of San Diego 40, none failing |
+| Feed | 207 merged events (matches the 207-event offline baseline), 24 Verified, 24 cross-source groups (1 with three sources), 162 with images |
+| Dedup check | Ocean Beach Restaurant Walk is one event with KPBS, Reader and DoSD URLs, retrieval times and `match_reasons`; every event keeps per-source URL and retrieval time |
+| Frigate | `frigate` stayed `Up 5 weeks (healthy)`; its project was not touched |
+| Rollback | image `area-events:previous` (the `44d6b65` build) and a data backup at `~/area-events-backups/area-events-data-20261020-121000.tgz` on the Cubi; `AREA_EVENTS_TAG=previous docker compose up -d --no-build` restores the old image, and the `area-events_data` volume was never removed |
