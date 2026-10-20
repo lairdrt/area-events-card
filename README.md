@@ -120,7 +120,13 @@ Exit code 0 = all sources refreshed, 2 = some failed (their previous events are 
 
 ### Merging and verification
 
-Records are the same event only if they come from **different sources**, start at the **same minute**, have **matching titles** (one title may be the other plus a lineup, tour name or year) **and** a matching venue or street address. A missing venue never matches. Same-source records never merge, so separate showtimes stay separate. Each merged event keeps every contributing source in `sources` (publisher, URL, retrieval time, evidence, missing fields).
+Candidates are chosen cheaply: records are sorted by start time and only records from different sources starting within 30 minutes of each other are compared. A pair is the same event only when titles agree (ignoring punctuation, curly quotes, years, ordinals and words like "annual"; one title may be the other plus a lineup or tour name) **and** there is evidence beyond the title:
+
+- the venue or street address agrees (venue names may differ in wording); or
+- the descriptions largely repeat each other (60% of the shorter one's content words), which lets a multi-location event match even though listings give different venues; or
+- the end times are identical and one listing names the other's venue/area (for example "Ocean Beach" in the title).
+
+Start times must be equal, or within 30 minutes for door time vs show time when the venue agrees and neither source lists separate showtimes of that title (or when the end time is identical plus venue or description evidence). Generic titles ("Live Music", "Farmers Market") need the venue to agree. Same-source records never merge, a group never contains two records of one source, and every matched pair is recorded in `verification.match_reasons`. Merged events keep the longest description, the first available image (all image URLs in `images`), every source with its URL, retrieval time, evidence and its own start time, description or image when they differ, and all distinct `locations` when venues differ.
 
 `verified` is `true` only when at least `min_independent_publishers` (default 2) *different publishers* agree on title, start and venue and nothing conflicts; several pages from one publisher count once. Otherwise `verification.status` is `corroborated` (the one source's own signals agree) or `unverified`. Limitation: two publishers can still repeat the same upstream listing (for example a venue's own calendar), so "Verified" means independent publishers agree, not that the organizer was contacted.
 
