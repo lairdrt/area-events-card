@@ -36,8 +36,8 @@ This uses the same mechanism as the sibling `temperature-card` project: a small 
 One-time setup:
 
 1. Map the Home Assistant `config` share (Samba) as drive `Z:`, or edit `$HaConfigShare` at the top of [deploy.ps1](deploy.ps1).
-2. Create the folder `www\area-events-card` on the share. The script deliberately does not create it.
-3. Run the deploy once (below), then add the dashboard resource: **Settings > Dashboards > ⋮ > Resources > Add resource** (turn on Advanced Mode in your user profile if missing).
+2. Run `.\deploy.ps1` (below). It creates `www\area-events-card` on the share if `www` exists.
+3. Add the dashboard resource: **Settings > Dashboards > ⋮ > Resources > Add resource** (turn on Advanced Mode in your user profile if missing).
    - URL: `/local/area-events-card/loader.js`
    - Type: **JavaScript module**
    - Register only `loader.js`, never `area-events-card.js`.
@@ -46,7 +46,7 @@ One-time setup:
 Deploy (build, stamp, copy, verify):
 
 ```
-npm run deploy
+.\deploy.ps1
 ```
 
 The script builds the card, replaces the placeholder, writes `area-events-card.js` and `loader.js` to `Z:\www\area-events-card\`, and verifies file sizes and that the build identifier is present in the deployed file. After deploying, reload the dashboard page and confirm the footer shows the identifier the script printed. The resource itself never needs to change.

@@ -23,7 +23,7 @@ Write-Host "HA destination: $DestinationFile"
 Write-Host "Loader source: $LoaderSourceFile"
 Write-Host "Loader destination: $LoaderDestinationFile"
 
-# The deployable module is compiled from TypeScript, so build it first.
+# Build the deployable module first.
 # Output is only shown if the build fails.
 Push-Location -LiteralPath $PSScriptRoot
 try { $BuildOutput = & npm run build 2>&1 }
@@ -49,11 +49,17 @@ if (-not (Test-Path -LiteralPath $HaConfigShare -PathType Container)) {
     exit 1
 }
 
-# Deliberately not created here: making this directory is the one-time,
-# conscious step that enables deployment.
-if (-not (Test-Path -LiteralPath $HaWwwDirectory -PathType Container)) {
-    Write-Error "Home Assistant www directory does not exist: $HaWwwDirectory"
+# Only the card directory itself is created, and only when the www
+# directory already exists (so a wrong share or drive is never populated).
+$HaWwwParent = Split-Path -Parent $HaWwwDirectory
+if (-not (Test-Path -LiteralPath $HaWwwParent -PathType Container)) {
+    Write-Error "Home Assistant www directory does not exist: $HaWwwParent"
     exit 1
+}
+
+if (-not (Test-Path -LiteralPath $HaWwwDirectory -PathType Container)) {
+    Write-Host "Creating card directory: $HaWwwDirectory"
+    New-Item -ItemType Directory -Path $HaWwwDirectory -ErrorAction Stop | Out-Null
 }
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
