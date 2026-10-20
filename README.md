@@ -14,6 +14,7 @@ Registers as `custom:area-events-card`.
 | `entity` | Entity whose `events` attribute is a list of events. |
 | `events` | Inline list of events (takes precedence over `entity`). |
 | `feed`   | URL of a JSON feed (`/local/area-events-card/events.json`). |
+| `id`     | Optional short name (letters, digits, `-`, `_`) that keeps this card's saved filters separate from other cards with identical settings on the same dashboard. |
 | `demo`   | If `true`, shows a "demonstration data" banner. |
 
 Event fields: `title`, `start` (ISO 8601), `location`, `category`, `image` (URL, optional), `verified` (boolean).
@@ -74,6 +75,14 @@ Behavior: the feed is fetched on load and every 30 minutes with a unique query s
 The `feed` option accepts either `{ "events": [...] }` (discovery format) or a bare list. Events in the discovery format (`venue`, `address`, `categories`, `image_url`, `description`, `url`, `source`, `verification`) are also accepted in `events:` and `entity` attributes.
 
 Checks: `npm test` (card behavior with a DOM stub) and `python -m unittest discover -s tests -t .`.
+
+### Header and category filters
+
+The sticky header shows the card title, **Updated <date time> (<age>)** taken from the feed's own `generated_at` (never the time the page loaded), the event count (`12 of 227 events` while filtered) and, when the feed lists them, the number of sources. A **Stale** badge appears when the feed is more than 3 hours old, **N sources failing** when sources report errors, and **Update failed** if the latest download failed (the last good data stays visible). No future refresh time is shown because the feed does not provide one. The header sticks while the card scrolls with the page; the card does not add a scroll area of its own.
+
+**Filters** sit under the header. Open **Filters** to choose any number of categories (Music, Festivals, Food & Drink, Arts, Sports, Science, Technology, Family, Community, Outdoors, Education, History, Theater, Comedy, Markets, Other). The default is all events. An event belongs to every category whose keywords appear (as whole words) in its title, description or source-provided categories; **Other** holds events that match none. Filtering happens in the browser: no new requests, and the event tiles and images are not rebuilt.
+
+Use **New category** to add your own with comma-separated keywords (with none, the category name itself is the keyword); custom categories can be edited and deleted. Choices are saved per card: in your Home Assistant user data (so they follow you across devices, as the NVR Card does) with the browser's local storage as a cache and fallback. The saved key combines the dashboard path with the card's `id`, or else a hash of its title, feed and entity. Give cards that are otherwise identical on one dashboard different `id` values, or they will share filters.
 
 ## Event discovery (Python, standard library only)
 
