@@ -150,6 +150,6 @@ These figures were reported from the live deployment. Later versions should be c
 | Frigate | `frigate` stayed `Up 5 weeks (healthy)`; its project was not touched |
 | Rollback | image `area-events:previous` (the `44d6b65` build) and a data backup at `~/area-events-backups/area-events-data-20261020-121000.tgz` on the Cubi; `AREA_EVENTS_TAG=previous docker compose up -d --no-build` restores the old image, and the `area-events_data` volume was never removed |
 
-## Multi-area API (optional)
+## Location control (optional)
 
-Setting `AREA_EVENTS_API_KEY` in `.env` turns on the authenticated `/api/v1` area API; see [multi-area-deployment.md](multi-area-deployment.md). The volume layout gains `/data/areas.json`, `/data/geocode-cache.json` and `/data/areas/<id>/`; the default area's files are unchanged. Removing the key turns the API off again, and the previous image (`area-events:previous`) still works with the extended volume because it ignores those files.
+Setting `AREA_EVENTS_API_KEY` in `.env` turns on the authenticated `GET`/`PUT /api/v1/location` API that lets Home Assistant switch the one active location; see [location-control.md](location-control.md). The volume gains `active-location.json`, `location-change.json` and (while a change runs) `staging/`; the previous image (`area-events:previous`) ignores them. Removing the key turns the API off; delete `active-location.json` to return to the configured location.

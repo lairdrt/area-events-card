@@ -44,10 +44,6 @@ def title_key(title):
     return [w for w in _words(title, STOPWORDS) if not re.fullmatch(r"(19|20)\d\d|\d+(st|nd|rd|th)", w)]
 
 
-def normalize_title(title):
-    return " ".join(title_key(title))
-
-
 def is_generic(key):
     return not key or all(w in GENERIC_WORDS for w in key)
 
@@ -64,10 +60,6 @@ def title_relation(a, b):
     if smaller <= larger and (len(smaller) >= 2 or len(short_text) >= 8):
         return "contained"
     return None
-
-
-def titles_match(a, b):
-    return title_relation(a, b) is not None
 
 
 def _street_key(address):

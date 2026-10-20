@@ -16,8 +16,8 @@ Registers as `custom:area-events-card`.
 | `feed`   | URL of a JSON feed (`/local/area-events-card/events.json`). |
 | `id`     | Optional short name (letters, digits, `-`, `_`) that keeps this card's saved filters separate from other cards with identical settings on the same dashboard. |
 | `area`   | Optional `{name, latitude, longitude, radius_miles, timezone}` for this card (see Choosing the area). |
-| `source` | `service` for multi-area mode (events chosen per card from the discovery server through Home Assistant scripts). |
-| `script_prefix`, `country`, `radius_miles` | Multi-area mode only: script name prefix (default `area_events`), country for ZIP codes, default radius. |
+| `location_control` | If `true`, the Area panel can switch the discovery service's ONE active location through Home Assistant scripts (see [docs/location-control.md](docs/location-control.md)). |
+| `script_prefix`, `country`, `radius_miles` | With `location_control`: script name prefix (default `area_events`), country for ZIP codes, default radius. |
 | `demo`   | If `true`, shows a "demonstration data" banner. |
 
 Event fields: `title`, `start` (ISO 8601), `location`, `category`, `image` (URL, optional), `verified` (boolean).
@@ -87,10 +87,6 @@ The sticky header shows the card title, **Updated <date time> (<age>)** taken fr
 
 Use **New category** to add your own with comma-separated keywords (with none, the category name itself is the keyword); custom categories can be edited and deleted. Choices are saved per card: in your Home Assistant user data (so they follow you across devices, as the NVR Card does) with the browser's local storage as a cache and fallback. The saved key combines the dashboard path with the card's `id`, or else a hash of its title, feed and entity. Give cards that are otherwise identical on one dashboard different `id` values, or they will share filters.
 
-### Multi-area mode (a different place per card)
-
-With `source: service` a card asks the discovery server for the events of its own area (city, ZIP code, coordinates, the Home Assistant home location or your browser location, plus a radius) and remembers the choice per card, so a San Diego card and an Austin card work side by side. The server keeps a separate feed and cache per area, refreshes active areas hourly with bounded concurrency, and is managed through an authenticated API that Home Assistant calls with a key kept in `secrets.yaml`: the browser never contacts the server and holds no credential. Setup, configuration, security model, troubleshooting, rollback and what still needs a real Home Assistant to verify: [docs/multi-area-deployment.md](docs/multi-area-deployment.md). Home Assistant side: [homeassistant/area_events.example.yaml](homeassistant/area_events.example.yaml). Without an API key none of this exists and the server behaves as before.
-
 ### Choosing the area (Home Assistant home / browser location)
 
 Open **Filters** to see the **Area** panel. The card decides which area applies in this order:
@@ -100,16 +96,9 @@ Open **Filters** to see the **Area** panel. The card decides which area applies 
 3. the **Home Assistant home location** (`hass.config`: latitude, longitude, time zone), read live. It is never hardcoded or copied into settings, and it is the home you configured in Home Assistant, not where you are now. A missing, zero or out-of-range home location counts as unavailable;
 4. otherwise the panel says no location is available and offers the choices above.
 
-**Browser location** is requested only when you click "Use my location", never on page load, and only if the browser supports it. Denial, timeout, an unusable position or an insecure (non-https, non-localhost) page produce a message and save nothing; no coordinates are substituted. A granted position is saved for that card only, with its reported accuracy and the browser's own time zone.
+**Browser location** is requested only when you click "Use my location", never on page load, and only if the browser supports it. Denial, timeout, an unusable position or an insecure (non-https, non-localhost) page produce a message and save nothing; no coordinates are substituted.
 
-**What this does and does not do.** The area chosen in the card is for the card. **It does not change what the discovery service searches**, and the card says so. The service runs on a server and cannot read Home Assistant's or a browser's location, and it deliberately has no endpoint that accepts one (that would let anyone on the network redirect discovery). In the legacy (`feed:`) modes there is **no channel from a card to the discovery service**; the authenticated channel is multi-area mode (`source: service`, above). Today the supported route is manual: the panel shows the discovery area the feed was produced for, whether your area is inside it, and the command to hand a location to the server:
-
-```
-python -m discovery.hint --source home_assistant --latitude 30.2672 --longitude -97.7431 --timezone America/Chicago   # Home Assistant home
-python -m discovery.hint --source browser --latitude 51.5072 --longitude -0.1276 --accuracy-m 40                      # browser location
-```
-
-(In Docker: `docker compose exec discovery python -m discovery.hint --data-dir /data ...`.) The service resolves its own area by priority: an explicit `location` in `discovery.config.json`, then the Home Assistant hint, then the browser hint, otherwise it stops with "no location available" and keeps the last feed. Remove `location` from the configuration to let a hint take effect (hints use `default_radius_miles`, default 25). The hint lives in the data directory as `location-hint.json`, changing it starts a clean area (cached events are never mixed between areas), and the feed's `location.basis` says which rule applied (`configured`, `home_assistant` or `browser`).
+**Changing what the server discovers.** By default the area chosen in the card is for the card only, and the panel says so; the service searches the `location` in `discovery.config.json` (San Diego, until changed). With `location_control: true` the panel can also ask the service to switch its single active location, for example San Diego to Austin and back. The service validates the request, discovers the new place in a separate staging area while the old feed stays published, publishes only a complete successful result, and reports any failure without touching the old events. The card never contacts the service and holds no credential: it runs Home Assistant scripts that call the service's authenticated API. Setup, security, limits, rollback and what still needs a real Home Assistant to verify: [docs/location-control.md](docs/location-control.md).
 
 ## Event discovery (Python, standard library only)
 
@@ -157,7 +146,7 @@ Nothing about a place is built into the code. `discovery.config.json` holds the 
 "location": { "latitude": 32.7157, "longitude": -117.1611, "name": "San Diego, CA", "country": "US", "region": "CA", "timezone": "America/Los_Angeles", "radius_miles": 25 }
 ```
 
-Coordinates need no geocoding. Names use OpenStreetMap Nominatim and ZIP codes use Zippopotam.us (free, no key, interchangeable providers in `discovery/location.py`; the identifying User-Agent, one request per second and on-disk caching required by Nominatim's policy are followed; (c) OpenStreetMap contributors, ODbL). Results are cached in `location-cache.json` for 180 days (and reused if a later lookup fails). A timezone is used only if configured or looked up from the coordinates (timeapi.io, cached); it is never inferred from a country or state, and without one event times keep the UTC offsets their sources give. A missing, invalid or unresolvable location is a clear error and the previous feed is kept (`location` may be left out when a Home Assistant or browser location hint exists; see Choosing the area).
+Coordinates need no geocoding. Names use OpenStreetMap Nominatim and ZIP codes use Zippopotam.us (free, no key, interchangeable providers in `discovery/location.py`; the identifying User-Agent, one request per second and on-disk caching required by Nominatim's policy are followed; (c) OpenStreetMap contributors, ODbL). Results are cached in `location-cache.json` for 180 days (and reused if a later lookup fails). A timezone is used only if configured or looked up from the coordinates (timeapi.io, cached); it is never inferred from a country or state, and without one event times keep the UTC offsets their sources give. A missing, invalid or unresolvable location is a clear error and the previous feed is kept.
 
 **Source registry (`sources`)**: one entry per source.
 
@@ -187,10 +176,6 @@ python -m discovery --config examples/discovery.austin.json --data-dir data/aust
 ```
 
 Limitations: the only Austin source found is the UT Austin campus calendar (Do512 returns 403 to automated requests, which is respected), so the feed is mostly university events; the adapter reads at most 5 pages (500 events) per site.
-
-### Per-area storage
-
-`discovery/areas.py` gives every discovery area its own directory (feed, source caches, geocoding cache, status, lock, location hint). The reserved area `default` is the existing top-level data directory, so the files, the Docker volume and the `/events.json` and `/health` endpoints are exactly as before. Other areas live in `data/areas/<id>/`, where the id is `a_` plus 12 hex digits of the hash of the area's latitude and longitude (rounded to 4 decimals) and radius (1 decimal): the same place always gets the same directory, any other place gets a different one, and a directory records its place in `area.json` so it cannot be reused for another. Ids are validated before touching the filesystem. This is only the storage foundation: the service still refreshes just the default area, and nothing creates other areas yet (see [docs/multi-area-architecture.md](docs/multi-area-architecture.md)).
 
 ### Merging and verification
 

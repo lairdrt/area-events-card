@@ -95,14 +95,9 @@
       }
     }
   ],
-  "api": {
-    "max_areas": 8,
+  "control": {
     "max_radius_miles": 100,
-    "creations_per_hour": 10,
-    "geocodes_per_hour": 20,
-    "refresh_interval_seconds": 3600,
-    "manual_refresh_min_seconds": 900,
-    "pause_after_days": 7,
-    "delete_after_days": 30
+    "min_change_interval_seconds": 300,
+    "geocodes_per_hour": 20
   }
 }

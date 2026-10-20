@@ -159,7 +159,7 @@ def combine_places(records):
     entries = [(name, place) for name, place in records if place]
     if not entries:
         return None
-    best_name, best = max(entries, key=lambda e: (RANK[e[1]["classification"]], CONFIDENCE_RANK[e[1]["confidence"]]))
+    _, best = max(entries, key=lambda e: (RANK[e[1]["classification"]], CONFIDENCE_RANK[e[1]["confidence"]]))
     merged = dict(best, evidence=[f"[{name}] {line}" for name, place in entries for line in place["evidence"]]
                   if len(entries) > 1 else list(best["evidence"]))
     for field in ("venue", "address", "neighborhood", "city", "region", "country"):

@@ -5,7 +5,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from discovery import service as service_module
 from discovery.publish import write_atomic

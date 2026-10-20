@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from . import registry
 from .place import CityResolver, locate_events
 from .core import FetchError, Fetcher, load_events, save_events
-from .location import HINT_FILE, LocationError, PROVIDERS, resolve_area
+from .location import LocationError, PROVIDERS, resolve_location
 from .merge import merge_events
 from .publish import FeedError, publish_feed, validate_feed
 
@@ -123,8 +123,7 @@ def refresh(config, options, cache_path=None, output=None, publish_to=None, lock
             print(f"Configuration error: {error}. Feed left unchanged.", file=sys.stderr)
             return 1
         try:
-            location = resolve_area(config, os.path.join(os.path.dirname(os.path.abspath(cache_path)), HINT_FILE), fetcher,
-                                    location_cache_path, location_providers)
+            location = resolve_location(config.get("location"), fetcher, location_cache_path, location_providers)
         except LocationError as error:
             print(f"Location error: {error}. Feed left unchanged.", file=sys.stderr)
             return 1

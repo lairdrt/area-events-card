@@ -1,4 +1,3 @@
-import copy
 import json
 import os
 import tempfile
@@ -8,7 +7,7 @@ from unittest import mock
 from discovery import refresh as refresh_module
 from discovery import sources as sources_module
 from discovery.core import FetchError, make_event, finish_event
-from discovery.merge import merge_events, titles_match, venues_match
+from discovery.merge import merge_events, title_relation, venues_match
 from discovery.publish import FeedError, publish_feed, validate_feed
 
 from datetime import datetime, timedelta, timezone
@@ -48,8 +47,8 @@ class Deduplication(unittest.TestCase):
         self.assertFalse(venues_match({"venue": None}, {"venue": "Anywhere"}))
 
     def test_unrelated_titles_do_not_merge(self):
-        self.assertFalse(titles_match("Halloween Party", "Halloween Pub Crawl Night"))
-        self.assertTrue(titles_match("Jeff Ousley's Showcase", "Jeff Ousley’s Showcase"))
+        self.assertIsNone(title_relation("Halloween Party", "Halloween Pub Crawl Night"))
+        self.assertEqual(title_relation("Jeff Ousley's Showcase", "Jeff Ousley’s Showcase"), "identical")
 
 
 class Provenance(unittest.TestCase):

@@ -23,10 +23,9 @@ import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .api import MAX_BODY, PREFIX, load_api_keys, Api
-from .areamgr import AreaManager
-from .areas import DEFAULT_AREA, AreaStore, load_status, save_status
-from .publish import FeedError, validate_feed
+from .api import MAX_BODY, ROUTE, Api, load_api_keys
+from .locationctl import LocationController, effective_config
+from .publish import FeedError, validate_feed, write_atomic
 from .refresh import CONFIG_FILE, load_config, refresh
 
 log = logging.getLogger("area-events")
@@ -56,17 +55,15 @@ class _LogWriter:
 
 class Service:
     def __init__(self, data_dir, config_path=CONFIG_FILE, interval=3600, refresh_fn=refresh, clock=time.time, slot=None):
-        self.slot = slot or threading.Lock()  # shared with the area worker: one discovery job at a time
+        self.slot = slot or threading.Lock()  # shared with location changes: one discovery job at a time
         self.data_dir = data_dir
         self.config_path = config_path
         self.interval = interval
         self.refresh_fn = refresh_fn
         self.clock = clock
         self.started = clock()
-        # The service serves and refreshes the reserved `default` area: the same files, in the same place, as always.
-        self.area = AreaStore(data_dir).paths(DEFAULT_AREA)
-        self.feed_path = self.area.feed
-        self.status_path = self.area.status
+        self.feed_path = os.path.join(data_dir, "events.json")
+        self.status_path = os.path.join(data_dir, "status.json")
         self._run_lock = threading.Lock()
         self._feed_lock = threading.Lock()
         self._feed = None  # (mtime_ns, raw bytes, document) of the last valid feed
@@ -77,11 +74,15 @@ class Service:
     # --- persisted run status ------------------------------------------------
 
     def _load_status(self):
-        return load_status(self.area)
+        try:
+            with open(self.status_path, encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, ValueError):
+            return {}
 
     def _save_status(self):
         try:
-            save_status(self.area, self.status)
+            write_atomic(self.status_path, json.dumps(self.status, indent=2) + "\n")
         except OSError as error:
             log.error("could not save status: %s", error)
 
@@ -100,8 +101,10 @@ class Service:
             options = {"interval": 2.0}
             with self.slot, contextlib.redirect_stdout(_LogWriter(logging.INFO)), contextlib.redirect_stderr(_LogWriter(logging.WARNING)):
                 code = self.refresh_fn(
-                    load_config(self.config_path), options,
-                    output=self.area.feed, cache_path=self.area.source_cache, lock_path=self.area.lock,
+                    effective_config(load_config(self.config_path), self.data_dir), options,
+                    output=self.feed_path,
+                    cache_path=os.path.join(self.data_dir, "source-cache.json"),
+                    lock_path=os.path.join(self.data_dir, ".refresh.lock"),
                 )
         except Exception:  # config errors, unexpected adapter bugs: log and keep serving old data
             log.error("refresh crashed:\n%s", traceback.format_exc())
@@ -210,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         if cors:
-            self.send_header("Access-Control-Allow-Origin", "*")  # public read-only default feed; never sent by /api/v1
+            self.send_header("Access-Control-Allow-Origin", "*")  # public read-only feed; never sent by the API
         for name, value in (extra or {}).items():
             self.send_header(name, value)
         self.end_headers()
@@ -221,18 +224,18 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, (json.dumps(payload, indent=2) + "\n").encode())
 
     def _api(self):
-        """Hand an /api/v1 request to the authenticated API (which answers 404 when no key is configured)."""
+        """Hand a /api/v1/location request to the authenticated API (404 when no key is configured)."""
         api = getattr(self.server, "api", None)
         length = self.headers.get("Content-Length")
         body = b""
-        if self.command == "POST" and length:
+        if self.command == "PUT" and length:
             if not length.isdigit() or int(length) > MAX_BODY:
-                return self._send(413, b'{"error": {"code": "too_large", "message": "request body too large"}}\n', cors=False)
+                return self._send(413, b'{"error": {"code": "too_large", "message": "request body too large"}}' + b"\n", cors=False)
             body = self.rfile.read(int(length))
         elif self.headers.get("Transfer-Encoding"):
-            return self._send(411, b'{"error": {"code": "length_required", "message": "Content-Length is required"}}\n', cors=False)
+            return self._send(411, b'{"error": {"code": "length_required", "message": "Content-Length is required"}}' + b"\n", cors=False)
         if api is None:
-            return self._send(404, b'{"error": {"code": "not_found", "message": "not found"}}\n', cors=False)
+            return self._send(404, b'{"error": {"code": "not_found", "message": "not found"}}' + b"\n", cors=False)
         status, headers, payload = api.handle(self.command, self.path, self.headers, body, self.client_address[0])
         content_type = headers.pop("Content-Type", "application/json; charset=utf-8")
         self._send(status, payload, content_type, headers, cors=False)
@@ -240,7 +243,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         service = self.server.service
-        if path.startswith(PREFIX + "/") or path == PREFIX:
+        if path == ROUTE:
             return self._api()
         if path == "/events.json":
             feed = service.read_feed()
@@ -257,21 +260,18 @@ class Handler(BaseHTTPRequestHandler):
     do_HEAD = do_GET
 
     def do_OPTIONS(self):
-        if self.path.startswith(PREFIX):
-            return self._send(404, b'{"error": {"code": "not_found", "message": "not found"}}\n', cors=False)
+        if self.path.split("?", 1)[0] == ROUTE:
+            return self._send(404, b'{"error": {"code": "not_found", "message": "not found"}}' + b"\n", cors=False)
         self._send(204, b"", extra={"Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
                                     "Access-Control-Allow-Headers": "Cache-Control, Pragma, Content-Type"})
 
     def _not_allowed(self):
         self._json(405, {"error": "read-only service"})
 
-    def do_POST(self):
-        self._api() if self.path.split("?", 1)[0].startswith(PREFIX + "/") else self._not_allowed()
+    def do_PUT(self):
+        self._api() if self.path.split("?", 1)[0] == ROUTE else self._not_allowed()
 
-    def do_DELETE(self):
-        self._api() if self.path.split("?", 1)[0].startswith(PREFIX + "/") else self._not_allowed()
-
-    do_PUT = do_PATCH = _not_allowed
+    do_POST = do_DELETE = do_PATCH = _not_allowed
 
     def send_response(self, code, message=None):
         super().send_response(code, message)
@@ -311,20 +311,20 @@ def main():
                       max(MIN_INTERVAL, int(os.environ.get("AREA_EVENTS_INTERVAL_SECONDS", "3600"))))
     # One container owns this volume, so a lock left by a killed run is stale.
     with contextlib.suppress(OSError):
-        os.remove(AreaStore(data_dir).paths(DEFAULT_AREA).lock)
-    api, manager = None, None
+        os.remove(os.path.join(data_dir, ".refresh.lock"))
+    controller = api = None
     try:
         keys = load_api_keys()
     except ValueError as error:
         keys = []
-        log.error("management API disabled: %s", error)
+        log.error("location control disabled: %s", error)
     if keys:
-        limits = load_config(service.config_path).get("api", {})
-        manager = AreaManager(data_dir, lambda: load_config(service.config_path), limits=limits, slot=service.slot)
-        api = Api(manager, keys, service)
-        log.info("management API enabled (%d area(s) stored)", len(manager.areas))
+        controller = LocationController(data_dir, lambda: load_config(service.config_path), limits=load_config(service.config_path).get("control"),
+                                        slot=service.slot)
+        api = Api(controller, keys)
+        log.info("location control enabled")
     else:
-        log.info("management API disabled: no API key configured")
+        log.info("location control disabled: no API key configured")
     server = make_server(service, os.environ.get("AREA_EVENTS_HOST", "0.0.0.0"), int(os.environ.get("AREA_EVENTS_PORT", "8080")), api)
     stop = threading.Event()
 
@@ -335,8 +335,8 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
     threading.Thread(target=service.run_forever, args=(stop,), daemon=True).start()
-    if manager:
-        threading.Thread(target=manager.run_forever, args=(stop,), daemon=True).start()
+    if controller:
+        threading.Thread(target=controller.run_forever, args=(stop,), daemon=True).start()
     log.info("serving on %s:%s, refreshing every %ss, data in %s", *server.server_address[:2], service.interval, data_dir)
     server.serve_forever()
     log.info("stopped")

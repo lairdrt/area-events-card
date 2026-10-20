@@ -105,7 +105,6 @@ def discover(fetcher, previous, details=True, limit=None, days=14, max_pages=5, 
                 if instance.get("all_day"):
                     notes["all_day_skipped"] += 1
                     continue
-                start = datetime.fromisoformat(instance["start"])
                 if datetime.fromisoformat(instance["end"] if instance.get("end") else instance["start"]) < now:
                     notes["ended_skipped"] += 1
                     continue

@@ -101,9 +101,7 @@ const STYLES = `
   .area-line { color: var(--primary-text-color); overflow-wrap: anywhere; }
   .area-detail, .area-note { color: var(--secondary-text-color); font-size: 0.8125rem; overflow-wrap: anywhere; }
   .area-message { color: var(--primary-text-color); font-weight: min(var(--ha-font-weight-medium, 500), 600); overflow-wrap: anywhere; }
-  .area-name { color: var(--primary-text-color); }
   .area-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-  .hint-command { font-family: var(--code-font-family, monospace); font-size: 0.8125rem; color: var(--secondary-text-color); overflow-wrap: anywhere; user-select: all; }
 
   .grid {
     display: grid; gap: 8px;
@@ -255,8 +253,6 @@ function normalizePrefs(raw) {
   const prefs = { v: 1, selected: [...new Set(selected)], custom };
   const area = normalizeArea(raw.area);
   if (area && area.kind !== "configured") prefs.area = area;
-  const serviceArea = normalizeServiceArea(raw.service_area);
-  if (serviceArea) prefs.service_area = serviceArea;
   return prefs;
 }
 
@@ -335,28 +331,18 @@ function geolocationProblem(error) {
   }
 }
 
-function backendHintCommand(area) {
-  const source = area.source === "browser" ? "browser" : "home_assistant";
-  const accuracy = source === "browser" && Number.isFinite(area.accuracy_m) ? ` --accuracy-m ${Math.round(area.accuracy_m)}` : "";
-  const zone = area.timezone ? ` --timezone ${area.timezone}` : "";
-  return `python -m discovery.hint --source ${source} --latitude ${area.latitude.toFixed(5)} --longitude ${area.longitude.toFixed(5)}${zone}${accuracy}`;
-}
-
 /*
- * Service mode (`source: service`): events come from the discovery server through Home Assistant, one area per
- * card. The card never talks to the server and holds no credential: it runs Home Assistant scripts
- * (script.area_events_list / _ensure / _get / _feed / _refresh) with the signed-in user's own session, and those
- * scripts call the server's authenticated API (see homeassistant/area_events.example.yaml). The chosen area is
- * saved per card with the other preferences.
+ * Location control (`location_control: true`): the card can ask the discovery server to switch its ONE active
+ * location. It does so by running Home Assistant scripts (script.area_events_location / _set_location /
+ * _sync_now) with the signed-in user's own session; those scripts call the server's authenticated API with a key
+ * kept in secrets.yaml, so the card holds no credential and never contacts the server. The feed it shows stays
+ * the previous location's until the server has finished discovery for the new one.
  */
-const SERVICE_AREA_ID = /^(default|a_[0-9a-f]{12})$/;
-const SERVICE_POLL_MS = 15000;
-const SERVICE_REFRESH_MS = 5 * 60 * 1000;
-const SERVICE_MAX_WAIT_MS = 20 * 60 * 1000;
-const SPEC_KEYS = ["query", "zip", "country", "region", "timezone", "latitude", "longitude", "radius_miles"];
+const CONTROL_POLL_MS = 15000;
+const CONTROL_MAX_WAIT_MS = 20 * 60 * 1000;
 
 function roundCoordinate(value) {
-  return Math.round(value * 100) / 100; // about 1 km: all the precision an event search needs, and less to disclose
+  return Math.round(value * 100) / 100; // about 1 km: all the precision an event search needs
 }
 
 /** City, ZIP or "latitude, longitude" typed by the user -> a server request (or an error message). */
@@ -375,21 +361,6 @@ function parsePlace(text, country, radius) {
     return { spec: { zip: value, country, radius_miles: radius } };
   }
   return { spec: { query: value.slice(0, 100), ...(country ? { country } : {}), radius_miles: radius } };
-}
-
-/** The saved service area of a card: {id, name, spec} with a server-valid id. */
-function normalizeServiceArea(raw) {
-  if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || !SERVICE_AREA_ID.test(raw.id)) return undefined;
-  const area = { id: raw.id, name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim().slice(0, 60) : "Area" };
-  if (raw.spec && typeof raw.spec === "object" && !Array.isArray(raw.spec)) {
-    const spec = {};
-    for (const key of SPEC_KEYS) {
-      const value = raw.spec[key];
-      if ((typeof value === "string" && value.length <= 100) || (typeof value === "number" && Number.isFinite(value))) spec[key] = value;
-    }
-    area.spec = spec;
-  }
-  return area;
 }
 
 /** What a script call returned: {status, content}. Accepts the response directly or wrapped by a service/script key. */
@@ -459,8 +430,8 @@ const EMPTY_PREFS = () => ({ v: 1, selected: [], custom: [] });
 
 class AreaEventsCard extends HTMLElement {
   setConfig(config) {
-    if (!config || (!config.entity && !config.feed && !Array.isArray(config.events) && config.source !== "service")) {
-      throw new Error("Define 'feed', 'entity', 'events' or 'source: service'.");
+    if (!config || (!config.entity && !config.feed && !Array.isArray(config.events))) {
+      throw new Error("Define 'feed', 'entity' or 'events'.");
     }
     if (config.script_prefix !== undefined && !/^[a-z][a-z0-9_]{0,40}$/.test(String(config.script_prefix))) {
       throw new Error("'script_prefix' must be lowercase letters, digits and underscores.");
@@ -471,10 +442,8 @@ class AreaEventsCard extends HTMLElement {
     this._config = config;
     this._feed = undefined;
     this._feedError = undefined;
-    this._serviceRun = (this._serviceRun || 0) + 1;
-    clearTimeout(this._serviceTimer);
-    this._service = { phase: "idle" };
-    this._serviceStarted = false;
+    this._control = { run: (this._control ? this._control.run : 0) + 1 };
+    clearTimeout(this._controlTimer);
     this._filterOpen = false;
     this._editing = undefined;
     this._initPrefs();
@@ -482,7 +451,6 @@ class AreaEventsCard extends HTMLElement {
     this._render();
     if (this.isConnected) this._startFeed();
     this._loadRemotePrefs();
-    this._serviceStart();
   }
 
   connectedCallback() {
@@ -495,10 +463,9 @@ class AreaEventsCard extends HTMLElement {
   disconnectedCallback() {
     clearInterval(this._feedTimer);
     clearInterval(this._ageTimer);
-    clearTimeout(this._serviceTimer);
-    this._feedTimer = this._ageTimer = this._serviceTimer = undefined;
-    this._serviceRun = (this._serviceRun || 0) + 1; // answers still in flight are ignored
-    this._serviceStarted = false;
+    clearTimeout(this._controlTimer);
+    this._feedTimer = this._ageTimer = this._controlTimer = undefined;
+    if (this._control) this._control.run += 1; // answers still in flight are ignored
   }
 
   set hass(hass) {
@@ -508,7 +475,6 @@ class AreaEventsCard extends HTMLElement {
     // images are not reloaded on every state change. Themes need no re-render.
     if (first || (this._config && this._config.entity && !this._usesFeedOrInline())) this._render();
     this._loadRemotePrefs();
-    this._serviceStart();
   }
 
   getCardSize() {
@@ -520,8 +486,7 @@ class AreaEventsCard extends HTMLElement {
   }
 
   static get _internals() {
-    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, haHomeArea, normalizeArea, resolveArea, backendHintCommand, milesBetween,
-      parsePlace, extractServiceResponse, normalizeServiceArea, roundCoordinate };
+    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, haHomeArea, normalizeArea, resolveArea, milesBetween, parsePlace, extractServiceResponse, roundCoordinate };
   }
 
   // --- preferences ------------------------------------------------------------
@@ -545,7 +510,6 @@ class AreaEventsCard extends HTMLElement {
       .then(() => this._hass.callWS({ type: "frontend/get_user_data", key }))
       .then((response) => {
         if (generation !== this._prefsGeneration) return;
-        setTimeout(() => this._serviceStart(), 0);
         const value = response && typeof response === "object" && "value" in response ? response.value : response;
         const remote = value === null || value === undefined ? null : normalizePrefs(value);
         this._remoteState = "ready";
@@ -559,7 +523,6 @@ class AreaEventsCard extends HTMLElement {
       })
       .catch(() => {
         if (generation === this._prefsGeneration) this._remoteState = "failed"; // local storage only
-        setTimeout(() => this._serviceStart(), 0);
       });
   }
 
@@ -585,370 +548,14 @@ class AreaEventsCard extends HTMLElement {
   // --- feed ---------------------------------------------------------------------
 
   _usesFeedOrInline() {
-    return Array.isArray(this._config.events) || Boolean(this._config.feed) || this._isService();
+    return Array.isArray(this._config.events) || Boolean(this._config.feed);
   }
 
   _startFeed() {
-    if (this._isService()) {
-      this._serviceStart();
-      return;
-    }
     if (!this._config.feed || Array.isArray(this._config.events)) return;
     clearInterval(this._feedTimer);
     this._loadFeed();
     this._feedTimer = setInterval(() => this._loadFeed(), FEED_REFRESH_MS);
-  }
-
-  // --- service mode ----------------------------------------------------------------
-
-  _isService() {
-    return Boolean(this._config) && this._config.source === "service" && !Array.isArray(this._config.events);
-  }
-
-  _setService(patch, feedChanged = false) {
-    this._service = { ...this._service, ...patch };
-    if (feedChanged) {
-      this._render();
-      return;
-    }
-    this._updateNotice();
-    this._updateHeader();
-    if (this._tiles && this._tiles.length === 0) this._renderFilterUI();
-  }
-
-  async _serviceCall(name, data = {}) {
-    if (!this._hass || typeof this._hass.callWS !== "function") throw new Error("Home Assistant is not connected.");
-    const script = `${this._config.script_prefix || "area_events"}_${name}`;
-    let result;
-    try {
-      result = await this._hass.callWS({ type: "call_service", domain: "script", service: script, service_data: data, return_response: true });
-    } catch (error) {
-      throw new Error(`Home Assistant could not run script.${script} (${(error && error.message) || error}).`);
-    }
-    return extractServiceResponse(result);
-  }
-
-  async _serviceApi(name, data) {
-    const { status, content } = await this._serviceCall(name, data);
-    if (status >= 200 && status < 300) return { status, content };
-    const error = new Error(apiMessage(content, status));
-    error.status = status;
-    throw error;
-  }
-
-  _defaultCountry() {
-    const country = this._config.country || (this._hass && this._hass.config && this._hass.config.country);
-    return typeof country === "string" && /^[A-Za-z]{2}$/.test(country) ? country.toUpperCase() : undefined;
-  }
-
-  _defaultRadius() {
-    const radius = Number(this._config.radius_miles);
-    return Number.isFinite(radius) && radius >= 1 && radius <= 250 ? radius : 25;
-  }
-
-  /** Where a card with no saved choice starts: its configured area, else the Home Assistant home location. */
-  _serviceFallback() {
-    const configured = this._config.area ? normalizeArea({ kind: "configured", ...this._config.area }) : undefined;
-    if (configured) {
-      const { latitude, longitude, timezone } = configured;
-      return { name: configured.name || "Configured area", spec: { latitude, longitude, radius_miles: configured.radius_miles || this._defaultRadius(), ...(timezone ? { timezone } : {}) } };
-    }
-    const home = haHomeArea(this._hass);
-    if (home) {
-      return { name: home.name, spec: { latitude: roundCoordinate(home.latitude), longitude: roundCoordinate(home.longitude), radius_miles: this._defaultRadius(), ...(home.timezone ? { timezone: home.timezone } : {}) } };
-    }
-    return undefined;
-  }
-
-  _serviceStart() {
-    if (!this._isService() || !this._hass || this._serviceStarted) return;
-    if (typeof this._hass.callWS !== "function") {
-      this._setService({ phase: "error", message: "Home Assistant is not connected." });
-      return;
-    }
-    if (this._remoteState === "pending" || this._remoteState === "loading") return; // wait for the saved choice first
-    this._serviceStarted = true;
-    const run = ++this._serviceRun;
-    if (this._prefs.service_area) {
-      this._setService({ phase: "loading", message: "Loading events..." });
-      this._serviceLoad(run);
-      return;
-    }
-    const fallback = this._serviceFallback();
-    if (fallback) {
-      this._serviceSelect(fallback.spec, fallback.name);
-      return;
-    }
-    this._filterOpen = true;
-    this._setService({ phase: "nolocation", message: "No location is available. Open Filters > Area to choose a city, ZIP code or coordinates." });
-    this._renderFilterUI();
-  }
-
-  /** Ask the server for an area (creating it if needed), remember it for this card, then load its events. */
-  async _serviceSelect(spec, label) {
-    clearTimeout(this._serviceTimer);
-    const run = ++this._serviceRun;
-    this._serviceRecreated = false;
-    this._setService({ phase: "ensuring", message: "Asking the server to prepare this area...", formError: undefined });
-    try {
-      const { content } = await this._serviceApi("ensure", { spec: label ? { ...spec, name: label } : spec });
-      if (run !== this._serviceRun) return;
-      const choice = normalizeServiceArea({ id: content && content.id, name: (content && content.names && content.names[0]) || label, spec });
-      if (!choice) throw new Error("The server returned an unusable area.");
-      this._feed = undefined;
-      this._setPrefs({ ...this._prefs, service_area: choice });
-      this._setService({ phase: "loading", message: "Loading events...", areaStatus: content.status }, true);
-      await this._serviceLoad(run);
-    } catch (error) {
-      if (run !== this._serviceRun) return;
-      this._feedError = error.message;
-      this._setService({ phase: "error", message: error.message, formError: error.message }, true);
-    }
-  }
-
-  async _serviceLoad(run) {
-    const area = this._prefs.service_area;
-    if (!area || run !== this._serviceRun) return;
-    clearTimeout(this._serviceTimer);
-    const again = (ms) => {
-      this._serviceTimer = setTimeout(() => this._serviceLoad(run), ms);
-    };
-    try {
-      const { status, content } = await this._serviceCall("feed", { area_id: area.id });
-      if (run !== this._serviceRun) return;
-      if (status === 200 && content && Array.isArray(content.events)) {
-        await this._serviceGotFeed(content, area, run);
-        again(SERVICE_REFRESH_MS);
-        return;
-      }
-      if (status === 404 && area.spec && !this._serviceRecreated) {
-        this._serviceRecreated = true; // the server forgot this area (expired or reset): rebuild it from the saved choice
-        await this._serviceSelect(area.spec, area.name);
-        return;
-      }
-      if (status === 503) {
-        await this._serviceWait(area, run, again);
-        return;
-      }
-      throw new Error(apiMessage(content, status));
-    } catch (error) {
-      if (run !== this._serviceRun) return;
-      this._feedError = error.message;
-      this._setService({ phase: "error", message: error.message }, true);
-      again(SERVICE_REFRESH_MS);
-    }
-  }
-
-  async _serviceWait(area, run, again) {
-    this._serviceWaitStarted = this._serviceWaitStarted || Date.now();
-    let status;
-    try {
-      status = (await this._serviceApi("get", { area_id: area.id })).content.status;
-    } catch {
-      status = undefined;
-    }
-    if (run !== this._serviceRun) return;
-    if (status && status.state === "failed") {
-      this._feedError = status.last_error || "Discovery failed for this area.";
-      this._setService({ phase: "error", message: this._feedError, areaStatus: status }, true);
-      again(SERVICE_REFRESH_MS);
-      return;
-    }
-    if (Date.now() - this._serviceWaitStarted > SERVICE_MAX_WAIT_MS) {
-      this._feedError = "Discovery is taking much longer than expected.";
-      this._setService({ phase: "error", message: this._feedError, areaStatus: status }, true);
-      again(SERVICE_REFRESH_MS);
-      return;
-    }
-    const running = status && status.state === "running";
-    this._setService({ phase: "waiting", message: running ? "Discovering events for this area..." : "Waiting for the server to start discovery for this area...", areaStatus: status });
-    again(SERVICE_POLL_MS);
-  }
-
-  async _serviceGotFeed(content, area, run) {
-    this._serviceWaitStarted = undefined;
-    let areaStatus;
-    try {
-      areaStatus = (await this._serviceApi("get", { area_id: area.id })).content.status;
-    } catch {
-      areaStatus = undefined; // the feed is what matters; status is a refinement
-    }
-    if (run !== this._serviceRun) return;
-    const next = { events: content.events, generatedAt: content.generated_at, sources: content.sources, location: content.location };
-    const unchanged = this._feed && !this._feedError && this._feed.generatedAt === next.generatedAt && this._feed.events.length === next.events.length;
-    this._feed = next;
-    this._feedError = undefined;
-    this._setService({ phase: "ready", message: undefined, areaStatus }, !unchanged);
-  }
-
-  async _serviceLoadAreas() {
-    try {
-      const { content } = await this._serviceApi("list", {});
-      this._setService({ areas: Array.isArray(content && content.areas) ? content.areas : [] });
-    } catch (error) {
-      this._setService({ areasError: error.message });
-    }
-    this._renderFilterUI();
-  }
-
-  async _serviceRefreshNow() {
-    const area = this._prefs.service_area;
-    if (!area) return;
-    try {
-      await this._serviceApi("refresh", { area_id: area.id });
-      this._geoMessage = "Refresh requested. New results appear when discovery finishes.";
-      this._feedError = undefined;
-      this._serviceWaitStarted = Date.now();
-      this._setService({ phase: "waiting", message: "Waiting for the server to refresh this area..." });
-      clearTimeout(this._serviceTimer);
-      this._serviceTimer = setTimeout(() => this._serviceLoad(this._serviceRun), SERVICE_POLL_MS);
-    } catch (error) {
-      this._geoMessage = error.status === 429 ? "This area was refreshed a moment ago; try again later." : error.message;
-    }
-    this._renderFilterUI();
-  }
-
-  _serviceChoose(entry) {
-    const location = entry.location;
-    if (entry.id === "default") {
-      const run = ++this._serviceRun;
-      this._feed = undefined;
-      this._setPrefs({ ...this._prefs, service_area: { id: "default", name: (entry.names && entry.names[0]) || "Default area" } });
-      this._setService({ phase: "loading", message: "Loading events...", areaStatus: entry.status }, true);
-      this._serviceLoad(run);
-      return;
-    }
-    const spec = { latitude: location.latitude, longitude: location.longitude, radius_miles: location.radius_miles };
-    this._serviceSelect(spec, (entry.names && entry.names[0]) || location.display_name);
-  }
-
-  _serviceSearch(form) {
-    const parsed = parsePlace(form.place, this._defaultCountry(), Number(form.radius) || this._defaultRadius());
-    if (parsed.error) {
-      this._setService({ formError: parsed.error });
-      this._renderFilterUI();
-      return;
-    }
-    this._serviceSelect(parsed.spec, form.name && form.name.trim() ? form.name.trim() : undefined);
-  }
-
-  _serviceHome() {
-    const home = haHomeArea(this._hass);
-    if (!home) return;
-    this._serviceSelect({ latitude: roundCoordinate(home.latitude), longitude: roundCoordinate(home.longitude), radius_miles: this._defaultRadius(),
-      ...(home.timezone ? { timezone: home.timezone } : {}) }, home.name);
-  }
-
-  /** Only ever called from a click, like the legacy panel: the permission prompt must follow a user action. */
-  _serviceMine() {
-    const geolocation = globalThis.navigator && globalThis.navigator.geolocation;
-    if (!geolocation || typeof geolocation.getCurrentPosition !== "function") {
-      this._geoMessage = "This browser does not support location.";
-      this._renderFilterUI();
-      return;
-    }
-    const request = (this._geoRequest = (this._geoRequest || 0) + 1);
-    this._geoMessage = "Waiting for the browser's location permission...";
-    this._renderFilterUI();
-    const finish = (message) => {
-      if (request !== this._geoRequest) return;
-      this._geoMessage = message;
-      this._renderFilterUI();
-    };
-    try {
-      geolocation.getCurrentPosition(
-        (position) => {
-          const coords = position && position.coords;
-          if (!coords || !validCoordinates(coords.latitude, coords.longitude)) return finish("The browser returned an unusable position.");
-          if (request !== this._geoRequest) return;
-          this._geoMessage = undefined;
-          let timezone;
-          try {
-            timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-          } catch {
-            timezone = undefined;
-          }
-          this._serviceSelect({ latitude: roundCoordinate(coords.latitude), longitude: roundCoordinate(coords.longitude), radius_miles: this._defaultRadius(),
-            ...(timezone && TIMEZONE_NAME.test(timezone) ? { timezone } : {}) }, "My location");
-        },
-        (error) => finish(geolocationProblem(error)),
-        { enableHighAccuracy: false, timeout: GEO_TIMEOUT_MS, maximumAge: GEO_MAX_AGE_MS },
-      );
-    } catch {
-      finish("Your location could not be read.");
-    }
-  }
-
-  _renderServiceAreaPanel() {
-    const panel = this._el("div", "area service-area");
-    const line = (text, className = "area-line") => panel.append(this._el("div", className, text));
-    const saved = this._prefs.service_area;
-    const status = this._service.areaStatus;
-    const radius = saved && saved.spec && saved.spec.radius_miles;
-
-    line(saved ? `Area: ${saved.name}${radius ? ` - ${Math.round(radius)} mi radius` : ""}` : "No area chosen yet.");
-    const discovered = this._feed && this._feed.location;
-    if (saved && discovered && discovered.display_name) {
-      line(`The server discovered these events for: ${discovered.display_name}, ${Math.round(discovered.radius_miles || 0)} mi`, "area-detail");
-    }
-    if (status) {
-      const when = status.last_success_at ? ` - last updated ${this._formatDate(status.last_success_at)}` : "";
-      line(`Discovery: ${status.state}${when}${status.last_error ? ` - ${status.last_error}` : ""}`, status.state === "failed" ? "area-message" : "area-detail");
-    }
-    if (this._service.message && ["waiting", "ensuring", "loading"].includes(this._service.phase)) line(this._service.message, "area-detail");
-
-    const areas = (this._service.areas || []).filter((entry) => !saved || entry.id !== saved.id);
-    if (areas.length) {
-      line("Saved areas:", "area-note");
-      const row = this._el("div", "area-actions");
-      for (const entry of areas) {
-        const button = this._button((entry.names && entry.names[0]) || entry.id, () => this._serviceChoose(entry));
-        button.className = "saved-area";
-        row.append(button);
-      }
-      panel.append(row);
-    } else if (this._service.areasError) {
-      line(`Saved areas could not be loaded: ${this._service.areasError}`, "area-note");
-    }
-
-    const buttons = this._el("div", "area-actions");
-    if (haHomeArea(this._hass)) {
-      const home = this._button("Use Home Assistant home", () => this._serviceHome());
-      home.className = "use-home";
-      buttons.append(home);
-    }
-    const mine = this._button("Use my location", () => this._serviceMine());
-    mine.className = "use-mine";
-    buttons.append(mine);
-    if (saved) {
-      const refresh = this._button("Refresh now", () => this._serviceRefreshNow());
-      refresh.className = "refresh-area";
-      buttons.append(refresh);
-    }
-    panel.append(buttons);
-
-    const form = { place: this._form ? this._form.place : "", radius: this._form ? this._form.radius : String(this._defaultRadius()), name: this._form ? this._form.name : "" };
-    this._form = form;
-    const field = (label, key, className) => {
-      const wrapper = this._el("label", "", label);
-      const input = document.createElement("input");
-      input.className = className;
-      input.type = "text";
-      input.value = form[key];
-      input.addEventListener("input", () => { form[key] = input.value; });
-      wrapper.append(input);
-      return wrapper;
-    };
-    const editor = this._el("div", "editor");
-    editor.append(field("City, ZIP code or latitude, longitude", "place", "place-input"), field("Radius (miles)", "radius", "radius-input"), field("Name (optional)", "name", "area-name-input"));
-    if (this._service.formError) editor.append(this._el("div", "error", this._service.formError));
-    const search = this._button("Search this area", () => this._serviceSearch(form));
-    search.className = "search-area";
-    editor.append(search);
-    panel.append(editor);
-    if (this._geoMessage) line(this._geoMessage, "area-message");
-    line("Each card keeps its own area. Choosing one asks the server to discover events there; results appear once it has run.", "area-note");
-    return panel;
   }
 
   _startAgeTimer() {
@@ -994,7 +601,7 @@ class AreaEventsCard extends HTMLElement {
   _events() {
     const { entity, events, feed } = this._config;
     if (Array.isArray(events)) return events.map((event) => this._normalizeEvent(event));
-    if (feed || this._isService()) {
+    if (feed) {
       const now = Date.now();
       return ((this._feed && this._feed.events) || [])
         .map((event) => this._normalizeEvent(event))
@@ -1031,7 +638,7 @@ class AreaEventsCard extends HTMLElement {
 
   /** Authoritative generation time: the feed's `generated_at` (or entity attribute), never the page-load time. */
   _generatedAt() {
-    if (this._config.feed || this._isService()) return this._feed && this._feed.generatedAt;
+    if (this._config.feed) return this._feed && this._feed.generatedAt;
     if (this._config.entity && !Array.isArray(this._config.events)) {
       const state = this._hass && this._hass.states[this._config.entity];
       return state && state.attributes.generated_at;
@@ -1055,21 +662,6 @@ class AreaEventsCard extends HTMLElement {
   }
 
   _feedNotice(count) {
-    if (this._isService()) {
-      const state = this._service || {};
-      const updated = this._feed && this._feed.generatedAt ? this._formatDate(this._feed.generatedAt) : undefined;
-      if (this._feedError) {
-        return this._feed
-          ? `Could not refresh events (${this._feedError}). Showing stale data${updated ? ` from ${updated}` : ""}.`
-          : `Could not load events: ${this._feedError}`;
-      }
-      if (state.phase === "nolocation") return state.message;
-      if (!this._feed && ["idle", "ensuring", "loading", "waiting"].includes(state.phase)) return state.message || "Loading events...";
-      if (state.areaStatus && state.areaStatus.state === "failed") {
-        return `The last discovery for this area failed${state.areaStatus.last_error ? ` (${state.areaStatus.last_error})` : ""}. Showing the last successful results.`;
-      }
-      return count === 0 && this._feed ? "No upcoming events in this area." : undefined;
-    }
     if (!this._config.feed) return undefined;
     const updated = this._feed && this._feed.generatedAt ? this._formatDate(this._feed.generatedAt) : undefined;
     if (this._feedError) {
@@ -1107,9 +699,8 @@ class AreaEventsCard extends HTMLElement {
     wrap.append(this._els.header);
     if (this._config.demo) wrap.append(this._el("div", "demo-banner", "DEMONSTRATION DATA - not real events"));
 
-    this._els.notice = this._el("div", "notice");
-    wrap.append(this._els.notice);
-    this._updateNotice(events.length);
+    const notice = this._feedNotice(events.length);
+    if (notice) wrap.append(this._el("div", "notice", notice));
 
     this._els.filters = this._el("div", "filters");
     wrap.append(this._els.filters);
@@ -1126,7 +717,7 @@ class AreaEventsCard extends HTMLElement {
       this._els.noMatch = this._el("div", "no-match", "No events match the selected categories.");
       this._els.noMatch.hidden = true;
       wrap.append(this._els.noMatch);
-    } else if (!this._config.feed && !this._isService()) {
+    } else if (!this._config.feed) {
       wrap.append(this._el("div", "empty", "No events to show."));
     }
 
@@ -1135,13 +726,6 @@ class AreaEventsCard extends HTMLElement {
     card.append(wrap);
     root.append(style, card);
     this._refreshFilters();
-  }
-
-  _updateNotice(count) {
-    if (!this._els || !this._els.notice) return;
-    const text = this._feedNotice(count === undefined ? (this._tiles || []).length : count);
-    this._els.notice.textContent = text || "";
-    this._els.notice.hidden = !text;
   }
 
   _visibleCount() {
@@ -1173,17 +757,10 @@ class AreaEventsCard extends HTMLElement {
       if (age > FEED_STALE_MS) meta.append(this._el("span", "badge", "Stale"));
     }
     if (this._feedError) meta.append(this._el("span", "badge error", this._feed ? "Update failed" : "Feed unavailable"));
-    if (this._isService()) {
-      const state = this._service || {};
-      if (["ensuring", "loading", "waiting"].includes(state.phase)) meta.append(this._el("span", "badge", this._feed ? "Updating" : "Discovering"));
-      if (state.areaStatus && state.areaStatus.state === "failed" && !this._feedError) meta.append(this._el("span", "badge error", "Discovery failed"));
-      const saved = this._prefs.service_area;
-      if (saved) meta.append(this._el("span", "area-name", saved.name));
-    }
 
     const total = this._tiles.length;
     const shown = this._visibleCount();
-    if ((this._config.feed || this._isService()) ? this._feed : true) {
+    if (this._config.feed ? this._feed : true) {
       meta.append(this._el("span", "counts", shown === total ? `${total} event${total === 1 ? "" : "s"}` : `${shown} of ${total} events`));
     }
     const sources = this._feed && this._feed.sources && typeof this._feed.sources === "object" ? Object.values(this._feed.sources) : [];
@@ -1200,7 +777,6 @@ class AreaEventsCard extends HTMLElement {
     if (!this._tiles || this._tiles.length === 0) {
       if (this._els.filters) this._els.filters.replaceChildren();
       this._updateHeader();
-      if (this._isService()) this._renderFilterUI(); // the area controls matter most when there are no events yet
       return;
     }
     this._applyFilter();
@@ -1278,8 +854,154 @@ class AreaEventsCard extends HTMLElement {
     }
   }
 
+  // --- location control ---------------------------------------------------------------
+
+  _canControl() {
+    return Boolean(this._config.location_control);
+  }
+
+  async _controlCall(name, data = {}) {
+    if (!this._hass || typeof this._hass.callWS !== "function") throw new Error("Home Assistant is not connected.");
+    const script = `${this._config.script_prefix || "area_events"}_${name}`;
+    let result;
+    try {
+      result = await this._hass.callWS({ type: "call_service", domain: "script", service: script, service_data: data, return_response: true });
+    } catch (error) {
+      throw new Error(`Home Assistant could not run script.${script} (${(error && error.message) || error}).`);
+    }
+    return extractServiceResponse(result);
+  }
+
+  _setControl(patch) {
+    this._control = { ...this._control, ...patch };
+    if (this._filterOpen && this._els && this._els.filters && this._tiles && this._tiles.length) this._renderFilterUI();
+  }
+
+  /** Ask the server where it is discovering and how the latest change went; keep asking while a change runs. */
+  async _controlRefresh() {
+    if (!this._canControl()) return;
+    const run = this._control.run;
+    clearTimeout(this._controlTimer);
+    try {
+      const { status, content } = await this._controlCall("location");
+      if (run !== this._control.run) return;
+      if (status !== 200) throw new Error(apiMessage(content, status));
+      this._setControl({ status: content, error: undefined });
+      const state = content.change && content.change.state;
+      if (state === "queued" || state === "running") {
+        this._control.waitStarted = this._control.waitStarted || Date.now();
+        if (Date.now() - this._control.waitStarted < CONTROL_MAX_WAIT_MS) {
+          this._controlTimer = setTimeout(() => this._controlRefresh(), CONTROL_POLL_MS);
+        }
+      } else {
+        this._control.waitStarted = undefined;
+      }
+    } catch (error) {
+      if (run === this._control.run) this._setControl({ error: error.message });
+    }
+  }
+
+  async _controlApply(spec) {
+    const run = this._control.run;
+    this._setControl({ message: "Asking the server to switch discovery to this area...", error: undefined });
+    try {
+      const { status, content } = await this._controlCall("set_location", { spec });
+      if (run !== this._control.run) return;
+      if (status === 200) this._setControl({ message: "The server is already using this area." });
+      else if (status === 202) this._setControl({ message: "Discovery for the new area has started. The current events stay until it succeeds." });
+      else throw new Error(apiMessage(content, status));
+      this._control.waitStarted = undefined;
+      await this._controlRefresh();
+    } catch (error) {
+      if (run === this._control.run) this._setControl({ message: undefined, error: error.message });
+    }
+  }
+
+  _controlSearch(form) {
+    const parsed = parsePlace(form.place, this._defaultCountry(), Number(form.radius) || this._defaultRadius());
+    if (parsed.error) {
+      this._setControl({ error: parsed.error, message: undefined });
+      return;
+    }
+    if (form.name && form.name.trim()) parsed.spec.name = form.name.trim();
+    this._controlApply(parsed.spec);
+  }
+
+  _controlApplyArea(area) {
+    const round = area.source === "browser" ? roundCoordinate : (value) => Math.round(value * 10000) / 10000;
+    this._controlApply({ latitude: round(area.latitude), longitude: round(area.longitude), radius_miles: this._defaultRadius(),
+      ...(area.timezone ? { timezone: area.timezone } : {}), name: area.name });
+  }
+
+  async _controlSyncNow() {
+    try {
+      const { status, content } = await this._controlCall("sync_now");
+      this._setControl(status >= 200 && status < 300
+        ? { message: "Copied the server's latest results to Home Assistant. They appear when this card next reloads its feed." }
+        : { error: apiMessage(content, status) });
+    } catch (error) {
+      this._setControl({ error: error.message });
+    }
+  }
+
+  _defaultCountry() {
+    const country = this._config.country || (this._hass && this._hass.config && this._hass.config.country);
+    return typeof country === "string" && /^[A-Za-z]{2}$/.test(country) ? country.toUpperCase() : undefined;
+  }
+
+  _defaultRadius() {
+    const radius = Number(this._config.radius_miles);
+    return Number.isFinite(radius) && radius >= 1 && radius <= 250 ? radius : 25;
+  }
+
+  _renderControlPanel(panel, resolved) {
+    const line = (text, className = "area-line") => panel.append(this._el("div", className, text));
+    const control = this._control;
+    const server = control.status;
+    if (server && server.active && server.active.location) {
+      const where = server.active.location;
+      line(`The server discovers events for: ${where.name || "an unnamed area"}${where.radius_miles ? `, ${Math.round(where.radius_miles)} mi radius` : ""}`);
+    }
+    const change = server && server.change;
+    if (change && change.state && change.state !== "idle") {
+      const target = change.requested && change.requested.name ? ` to ${change.requested.name}` : "";
+      const shown = server.feed && server.feed.location ? ` The events shown are still for ${server.feed.location}.` : "";
+      if (change.state === "queued" || change.state === "running") line(`Switching${target}: discovery is ${change.state === "queued" ? "waiting to start" : "running"}.${shown}`, "area-detail");
+      else if (change.state === "failed") line(`The change${target} failed: ${change.error || "unknown error"}.${shown}`, "area-message");
+      else if (change.state === "succeeded") line(`Switched${target}. New results reach this card at the next Home Assistant sync.`, "area-detail");
+    }
+    if (resolved.area) {
+      const apply = this._button("Use this area for discovery", () => this._controlApplyArea(resolved.area));
+      apply.className = "apply-area";
+      panel.append(apply);
+    }
+    const form = this._form || (this._form = { place: "", radius: String(this._defaultRadius()), name: "" });
+    const field = (label, key, className) => {
+      const wrapper = this._el("label", "", label);
+      const input = document.createElement("input");
+      input.className = className;
+      input.type = "text";
+      input.value = form[key];
+      input.addEventListener("input", () => { form[key] = input.value; });
+      wrapper.append(input);
+      return wrapper;
+    };
+    const editor = this._el("div", "editor");
+    editor.append(field("City, ZIP code or latitude, longitude", "place", "place-input"), field("Radius (miles)", "radius", "radius-input"), field("Name (optional)", "name", "area-name-input"));
+    const search = this._button("Switch discovery to this place", () => this._controlSearch(form));
+    search.className = "search-area";
+    editor.append(search);
+    panel.append(editor);
+    if (change && change.state === "succeeded") {
+      const sync = this._button("Fetch the new results now", () => this._controlSyncNow());
+      sync.className = "sync-now";
+      panel.append(sync);
+    }
+    if (control.message) line(control.message, "area-detail");
+    if (control.error) line(control.error, "area-message");
+  }
+
   _renderAreaPanel() {
-    if (this._isService()) return this._renderServiceAreaPanel();
     const panel = this._el("div", "area");
     const resolved = this._area();
     const labels = {
@@ -1308,7 +1030,9 @@ class AreaEventsCard extends HTMLElement {
     } else if (this._config.feed) {
       line("This feed does not say which area its events were discovered for.");
     }
-    line("Choosing an area here only changes this card. The discovery service searches the area in its own configuration (or a location hint recorded on the server); nothing here is sent to it.", "area-note");
+    line(this._canControl()
+      ? "Choosing an area above only changes this card; use the buttons below to switch what the server discovers."
+      : "Choosing an area here only changes this card. The server searches the area in its own configuration; nothing here is sent to it.", "area-note");
 
     const buttons = this._el("div", "area-actions");
     const home = haHomeArea(this._hass);
@@ -1327,16 +1051,12 @@ class AreaEventsCard extends HTMLElement {
     }
     panel.append(buttons);
     if (this._geoMessage) line(this._geoMessage, "area-message");
-    if (resolved.area && resolved.source !== "unavailable") {
-      line("To make the discovery service use this area, run on the server:", "area-note");
-      line(backendHintCommand(resolved.area), "hint-command");
-    }
+    if (this._canControl()) this._renderControlPanel(panel, resolved);
     return panel;
   }
 
   _renderFilterUI() {
     const host = this._els.filters;
-    if (!host) return;
     host.replaceChildren();
     const selected = new Set(this._prefs.selected);
     const categories = this._categories();
@@ -1347,7 +1067,7 @@ class AreaEventsCard extends HTMLElement {
     const toggle = this._button(`Filters${selected.size ? ` (${selected.size})` : ""}`, () => {
       this._filterOpen = !this._filterOpen;
       this._renderFilterUI();
-      if (this._filterOpen && this._isService()) this._serviceLoadAreas(); // saved areas are listed only when asked for
+      if (this._filterOpen) this._controlRefresh(); // the server's state is fetched when asked for, not on page load
     });
     toggle.className = "filter-toggle";
     toggle.setAttribute("aria-expanded", String(this._filterOpen));
@@ -1358,7 +1078,6 @@ class AreaEventsCard extends HTMLElement {
     host.append(bar);
     if (!this._filterOpen) return;
     host.append(this._renderAreaPanel());
-    if (this._tiles.length === 0) return;
 
     const chips = this._el("div", "chips");
     const allChip = this._button(`${selected.size ? "" : "✓ "}All`, () => this._setPrefs({ ...this._prefs, selected: [] }), selected.size === 0);

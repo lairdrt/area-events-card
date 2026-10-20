@@ -1,0 +1,68 @@
+# Home Assistant side of location control: three scripts the Area Events Card runs (card option
+# `location_control: true`) with the signed-in user's own session. They forward a request to the discovery
+# service's authenticated API using a key that stays in secrets.yaml; the key never reaches a card or a browser.
+#
+# 1. secrets.yaml (the same key the service is started with; 32+ random characters):
+#      area_events_authorization: "Bearer <your key>"
+# 2. Add the `rest_command:` block below to configuration.yaml (merge with an existing one) and change the address.
+# 3. Add the scripts below to scripts.yaml (or the `script:` section). `area_events_sync_now` reuses the
+#    `shell_command.sync_area_events` from configuration.example.yaml; leave that script out if you do not use it.
+# 4. Developer tools > YAML: check the configuration, then reload "Rest commands" and "Scripts" (no restart).
+# 5. Test: Developer tools > Actions > script.area_events_location. The response shows status 200 and the service's
+#    active location.
+#
+# The scripts return {status, content} to the caller, so the card can show what the server says (for example
+# "could not resolve location" or "a location change is already in progress").
+
+rest_command:
+  area_events_location:
+    url: "http://192.168.1.88:8765/api/v1/location"
+    method: get
+    headers:
+      authorization: !secret area_events_authorization
+    timeout: 20
+  area_events_set_location:
+    url: "http://192.168.1.88:8765/api/v1/location"
+    method: put
+    headers:
+      authorization: !secret area_events_authorization
+      content-type: application/json
+    payload: "{{ spec | tojson }}"
+    timeout: 60  # looking up a new city can take a few seconds
+
+script:
+  area_events_location:
+    alias: Area Events - discovery location and latest change
+    mode: parallel
+    sequence:
+      - action: rest_command.area_events_location
+        response_variable: result
+      - stop: Done
+        response_variable: result
+
+  area_events_set_location:
+    alias: Area Events - switch discovery to another place
+    mode: single
+    fields:
+      spec:
+        description: "Place and radius, e.g. {latitude: 30.27, longitude: -97.74, radius_miles: 25, name: Austin} or {query: Austin, TX, radius_miles: 25}"
+    sequence:
+      - action: rest_command.area_events_set_location
+        data:
+          spec: "{{ spec }}"
+        response_variable: result
+      - stop: Done
+        response_variable: result
+
+  area_events_sync_now:
+    alias: Area Events - copy the server's latest feed to Home Assistant now
+    mode: single
+    sequence:
+      - action: shell_command.sync_area_events
+        response_variable: sync
+      - variables:
+          result:
+            status: "{{ 200 if sync.returncode == 0 else 500 }}"
+            content: "{{ sync.stdout if sync.returncode == 0 else sync.stderr }}"
+      - stop: Done
+        response_variable: result
