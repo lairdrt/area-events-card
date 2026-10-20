@@ -114,7 +114,7 @@ class Coverage(unittest.TestCase):
     def selected(self, raw):
         location = resolve_location(raw, providers={})
         config = load_config()
-        chosen, skipped = select_sources(config["sources"], location, sources.load)
+        chosen, skipped = select_sources(config["sources"], location, sources.load_spec)
         return [s["key"] for s, _ in chosen], [s["key"] for s, _ in skipped]
 
     def test_default_configuration_keeps_all_four_san_diego_sources(self):
@@ -142,8 +142,8 @@ class Coverage(unittest.TestCase):
     def test_source_spec_can_override_coverage(self):
         austin = resolve_location({"latitude": 30.27, "longitude": -97.74}, providers={})
         spec = {"key": "kpbs", "coverage": {"kind": "regional", "region": "Austin", "latitude": 30.27, "longitude": -97.74, "radius_miles": 30}}
-        self.assertEqual(len(select_sources([spec], austin, sources.load)[0]), 1)
-        self.assertEqual(select_sources([{"key": "kpbs", "enabled": False}], austin, sources.load), ([], []))
+        self.assertEqual(len(select_sources([spec], austin, sources.load_spec)[0]), 1)
+        self.assertEqual(select_sources([{"key": "kpbs", "enabled": False}], austin, sources.load_spec), ([], []))
 
 
 class Adapter:

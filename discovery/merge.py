@@ -238,6 +238,11 @@ def _combine(group, publishers, min_publishers, reasons):
     })
     if len(locations) > 1:
         merged["locations"] = locations
+    located = next((r for r in group if r.get("location_status") == "within"), None)
+    if located:
+        merged.update(geo=located["geo"], location_status="within", distance_miles=located["distance_miles"])
+    else:
+        merged.update(location_status="unknown", distance_miles=None)
     merged["verification"] = {
         "status": status,
         "evidence": evidence,

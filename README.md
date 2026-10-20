@@ -134,6 +134,24 @@ Each source adapter declares `COVERAGE`: `regional` (a center and radius; runs o
 
 Errors never fall back to San Diego: an unresolvable location, or one that no enabled source covers, logs a clear error, exits 1 and leaves the last valid feed untouched. Cached source events are discarded when the location changes, so they cannot leak into another area's feed. Limitation: the radius selects sources; it does not filter individual events by distance, and no sources exist yet outside San Diego.
 
+### Other cities (Austin example) and Localist calendars
+
+`localist` is a reusable adapter for any [Localist](https://localist.com) calendar (universities, cities, libraries): every Localist site has a free, key-less JSON API (`/api/2/events`) with exact start/end times, venue, address, image and usually the venue's latitude/longitude. Each site is its own source entry in the config, with a distinct publisher for verification:
+
+```json
+{ "key": "ut_austin", "adapter": "localist", "site": "https://calendar.utexas.edu", "name": "UT Austin Events", "days": 14 }
+```
+
+`discovery.austin.example.json` is a complete Austin, TX configuration. Run it in its own folder so it never touches the San Diego feed or caches:
+
+```
+python -m discovery --config discovery.austin.example.json --data-dir data/austin
+```
+
+**Geographic filtering.** Location and radius decide which events are returned, not only which adapters run. After each source returns, events that carry their own coordinates are kept when within `radius_miles` of the location (`location_status: "within"`, `distance_miles`) and dropped when outside. Events without coordinates are kept but marked `location_status: "unknown"`: nothing proves they are nearby, and coordinates are never guessed. If every event is outside the area, the run reports that and keeps the previous feed. The four San Diego sources publish no coordinates, so their results are unchanged (all `unknown`). Cached events are discarded when the location changes, and `--data-dir` keeps separate feeds, caches and geocode results per location.
+
+Limitations: the Localist sites found for Austin are campus calendars (UT Austin), so the Austin feed is mostly university events; citywide Austin sources were not usable (Do512 blocks automated access with a 403, which is respected; Visit Austin and others publish no complete machine-readable listing). The adapter reads at most 5 pages (500 events) per site.
+
 ### Merging and verification
 
 Candidates are chosen cheaply: records are sorted by start time and only records from different sources starting within 30 minutes of each other are compared. A pair is the same event only when titles agree (ignoring punctuation, curly quotes, years, ordinals and words like "annual"; one title may be the other plus a lineup or tour name) **and** there is evidence beyond the title:

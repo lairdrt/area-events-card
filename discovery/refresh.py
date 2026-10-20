@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 from . import sources
 from .core import FetchError, Fetcher, load_events, now_pacific, save_events
-from .location import LocationError, resolve_location, select_sources
+from .location import LocationError, classify_events, resolve_location, select_sources
 from .merge import merge_events
 from .publish import FeedError, publish_feed, validate_feed
 
@@ -78,7 +78,8 @@ def _unexpired(events, now):
 
 def build_document(config, cache, now, keys=None, location=None):
     keys = keys if keys is not None else [s["key"] for s in config["sources"] if s.get("enabled", True)]
-    publishers = {k: sources.load(k).PUBLISHER for k in keys}
+    by_key = {s["key"]: s for s in config["sources"]}
+    publishers = {k: sources.load_spec(by_key[k]).PUBLISHER for k in keys}
     retention = timedelta(days=config.get("retention_days", 3))
     records, status = {}, {}
     for key in keys:
@@ -121,7 +122,7 @@ def refresh(config, options, cache_path=None, output=None, publish_to=None, lock
         except LocationError as error:
             print(f"Location error: {error}. Feed left unchanged.", file=sys.stderr)
             return 1
-        selected, skipped = select_sources(config["sources"], location, sources.load)
+        selected, skipped = select_sources(config["sources"], location, sources.load_spec)
         for spec, reason in skipped:
             print(f"[{spec['key']}] skipped: {reason}")
         if not selected:
@@ -144,17 +145,20 @@ def refresh(config, options, cache_path=None, output=None, publish_to=None, lock
             key = spec["key"]
             if options.get("offline") or key not in selected_keys or (only and key not in only):
                 continue
-            adapter = sources.load(key)
+            adapter = sources.load_spec(spec)
             entry = cache.setdefault(key, {"events": []})
             entry["last_attempt_at"] = stamp
-            kwargs = {k: v for k, v in spec.items() if k not in ("key", "enabled", "coverage")}
-            if (getattr(adapter, "COVERAGE", None) or spec.get("coverage") or {}).get("kind") == "searchable":
+            kwargs = {k: v for k, v in spec.items() if k not in ("key", "enabled", "coverage", "adapter")}
+            if getattr(adapter, "ACCEPTS_LOCATION", False) or (getattr(adapter, "COVERAGE", None) or spec.get("coverage") or {}).get("kind") == "searchable":
                 kwargs["location"] = location
             try:
                 found, notes = adapter.discover(fetcher, entry.get("events", []), details=not options.get("no_details"),
                                                 limit=options.get("limit"), **kwargs)
+                found, outside = classify_events(found, location)
+                notes["outside_area"] = outside
                 if not found:
-                    raise FetchError("extraction produced no events")
+                    raise FetchError(f"all {outside} events are outside the {location['radius_miles']:.0f} mi search area of {location['display_name']}"
+                                     if outside else "extraction produced no events")
             except Exception as error:  # a failing source must never lose its previous data
                 entry.update(ok=False, error=str(error))
                 failed += 1

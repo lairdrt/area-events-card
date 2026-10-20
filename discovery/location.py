@@ -256,7 +256,7 @@ def covers(coverage, location):
 
 
 def select_sources(specs, location, load):
-    """Split enabled source specs into (selected, skipped); `load(key)` returns the adapter module.
+    """Split enabled source specs into (selected, skipped); `load(spec)` returns the adapter.
 
     A source spec may carry its own `coverage` block (for user-configured sources) overriding the adapter's.
     """
@@ -264,7 +264,41 @@ def select_sources(specs, location, load):
     for spec in specs:
         if not spec.get("enabled", True):
             continue
-        coverage = spec.get("coverage") or getattr(load(spec["key"]), "COVERAGE", None)
+        coverage = spec.get("coverage") or getattr(load(spec), "COVERAGE", None)
         eligible, reason = covers(coverage, location)
         (selected if eligible else skipped).append((spec, reason))
     return selected, skipped
+
+
+# --- event-level geography -----------------------------------------------------------------
+
+def event_geo(event):
+    """(latitude, longitude) from the event's own coordinates, or None. Coordinates are never inferred."""
+    geo = event.get("geo")
+    try:
+        latitude, longitude = float(geo["latitude"]), float(geo["longitude"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (latitude, longitude) if -90 <= latitude <= 90 and -180 <= longitude <= 180 and (latitude or longitude) else None
+
+
+def classify_events(events, location):
+    """Split events by the requested area: returns (kept, outside_count).
+
+    An event with its own coordinates is `within` or `outside` the location's radius (outside ones are
+    dropped). An event without coordinates is kept but marked `unknown`: nothing proves it is nearby.
+    """
+    kept, outside = [], 0
+    for event in events:
+        point = event_geo(event)
+        if point is None:
+            event["location_status"], event["distance_miles"] = "unknown", None
+            kept.append(event)
+            continue
+        miles = distance_miles(point[0], point[1], location["latitude"], location["longitude"])
+        if miles > location["radius_miles"]:
+            outside += 1
+            continue
+        event["location_status"], event["distance_miles"] = "within", round(miles, 1)
+        kept.append(event)
+    return kept, outside

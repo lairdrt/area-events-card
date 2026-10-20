@@ -14,3 +14,4 @@ data/source-cache.json
 data/.refresh.lock
 data/refresh.log
 .env
+data/austin/
