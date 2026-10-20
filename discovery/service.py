@@ -23,7 +23,8 @@ import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .publish import FeedError, validate_feed, write_atomic
+from .areas import DEFAULT_AREA, AreaStore, load_status, save_status
+from .publish import FeedError, validate_feed
 from .refresh import CONFIG_FILE, load_config, refresh
 
 log = logging.getLogger("area-events")
@@ -59,8 +60,10 @@ class Service:
         self.refresh_fn = refresh_fn
         self.clock = clock
         self.started = clock()
-        self.feed_path = os.path.join(data_dir, "events.json")
-        self.status_path = os.path.join(data_dir, "status.json")
+        # The service serves and refreshes the reserved `default` area: the same files, in the same place, as always.
+        self.area = AreaStore(data_dir).paths(DEFAULT_AREA)
+        self.feed_path = self.area.feed
+        self.status_path = self.area.status
         self._run_lock = threading.Lock()
         self._feed_lock = threading.Lock()
         self._feed = None  # (mtime_ns, raw bytes, document) of the last valid feed
@@ -71,15 +74,11 @@ class Service:
     # --- persisted run status ------------------------------------------------
 
     def _load_status(self):
-        try:
-            with open(self.status_path, encoding="utf-8") as handle:
-                return json.load(handle)
-        except (OSError, ValueError):
-            return {}
+        return load_status(self.area)
 
     def _save_status(self):
         try:
-            write_atomic(self.status_path, json.dumps(self.status, indent=2) + "\n")
+            save_status(self.area, self.status)
         except OSError as error:
             log.error("could not save status: %s", error)
 
@@ -99,9 +98,7 @@ class Service:
             with contextlib.redirect_stdout(_LogWriter(logging.INFO)), contextlib.redirect_stderr(_LogWriter(logging.WARNING)):
                 code = self.refresh_fn(
                     load_config(self.config_path), options,
-                    output=self.feed_path,
-                    cache_path=os.path.join(self.data_dir, "source-cache.json"),
-                    lock_path=os.path.join(self.data_dir, ".refresh.lock"),
+                    output=self.area.feed, cache_path=self.area.source_cache, lock_path=self.area.lock,
                 )
         except Exception:  # config errors, unexpected adapter bugs: log and keep serving old data
             log.error("refresh crashed:\n%s", traceback.format_exc())
@@ -282,7 +279,7 @@ def main():
                       max(MIN_INTERVAL, int(os.environ.get("AREA_EVENTS_INTERVAL_SECONDS", "3600"))))
     # One container owns this volume, so a lock left by a killed run is stale.
     with contextlib.suppress(OSError):
-        os.remove(os.path.join(data_dir, ".refresh.lock"))
+        os.remove(AreaStore(data_dir).paths(DEFAULT_AREA).lock)
     server = make_server(service, os.environ.get("AREA_EVENTS_HOST", "0.0.0.0"), int(os.environ.get("AREA_EVENTS_PORT", "8080")))
     stop = threading.Event()
 

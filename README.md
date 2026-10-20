@@ -182,6 +182,10 @@ python -m discovery --config examples/discovery.austin.json --data-dir data/aust
 
 Limitations: the only Austin source found is the UT Austin campus calendar (Do512 returns 403 to automated requests, which is respected), so the feed is mostly university events; the adapter reads at most 5 pages (500 events) per site.
 
+### Per-area storage
+
+`discovery/areas.py` gives every discovery area its own directory (feed, source caches, geocoding cache, status, lock, location hint). The reserved area `default` is the existing top-level data directory, so the files, the Docker volume and the `/events.json` and `/health` endpoints are exactly as before. Other areas live in `data/areas/<id>/`, where the id is `a_` plus 12 hex digits of the hash of the area's latitude and longitude (rounded to 4 decimals) and radius (1 decimal): the same place always gets the same directory, any other place gets a different one, and a directory records its place in `area.json` so it cannot be reused for another. Ids are validated before touching the filesystem. This is only the storage foundation: the service still refreshes just the default area, and nothing creates other areas yet (see [docs/multi-area-architecture.md](docs/multi-area-architecture.md)).
+
 ### Merging and verification
 
 Candidates are chosen cheaply: records are sorted by start time and only records from different sources starting within 30 minutes of each other are compared. A pair is the same event only when titles agree (ignoring punctuation, curly quotes, years, ordinals and words like "annual"; one title may be the other plus a lineup or tour name) **and** there is evidence beyond the title:
