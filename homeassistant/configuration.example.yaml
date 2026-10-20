@@ -1,0 +1,14 @@
+# Add to /config/configuration.yaml (merge with an existing shell_command: block).
+# Needs a Home Assistant restart to take effect.
+#
+# The URL and destination are fixed strings on purpose: nothing from automations
+# or templates is ever passed to the shell.
+shell_command:
+  sync_area_events: >-
+    python3 /config/scripts/sync_area_events.py
+    http://192.168.1.88:8765/events.json
+    /config/www/area-events-card/events.json
+
+  # Optional one-time check that python3 exists where shell_command runs.
+  # Remove it afterwards.
+  area_events_python_check: "python3 --version"

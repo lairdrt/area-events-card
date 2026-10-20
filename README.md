@@ -123,6 +123,10 @@ Add a module under `discovery/sources/` providing `KEY`, `NAME`, `PUBLISHER` and
 
 The same engine also runs as a standalone Docker Compose project (`area-events`) that refreshes about hourly and serves `GET /events.json` and `GET /health` read-only over HTTP. See [docs/docker-deployment.md](docs/docker-deployment.md) for the design, the safe SSH deployment procedure and rollback. Run `python -m discovery.service` for the same thing without Docker (`AREA_EVENTS_DATA_DIR` selects where data is kept).
 
+### Home Assistant feed sync
+
+A Home Assistant `shell_command` plus an automation can copy the Docker service's feed into `/config/www/area-events-card/events.json` every 30 minutes, validated and atomically, with no Windows machine involved. See [docs/home-assistant-sync.md](docs/home-assistant-sync.md) and the examples in [homeassistant/](homeassistant/).
+
 ### Hourly refresh on Windows (Task Scheduler)
 
 `.\refresh-events.ps1` runs the refresh and publishes the feed straight to `Z:\www\area-events-card\events.json` (atomic replace, JSON validated first, previous feed untouched on any failure). It does not deploy the card; `.\deploy.ps1` remains the software deployment command and must have been run once so the `www\area-events-card` folder exists. A lock file prevents overlapping runs; output is appended to `data\refresh.log`.

@@ -1,0 +1,31 @@
+# Add to /config/automations.yaml, or create it in the UI via
+# Settings > Automations & scenes > Create > Edit in YAML.
+# Syntax is for Home Assistant 2024.10 or newer.
+- id: area_events_sync_feed
+  alias: Area Events - sync feed from Cubi
+  description: Copies the validated event feed from the Cubi into /config/www/area-events-card every 30 minutes and at startup.
+  mode: single
+  triggers:
+    - trigger: time_pattern
+      minutes: "/30"
+      id: schedule
+    - trigger: homeassistant
+      event: start
+      id: startup
+  actions:
+    - if:
+        - condition: trigger
+          id: startup
+      then:
+        - delay: "00:00:45"  # let the network come up after a restart
+    - action: shell_command.sync_area_events
+      response_variable: sync
+    - if:
+        - condition: template
+          value_template: "{{ sync.returncode != 0 }}"
+      then:
+        - action: system_log.write
+          data:
+            level: warning
+            logger: area_events_sync
+            message: "Area Events sync failed (previous feed kept): {{ sync.stderr | default('') | trim }}"
