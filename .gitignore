@@ -13,3 +13,4 @@ data/events.json
 data/source-cache.json
 data/.refresh.lock
 data/refresh.log
+.env

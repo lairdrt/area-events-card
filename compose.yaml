@@ -1,0 +1,36 @@
+# Standalone Compose project for the Area Events discovery service.
+# Separate from any other project on the host (own name, network and volume).
+name: area-events
+
+services:
+  discovery:
+    build: .
+    image: area-events:${AREA_EVENTS_TAG:-local}
+    container_name: area-events
+    restart: unless-stopped
+    environment:
+      AREA_EVENTS_INTERVAL_SECONDS: ${AREA_EVENTS_INTERVAL_SECONDS:-3600}
+    ports:
+      # Host side defaults to loopback only. Set AREA_EVENTS_BIND in .env to the
+      # host's LAN address to serve the LAN; never 0.0.0.0 unless intended.
+      - "${AREA_EVENTS_BIND:-127.0.0.1}:${AREA_EVENTS_PORT:-8765}:8080"
+    volumes:
+      - data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  data:
+    name: area-events_data

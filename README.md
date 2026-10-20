@@ -119,6 +119,10 @@ Records are the same event only if they come from **different sources**, start a
 
 Add a module under `discovery/sources/` providing `KEY`, `NAME`, `PUBLISHER` and `discover(fetcher, previous, details, limit, **options) -> (events, notes)`, register it in `discovery/sources/__init__.py`, and list its key in `discovery.config.json`.
 
+### Docker service (always-on host)
+
+The same engine also runs as a standalone Docker Compose project (`area-events`) that refreshes about hourly and serves `GET /events.json` and `GET /health` read-only over HTTP. See [docs/docker-deployment.md](docs/docker-deployment.md) for the design, the safe SSH deployment procedure and rollback. Run `python -m discovery.service` for the same thing without Docker (`AREA_EVENTS_DATA_DIR` selects where data is kept).
+
 ### Hourly refresh on Windows (Task Scheduler)
 
 `.\refresh-events.ps1` runs the refresh and publishes the feed straight to `Z:\www\area-events-card\events.json` (atomic replace, JSON validated first, previous feed untouched on any failure). It does not deploy the card; `.\deploy.ps1` remains the software deployment command and must have been run once so the `www\area-events-card` folder exists. A lock file prevents overlapping runs; output is appended to `data\refresh.log`.
