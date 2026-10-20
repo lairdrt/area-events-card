@@ -8,57 +8,88 @@
 const AREA_EVENTS_CARD_BUILD = "__AREA_EVENTS_CARD_BUILD__";
 const CARD_TAG = "area-events-card";
 
+/*
+ * Theme: colors come only from Home Assistant theme variables, so the card
+ * follows light/dark theme changes through CSS inheritance (no JS needed).
+ * Tiles are a tint of the primary text color over the card background, which
+ * stays visible even in themes (e.g. Graphite E-ink Dark) where card, page
+ * and secondary backgrounds are identical. Verification and category are
+ * always conveyed by icon and text, never by color alone.
+ *
+ * Layout: auto-fit columns, 220px minimum tile width, capped at four, so the
+ * column count follows the card width (not the viewport). No breakpoints and
+ * no font scaling.
+ */
 const STYLES = `
   :host { display: block; }
-  ha-card { overflow: hidden; }
+  ha-card { height: 100%; box-sizing: border-box; padding: 12px 12px 8px; overflow: hidden; }
   .header {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 8px; padding: 16px 16px 8px;
+    padding: 4px 4px 8px; overflow-wrap: anywhere;
     font-size: var(--ha-card-header-font-size, 24px);
     color: var(--ha-card-header-color, var(--primary-text-color));
   }
   .demo-banner {
-    margin: 0 16px 8px; padding: 6px 12px; border-radius: 8px;
-    background: var(--warning-color, #ffa600); color: var(--text-primary-color, #fff);
-    font-size: 12px; font-weight: 500; text-align: center;
+    margin: 0 0 8px; padding: 6px 12px; border-radius: 8px;
+    border: 1px solid var(--warning-color, var(--divider-color));
+    color: var(--primary-text-color);
+    font-size: 0.875rem; font-weight: min(var(--ha-font-weight-medium, 500), 600);
+    text-align: center; overflow-wrap: anywhere;
   }
   .grid {
-    display: grid; gap: 12px; padding: 8px 16px 16px;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    display: grid; gap: 8px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, max(220px, (100% - 3 * 8px) / 4)), 1fr));
   }
   .event {
-    display: flex; flex-direction: column; overflow: hidden;
-    border-radius: var(--ha-card-border-radius, 12px);
-    border: 1px solid var(--divider-color);
-    background: var(--card-background-color);
+    display: flex; flex-direction: column; min-width: 0; overflow: hidden;
+    border-radius: calc(var(--ha-card-border-radius, var(--ha-border-radius-lg, 12px)) * 0.75);
+    border: 1px solid var(--ha-card-border-color, var(--divider-color));
+    background: var(--secondary-background-color);
+    color: var(--primary-text-color);
+  }
+  @supports (background: color-mix(in srgb, currentColor 5%, transparent)) {
+    .event {
+      background: color-mix(in srgb, var(--primary-text-color, currentColor) 12%, transparent);
+      border-color: transparent;
+    }
   }
   .image {
-    position: relative; aspect-ratio: 16 / 9;
+    position: relative; aspect-ratio: 16 / 9; overflow: hidden;
     display: flex; align-items: center; justify-content: center;
-    background: linear-gradient(135deg, var(--primary-color), var(--accent-color, var(--secondary-text-color)));
-    color: var(--text-primary-color, #fff);
+    background-color: color-mix(in srgb, var(--primary-text-color, currentColor) 10%, transparent);
     background-size: cover; background-position: center;
+    color: var(--secondary-text-color);
   }
-  .image ha-icon { --mdc-icon-size: 48px; opacity: 0.85; }
+  .image ha-icon { --mdc-icon-size: 48px; }
   .category {
-    position: absolute; top: 8px; left: 8px; padding: 2px 8px; border-radius: 12px;
-    background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 12px;
+    position: absolute; top: 8px; left: 8px; max-width: calc(100% - 16px);
+    padding: 2px 8px; border-radius: 12px; box-sizing: border-box;
+    background: var(--card-background-color, var(--primary-background-color));
+    border: 1px solid var(--divider-color);
+    color: var(--primary-text-color);
+    font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .body { display: flex; flex-direction: column; gap: 4px; padding: 12px; }
-  .title { font-size: 16px; font-weight: 500; color: var(--primary-text-color); }
+  .body { display: flex; flex-direction: column; gap: 4px; padding: 12px; min-width: 0; }
+  .title {
+    font-size: 1rem; font-weight: min(var(--ha-font-weight-medium, 500), 600);
+    color: var(--primary-text-color); overflow-wrap: anywhere;
+  }
   .meta {
-    display: flex; align-items: center; gap: 6px;
-    font-size: 13px; color: var(--secondary-text-color);
+    display: flex; align-items: flex-start; gap: 6px; min-width: 0;
+    font-size: 0.875rem; color: var(--secondary-text-color); overflow-wrap: anywhere;
   }
   .meta ha-icon { --mdc-icon-size: 16px; flex: none; }
-  .verify { margin-top: 4px; font-size: 12px; font-weight: 500; }
-  .verify.verified { color: var(--success-color, #43a047); }
+  .verify {
+    margin-top: 4px; font-size: 0.8125rem;
+    font-weight: min(var(--ha-font-weight-medium, 500), 600);
+  }
+  .verify.verified { color: var(--success-color, var(--primary-text-color)); }
   .verify.unverified { color: var(--secondary-text-color); }
   .verify ha-icon { --mdc-icon-size: 16px; vertical-align: -3px; }
-  .empty { padding: 16px; color: var(--secondary-text-color); }
+  .empty { padding: 16px 4px; color: var(--secondary-text-color); }
+  /* Build tag, bottom-left, below the grid. A diagnostic label, not content. */
   .footer {
-    padding: 0 16px 12px; text-align: left;
-    font-size: 11px; color: var(--secondary-text-color);
+    margin-top: 8px; font-size: 0.8125rem; line-height: 1.25; letter-spacing: 0.02em;
+    color: var(--secondary-text-color); overflow-wrap: anywhere;
   }
 `;
 
