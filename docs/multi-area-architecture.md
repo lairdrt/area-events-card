@@ -1,6 +1,6 @@
 # Multi-area architecture: choosing an area in the card and getting its events from the Cubi
 
-Status: **design only, nothing here is implemented.** Baseline: `b13ef40`.
+Status: design (baseline `b13ef40`). **Implemented as the recommended path with step 1 (YAML scripts)**; see [multi-area-deployment.md](multi-area-deployment.md) for installation and what remains to verify in a real Home Assistant. Step 2 (custom integration) is not built. Differences from the plan: the API surface is `health`, `areas` (list/create), `areas/{id}` (read/delete), `areas/{id}/events`, `areas/{id}/refresh`; geocoding is cached per area plus a shared cache used when areas are created; the shared HTTP response cache was not built (the per-host limiter and one-job-at-a-time slot are).
 
 ## 1. Recommendation
 

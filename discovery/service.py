@@ -23,6 +23,8 @@ import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .api import MAX_BODY, PREFIX, load_api_keys, Api
+from .areamgr import AreaManager
 from .areas import DEFAULT_AREA, AreaStore, load_status, save_status
 from .publish import FeedError, validate_feed
 from .refresh import CONFIG_FILE, load_config, refresh
@@ -53,7 +55,8 @@ class _LogWriter:
 
 
 class Service:
-    def __init__(self, data_dir, config_path=CONFIG_FILE, interval=3600, refresh_fn=refresh, clock=time.time):
+    def __init__(self, data_dir, config_path=CONFIG_FILE, interval=3600, refresh_fn=refresh, clock=time.time, slot=None):
+        self.slot = slot or threading.Lock()  # shared with the area worker: one discovery job at a time
         self.data_dir = data_dir
         self.config_path = config_path
         self.interval = interval
@@ -95,7 +98,7 @@ class Service:
         try:
             log.info("refresh starting")
             options = {"interval": 2.0}
-            with contextlib.redirect_stdout(_LogWriter(logging.INFO)), contextlib.redirect_stderr(_LogWriter(logging.WARNING)):
+            with self.slot, contextlib.redirect_stdout(_LogWriter(logging.INFO)), contextlib.redirect_stderr(_LogWriter(logging.WARNING)):
                 code = self.refresh_fn(
                     load_config(self.config_path), options,
                     output=self.area.feed, cache_path=self.area.source_cache, lock_path=self.area.lock,
@@ -200,13 +203,14 @@ class Handler(BaseHTTPRequestHandler):
     sys_version = ""
     timeout = 10
 
-    def _send(self, code, body, content_type="application/json; charset=utf-8", extra=None):
+    def _send(self, code, body, content_type="application/json; charset=utf-8", extra=None, cors=True):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Access-Control-Allow-Origin", "*")  # read-only public data; lets the HA page fetch it
+        if cors:
+            self.send_header("Access-Control-Allow-Origin", "*")  # public read-only default feed; never sent by /api/v1
         for name, value in (extra or {}).items():
             self.send_header(name, value)
         self.end_headers()
@@ -216,9 +220,28 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code, payload):
         self._send(code, (json.dumps(payload, indent=2) + "\n").encode())
 
+    def _api(self):
+        """Hand an /api/v1 request to the authenticated API (which answers 404 when no key is configured)."""
+        api = getattr(self.server, "api", None)
+        length = self.headers.get("Content-Length")
+        body = b""
+        if self.command == "POST" and length:
+            if not length.isdigit() or int(length) > MAX_BODY:
+                return self._send(413, b'{"error": {"code": "too_large", "message": "request body too large"}}\n', cors=False)
+            body = self.rfile.read(int(length))
+        elif self.headers.get("Transfer-Encoding"):
+            return self._send(411, b'{"error": {"code": "length_required", "message": "Content-Length is required"}}\n', cors=False)
+        if api is None:
+            return self._send(404, b'{"error": {"code": "not_found", "message": "not found"}}\n', cors=False)
+        status, headers, payload = api.handle(self.command, self.path, self.headers, body, self.client_address[0])
+        content_type = headers.pop("Content-Type", "application/json; charset=utf-8")
+        self._send(status, payload, content_type, headers, cors=False)
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         service = self.server.service
+        if path.startswith(PREFIX + "/") or path == PREFIX:
+            return self._api()
         if path == "/events.json":
             feed = service.read_feed()
             if feed:
@@ -234,13 +257,21 @@ class Handler(BaseHTTPRequestHandler):
     do_HEAD = do_GET
 
     def do_OPTIONS(self):
+        if self.path.startswith(PREFIX):
+            return self._send(404, b'{"error": {"code": "not_found", "message": "not found"}}\n', cors=False)
         self._send(204, b"", extra={"Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
                                     "Access-Control-Allow-Headers": "Cache-Control, Pragma, Content-Type"})
 
     def _not_allowed(self):
         self._json(405, {"error": "read-only service"})
 
-    do_POST = do_PUT = do_DELETE = do_PATCH = _not_allowed
+    def do_POST(self):
+        self._api() if self.path.split("?", 1)[0].startswith(PREFIX + "/") else self._not_allowed()
+
+    def do_DELETE(self):
+        self._api() if self.path.split("?", 1)[0].startswith(PREFIX + "/") else self._not_allowed()
+
+    do_PUT = do_PATCH = _not_allowed
 
     def send_response(self, code, message=None):
         super().send_response(code, message)
@@ -251,10 +282,11 @@ class Handler(BaseHTTPRequestHandler):
         log.debug("http %s", fmt % args)
 
 
-def make_server(service, host, port):
+def make_server(service, host, port, api=None):
     server = ThreadingHTTPServer((host, port), Handler)
     server.daemon_threads = True
     server.service = service
+    server.api = api
     return server
 
 
@@ -280,7 +312,20 @@ def main():
     # One container owns this volume, so a lock left by a killed run is stale.
     with contextlib.suppress(OSError):
         os.remove(AreaStore(data_dir).paths(DEFAULT_AREA).lock)
-    server = make_server(service, os.environ.get("AREA_EVENTS_HOST", "0.0.0.0"), int(os.environ.get("AREA_EVENTS_PORT", "8080")))
+    api, manager = None, None
+    try:
+        keys = load_api_keys()
+    except ValueError as error:
+        keys = []
+        log.error("management API disabled: %s", error)
+    if keys:
+        limits = load_config(service.config_path).get("api", {})
+        manager = AreaManager(data_dir, lambda: load_config(service.config_path), limits=limits, slot=service.slot)
+        api = Api(manager, keys, service)
+        log.info("management API enabled (%d area(s) stored)", len(manager.areas))
+    else:
+        log.info("management API disabled: no API key configured")
+    server = make_server(service, os.environ.get("AREA_EVENTS_HOST", "0.0.0.0"), int(os.environ.get("AREA_EVENTS_PORT", "8080")), api)
     stop = threading.Event()
 
     def shutdown(*_):
@@ -290,6 +335,8 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
     threading.Thread(target=service.run_forever, args=(stop,), daemon=True).start()
+    if manager:
+        threading.Thread(target=manager.run_forever, args=(stop,), daemon=True).start()
     log.info("serving on %s:%s, refreshing every %ss, data in %s", *server.server_address[:2], service.interval, data_dir)
     server.serve_forever()
     log.info("stopped")

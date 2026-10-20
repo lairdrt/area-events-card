@@ -157,8 +157,8 @@ class Registry(unittest.TestCase):
 
     def test_shipped_configuration_is_valid_and_data_driven(self):
         sources = registry.load_sources(SHIPPED)
-        self.assertEqual([s.id for s in sources], ["kpbs", "sandiegoreader", "dosd", "sandiego_gov"])
-        self.assertEqual([s.name for s in sources], ["KPBS", "San Diego Reader", "DoSD", "City of San Diego"])
+        self.assertEqual([s.id for s in sources], ["kpbs", "sandiegoreader", "dosd", "sandiego_gov", "ut_austin"])
+        self.assertEqual([s.name for s in sources], ["KPBS", "San Diego Reader", "DoSD", "City of San Diego", "UT Austin Events"])
         self.assertTrue(all(s.coverage["type"] == "area" and s.url.startswith("https://") for s in sources))
         for module in ("kpbs", "sandiegoreader", "dosd", "sandiego_gov", "localist"):
             adapter = sources_module.adapter_module(module)

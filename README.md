@@ -16,6 +16,8 @@ Registers as `custom:area-events-card`.
 | `feed`   | URL of a JSON feed (`/local/area-events-card/events.json`). |
 | `id`     | Optional short name (letters, digits, `-`, `_`) that keeps this card's saved filters separate from other cards with identical settings on the same dashboard. |
 | `area`   | Optional `{name, latitude, longitude, radius_miles, timezone}` for this card (see Choosing the area). |
+| `source` | `service` for multi-area mode (events chosen per card from the discovery server through Home Assistant scripts). |
+| `script_prefix`, `country`, `radius_miles` | Multi-area mode only: script name prefix (default `area_events`), country for ZIP codes, default radius. |
 | `demo`   | If `true`, shows a "demonstration data" banner. |
 
 Event fields: `title`, `start` (ISO 8601), `location`, `category`, `image` (URL, optional), `verified` (boolean).
@@ -85,6 +87,10 @@ The sticky header shows the card title, **Updated <date time> (<age>)** taken fr
 
 Use **New category** to add your own with comma-separated keywords (with none, the category name itself is the keyword); custom categories can be edited and deleted. Choices are saved per card: in your Home Assistant user data (so they follow you across devices, as the NVR Card does) with the browser's local storage as a cache and fallback. The saved key combines the dashboard path with the card's `id`, or else a hash of its title, feed and entity. Give cards that are otherwise identical on one dashboard different `id` values, or they will share filters.
 
+### Multi-area mode (a different place per card)
+
+With `source: service` a card asks the discovery server for the events of its own area (city, ZIP code, coordinates, the Home Assistant home location or your browser location, plus a radius) and remembers the choice per card, so a San Diego card and an Austin card work side by side. The server keeps a separate feed and cache per area, refreshes active areas hourly with bounded concurrency, and is managed through an authenticated API that Home Assistant calls with a key kept in `secrets.yaml`: the browser never contacts the server and holds no credential. Setup, configuration, security model, troubleshooting, rollback and what still needs a real Home Assistant to verify: [docs/multi-area-deployment.md](docs/multi-area-deployment.md). Home Assistant side: [homeassistant/area_events.example.yaml](homeassistant/area_events.example.yaml). Without an API key none of this exists and the server behaves as before.
+
 ### Choosing the area (Home Assistant home / browser location)
 
 Open **Filters** to see the **Area** panel. The card decides which area applies in this order:
@@ -96,7 +102,7 @@ Open **Filters** to see the **Area** panel. The card decides which area applies 
 
 **Browser location** is requested only when you click "Use my location", never on page load, and only if the browser supports it. Denial, timeout, an unusable position or an insecure (non-https, non-localhost) page produce a message and save nothing; no coordinates are substituted. A granted position is saved for that card only, with its reported accuracy and the browser's own time zone.
 
-**What this does and does not do.** The area chosen in the card is for the card. **It does not change what the discovery service searches**, and the card says so. The service runs on a server and cannot read Home Assistant's or a browser's location, and it deliberately has no endpoint that accepts one (that would let anyone on the network redirect discovery). There is **no automatic, authenticated channel from a card or Home Assistant to the discovery service yet**; building one (for example an authenticated Home Assistant integration) is future work. Today the supported route is manual: the panel shows the discovery area the feed was produced for, whether your area is inside it, and the command to hand a location to the server:
+**What this does and does not do.** The area chosen in the card is for the card. **It does not change what the discovery service searches**, and the card says so. The service runs on a server and cannot read Home Assistant's or a browser's location, and it deliberately has no endpoint that accepts one (that would let anyone on the network redirect discovery). In the legacy (`feed:`) modes there is **no channel from a card to the discovery service**; the authenticated channel is multi-area mode (`source: service`, above). Today the supported route is manual: the panel shows the discovery area the feed was produced for, whether your area is inside it, and the command to hand a location to the server:
 
 ```
 python -m discovery.hint --source home_assistant --latitude 30.2672 --longitude -97.7431 --timezone America/Chicago   # Home Assistant home

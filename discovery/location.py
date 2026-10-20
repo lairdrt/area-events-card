@@ -211,10 +211,10 @@ def cached_lookup(cache_path, key, lookup, now=time.time):
     return value, "lookup"
 
 
-def _timezone_for(spec, latitude, longitude, fetcher, cache_path, now):
+def _timezone_for(spec, latitude, longitude, fetcher, cache_path, now, lookup=True):
     if spec["timezone"]:
         return spec["timezone"], "config"
-    if fetcher is None:
+    if fetcher is None or not lookup:
         return None, "unknown"
     try:
         zone, _ = cached_lookup(cache_path, f"tz:{latitude:.2f},{longitude:.2f}",
@@ -236,13 +236,13 @@ def _finish(spec, place, source, timezone_name, timezone_source):
     }
 
 
-def resolve_location(raw, fetcher=None, cache_path=None, providers=None, now=time.time):
+def resolve_location(raw, fetcher=None, cache_path=None, providers=None, now=time.time, timezone_lookup=True):
     """Return the normalized location for the `location` config block, or raise LocationError."""
     spec = parse_spec(raw)
     if spec["kind"] == "coordinates":
         place = {"display_name": f"{spec['latitude']:.4f}, {spec['longitude']:.4f}",
                  "latitude": spec["latitude"], "longitude": spec["longitude"]}
-        zone, zone_source = _timezone_for(spec, spec["latitude"], spec["longitude"], fetcher, cache_path, now)
+        zone, zone_source = _timezone_for(spec, spec["latitude"], spec["longitude"], fetcher, cache_path, now, timezone_lookup)
         return _finish(spec, place, "config", zone, zone_source)
 
     providers = providers or PROVIDERS
@@ -259,7 +259,7 @@ def resolve_location(raw, fetcher=None, cache_path=None, providers=None, now=tim
         raise LocationError(f"could not resolve location '{label}': {name} found no match")
     if spec["country"] and place.get("country") and place["country"] != spec["country"]:
         raise LocationError(f"location '{label}' resolved to country {place['country']}, but {spec['country']} is configured")
-    zone, zone_source = _timezone_for(spec, place["latitude"], place["longitude"], fetcher, cache_path, now)
+    zone, zone_source = _timezone_for(spec, place["latitude"], place["longitude"], fetcher, cache_path, now, timezone_lookup)
     return _finish(spec, place, how if how != "lookup" else f"geocoded:{name}", zone, zone_source)
 
 

@@ -149,3 +149,7 @@ These figures were reported from the live deployment. Later versions should be c
 | Dedup check | Ocean Beach Restaurant Walk is one event with KPBS, Reader and DoSD URLs, retrieval times and `match_reasons`; every event keeps per-source URL and retrieval time |
 | Frigate | `frigate` stayed `Up 5 weeks (healthy)`; its project was not touched |
 | Rollback | image `area-events:previous` (the `44d6b65` build) and a data backup at `~/area-events-backups/area-events-data-20261020-121000.tgz` on the Cubi; `AREA_EVENTS_TAG=previous docker compose up -d --no-build` restores the old image, and the `area-events_data` volume was never removed |
+
+## Multi-area API (optional)
+
+Setting `AREA_EVENTS_API_KEY` in `.env` turns on the authenticated `/api/v1` area API; see [multi-area-deployment.md](multi-area-deployment.md). The volume layout gains `/data/areas.json`, `/data/geocode-cache.json` and `/data/areas/<id>/`; the default area's files are unchanged. Removing the key turns the API off again, and the previous image (`area-events:previous`) still works with the extended volume because it ignores those files.

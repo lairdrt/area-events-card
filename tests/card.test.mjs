@@ -564,3 +564,326 @@ test("backend hint command and stored areas are validated", () => {
   assert.equal(normalizeArea({ kind: "browser", latitude: null, longitude: 5 }), undefined);
   assert.equal(normalizeArea({ kind: "browser", latitude: "", longitude: 5 }), undefined);
 });
+
+
+// --- service mode: areas chosen in the card, events discovered by the server through Home Assistant scripts ----------
+
+const { parsePlace, extractServiceResponse, normalizeServiceArea, roundCoordinate } = CardClass._internals;
+const hex12 = (text) => {
+  let h = 5381;
+  for (const ch of text) h = ((h << 5) + h + ch.charCodeAt(0)) >>> 0;
+  return (h.toString(16).padStart(8, "0") + (h * 31 >>> 0).toString(16).padStart(8, "0")).slice(0, 12);
+};
+const CITIES = { "austin, tx": [30.2672, -97.7431, "Austin, TX"], "san diego, ca": [32.7157, -117.1611, "San Diego, CA"] };
+
+/** A stand-in for Home Assistant plus the discovery server: scripts -> API, HA user data, nothing else. */
+function createBackend() {
+  const backend = { areas: new Map(), calls: [], userData: new Map(), rejectEnsure: undefined, wsCalls: [] };
+  const idFor = (lat, lon, radius) => "a_" + hex12(`${lat.toFixed(4)},${lon.toFixed(4)},${radius.toFixed(1)}`);
+  const feedFor = (area) => ({
+    generated_at: iso(-10 * 60 * 1000), sources: { s: { ok: true } },
+    location: { display_name: area.name, latitude: area.lat, longitude: area.lon, radius_miles: area.radius },
+    events: [event(`${area.name} Show`, 1, { id: `${area.id}:1`, categories: ["Music"] })],
+  });
+  const describe = (area) => ({ id: area.id, names: [area.name], location: { display_name: area.name, latitude: area.lat, longitude: area.lon, radius_miles: area.radius },
+    status: { state: area.state, last_success_at: area.state === "ok" ? iso(-600000) : null, last_error: area.error || null } });
+  const handlers = {
+    list: () => ({ status: 200, content: { areas: [{ id: "default", names: ["Default area"], status: { state: "ok" } }, ...[...backend.areas.values()].map(describe)] } }),
+    ensure: ({ spec }) => {
+      if (backend.rejectEnsure) return { status: backend.rejectEnsure, content: { error: { code: "x", message: "Radius is too large for this server." } } };
+      let [lat, lon, name] = [spec.latitude, spec.longitude, spec.name];
+      if (spec.query) {
+        const hit = CITIES[spec.query.toLowerCase()];
+        if (!hit) return { status: 422, content: { error: { code: "location", message: `could not resolve location '${spec.query}'` } } };
+        [lat, lon] = hit;
+        name = name || hit[2];
+      }
+      if (spec.zip) [lat, lon, name] = [30.2672, -97.7431, name || `ZIP ${spec.zip}`];
+      const id = idFor(lat, lon, Number(spec.radius_miles));
+      const existing = backend.areas.get(id);
+      if (existing) return { status: 200, content: describe(existing) };
+      const area = { id, name: name || `${lat.toFixed(2)}, ${lon.toFixed(2)}`, lat, lon, radius: Number(spec.radius_miles), state: "queued", ready: backend.autoReady !== false };
+      if (area.ready) area.state = "ok";
+      backend.areas.set(id, area);
+      return { status: 201, content: describe(area) };
+    },
+    get: ({ area_id }) => (backend.areas.has(area_id) ? { status: 200, content: describe(backend.areas.get(area_id)) } : { status: 404, content: { error: { message: "no such area" } } }),
+    feed: ({ area_id }) => {
+      if (area_id === "default") return { status: 200, content: { ...feedFor({ id: "default", name: "Default", lat: 32.7, lon: -117.1, radius: 25 }) } };
+      const area = backend.areas.get(area_id);
+      if (!area) return { status: 404, content: { error: { message: "no such area" } } };
+      return area.ready ? { status: 200, content: feedFor(area) } : { status: 503, content: { error: { message: "no feed yet" } } };
+    },
+    refresh: ({ area_id }) => (backend.refreshLimited ? { status: 429, content: { error: { message: "too soon" } } } : { status: 202, content: describe(backend.areas.get(area_id)) }),
+  };
+  backend.hass = (config = HOME) => ({
+    states: {}, config: { country: "US", ...config },
+    callWS: async (message) => {
+      backend.wsCalls.push(message);
+      if (message.type === "frontend/get_user_data") return { value: backend.userData.get(message.key) ?? null };
+      if (message.type === "frontend/set_user_data") { backend.userData.set(message.key, message.value); return; }
+      assert.equal(message.type, "call_service");
+      assert.equal(message.domain, "script");
+      assert.equal(message.return_response, true);
+      const name = message.service.replace(/^area_events_/, "");
+      backend.calls.push([name, message.service_data]);
+      if (message.service_data.area_id !== undefined && !/^(default|a_[0-9a-f]{12})$/.test(message.service_data.area_id)) throw new Error("invalid area id");
+      return { context: {}, response: handlers[name](message.service_data) };
+    },
+  });
+  backend.count = (name) => backend.calls.filter(([n]) => n === name).length;
+  backend.make = (id, name, lat, lon, radius = 25, extra = {}) => { const area = { id, name, lat, lon, radius, state: "ok", ready: true, ...extra }; backend.areas.set(id, area); return area; };
+  return backend;
+}
+
+const cards = [];
+async function makeService(config, backend, { hass, waitMs = 40 } = {}) {
+  globalThis.fetch = async () => { throw new Error("the card must not call the network in service mode"); };
+  const card = new CardClass();
+  cards.push(card);
+  card.setConfig({ source: "service", ...config });
+  card.hass = hass || backend.hass();
+  await wait(waitMs);
+  return card;
+}
+test.afterEach(() => { cards.splice(0).forEach((c) => c.disconnectedCallback()); });
+const header = (card) => text(byClass(card.shadowRoot, "sticky-header")[0]);
+const noticeText = (card) => (byClass(card.shadowRoot, "notice")[0].hidden ? "" : text(byClass(card.shadowRoot, "notice")[0]));
+const savedArea = (card) => JSON.parse(window.localStorage.getItem(card._prefsKey) || "{}").service_area;
+
+test("service mode: with no saved choice the Home Assistant home area is requested, shown and remembered", async () => {
+  const backend = createBackend();
+  const spy = geolocationSpy(() => {});
+  const card = await makeService({ title: "Events" }, backend);
+  assert.deepEqual(backend.calls[0], ["ensure", { spec: { latitude: 30.27, longitude: -97.74, radius_miles: 25, timezone: "America/Chicago", name: "Home" } }]);
+  assert.deepEqual(byClass(card.shadowRoot, "event").map((e) => text(byClass(e, "title")[0])), ["Home Show"]);
+  assert.match(header(card), /Updated .*\(10 min ago\)/);
+  assert.equal(savedArea(card).name, "Home");
+  assert.match(savedArea(card).id, /^a_[0-9a-f]{12}$/);
+  assert.equal(spy.calls, 0); // nothing asks the browser for its location by itself
+  await wait(400); // the Home Assistant user-data write is debounced
+  const sync = backend.wsCalls.find((m) => m.type === "frontend/set_user_data");
+  assert.equal(sync.value.service_area.id, savedArea(card).id); // persisted for this user through Home Assistant too
+});
+
+test("service mode: without any location the card says what to do and does not call the server", async () => {
+  const backend = createBackend();
+  const card = await makeService({}, backend, { hass: backend.hass({ latitude: 0, longitude: 0 }) });
+  assert.equal(backend.calls.length, 0);
+  assert.match(noticeText(card), /No location is available/);
+  assert.equal(byClass(card.shadowRoot, "service-area").length, 1); // the Area panel is open
+  assert.equal(byClass(card.shadowRoot, "use-home").length, 0);
+});
+
+test("service mode: a saved choice is reused without asking the server to create anything", async () => {
+  const backend = createBackend();
+  backend.make("a_0123456789ab", "Beach", 32.75, -117.25);
+  window.localStorage.setItem(prefsKey({ source: "service", title: "T" }), JSON.stringify({ v: 1, selected: [], custom: [],
+    service_area: { id: "a_0123456789ab", name: "Beach", spec: { latitude: 32.75, longitude: -117.25, radius_miles: 25 } } }));
+  const card = await makeService({ title: "T" }, backend);
+  assert.equal(backend.count("ensure"), 0);
+  assert.deepEqual(byClass(card.shadowRoot, "event").map((e) => text(byClass(e, "title")[0])), ["Beach Show"]);
+});
+
+test("service mode: first discovery still running shows an honest waiting state, then the events", async () => {
+  const backend = createBackend();
+  backend.autoReady = false;
+  const card = await makeService({}, backend);
+  assert.equal(byClass(card.shadowRoot, "event").length, 0);
+  assert.match(noticeText(card), /Waiting for the server to start discovery/);
+  assert.match(header(card), /Discovering/);
+  backend.areas.forEach((a) => { a.ready = true; a.state = "ok"; });
+  await card._serviceLoad(card._serviceRun);
+  assert.equal(byClass(card.shadowRoot, "event").length, 1);
+  assert.equal(noticeText(card), "");
+  assert.doesNotMatch(header(card), /Discovering/);
+});
+
+test("service mode: a failed discovery is reported with its reason, and a later outage keeps the old events flagged stale", async () => {
+  const backend = createBackend();
+  backend.autoReady = false;
+  const card = await makeService({}, backend);
+  backend.areas.forEach((a) => { a.state = "failed"; a.error = "no enabled source applies to Home"; });
+  await card._serviceLoad(card._serviceRun);
+  assert.match(noticeText(card), /no enabled source applies to Home/);
+  assert.match(header(card), /Feed unavailable/);
+  backend.areas.forEach((a) => { a.ready = true; a.state = "ok"; a.error = null; });
+  await card._serviceLoad(card._serviceRun);
+  assert.equal(byClass(card.shadowRoot, "event").length, 1);
+  backend.areas.forEach((a) => { a.state = "failed"; a.error = "site down"; });
+  await card._serviceLoad(card._serviceRun);
+  assert.match(header(card), /Discovery failed/);
+  assert.match(noticeText(card), /last discovery for this area failed \(site down\).*last successful results/);
+  const original = card._hass.callWS;
+  card._hass.callWS = async () => { throw new Error("connection lost"); };
+  await card._serviceLoad(card._serviceRun);
+  assert.match(header(card), /Update failed/);
+  assert.match(noticeText(card), /Showing stale data/);
+  assert.equal(byClass(card.shadowRoot, "event").length, 1); // events stay visible
+  card._hass.callWS = original;
+});
+
+test("service mode: two cards keep different areas at once and changing one never changes the other", async () => {
+  const backend = createBackend();
+  const sd = await makeService({ title: "San Diego", area: { name: "San Diego", latitude: 32.7157, longitude: -117.1611, radius_miles: 25 } }, backend);
+  const tx = await makeService({ title: "Austin" }, backend, { hass: backend.hass({ latitude: 30.2672, longitude: -97.7431, location_name: "Austin", time_zone: "America/Chicago" }) });
+  const titles = (card) => byClass(card.shadowRoot, "event").map((e) => text(byClass(e, "title")[0]));
+  assert.deepEqual([titles(sd), titles(tx)], [["San Diego Show"], ["Austin Show"]]);
+  assert.notEqual(savedArea(sd).id, savedArea(tx).id);
+  openFilters(sd.shadowRoot);
+  type(byClass(sd.shadowRoot, "place-input")[0], "Austin, TX");
+  click(byClass(sd.shadowRoot, "search-area")[0]);
+  await wait(40);
+  assert.deepEqual([titles(sd), titles(tx)], [["Austin, TX Show"], ["Austin Show"]]); // card 1 changed; card 2 did not
+  const back = byClass(sd.shadowRoot, "saved-area").find((b) => text(b) === "San Diego");
+  assert.ok(back, "the previous area is offered as a saved area");
+  click(back);
+  await wait(40);
+  assert.deepEqual([titles(sd), titles(tx)], [["San Diego Show"], ["Austin Show"]]);
+  const fresh = await makeService({ title: "San Diego" }, backend); // a reload restores each card's own choice
+  assert.deepEqual(titles(fresh), ["San Diego Show"]);
+  assert.equal(JSON.parse(window.localStorage.getItem(prefsKey({ source: "service", title: "Austin" }))).service_area.name, "Austin");
+});
+
+test("service mode: typed city, ZIP and coordinates become the right requests, with radius and name", async () => {
+  assert.deepEqual(parsePlace("Austin, TX", "US", 30), { spec: { query: "Austin, TX", country: "US", radius_miles: 30 } });
+  assert.deepEqual(parsePlace("78701", "US", 25), { spec: { zip: "78701", country: "US", radius_miles: 25 } });
+  assert.deepEqual(parsePlace("30.27, -97.74", "US", 10), { spec: { latitude: 30.27, longitude: -97.74, radius_miles: 10 } });
+  assert.deepEqual(parsePlace("30.27 -97.74", undefined, 10).spec.longitude, -97.74);
+  assert.match(parsePlace("78701", undefined, 25).error, /needs a country/);
+  assert.match(parsePlace("95, 10", "US", 25).error, /not valid/);
+  assert.match(parsePlace("   ", "US", 25).error, /Enter a city/);
+  assert.equal(parsePlace("Springfield", undefined, 25).spec.country, undefined);
+  const backend = createBackend();
+  const card = await makeService({}, backend);
+  openFilters(card.shadowRoot);
+  type(byClass(card.shadowRoot, "place-input")[0], "San Diego, CA");
+  type(byClass(card.shadowRoot, "radius-input")[0], "40");
+  type(byClass(card.shadowRoot, "area-name-input")[0], "Work");
+  click(byClass(card.shadowRoot, "search-area")[0]);
+  await wait(40);
+  const last = backend.calls.filter(([n]) => n === "ensure").at(-1)[1].spec;
+  assert.deepEqual(last, { query: "San Diego, CA", country: "US", radius_miles: 40, name: "Work" });
+  assert.equal(savedArea(card).name, "Work");
+});
+
+test("service mode: server rejections are shown in the panel and nothing is saved", async () => {
+  const backend = createBackend();
+  const card = await makeService({}, backend);
+  const before = savedArea(card).id;
+  openFilters(card.shadowRoot);
+  type(byClass(card.shadowRoot, "place-input")[0], "Nowhereville");
+  click(byClass(card.shadowRoot, "search-area")[0]);
+  await wait(40);
+  assert.match(text(byClass(card.shadowRoot, "editor")[0]), /could not resolve location 'Nowhereville'/);
+  assert.equal(savedArea(card).id, before); // the previous area is still the saved choice
+  backend.rejectEnsure = 422;
+  type(byClass(card.shadowRoot, "place-input")[0], "30.1, -97.1");
+  type(byClass(card.shadowRoot, "radius-input")[0], "500");
+  click(byClass(card.shadowRoot, "search-area")[0]);
+  await wait(40);
+  assert.match(text(byClass(card.shadowRoot, "editor")[0]), /Radius is too large/);
+  type(byClass(card.shadowRoot, "place-input")[0], "");
+  click(byClass(card.shadowRoot, "search-area")[0]);
+  assert.match(text(byClass(card.shadowRoot, "editor")[0]), /Enter a city/);
+});
+
+test("service mode: browser location only by clicking, rounded before it leaves the browser, and errors save nothing", async () => {
+  const backend = createBackend();
+  const spy = geolocationSpy((ok) => ok({ coords: { latitude: 51.507222, longitude: -0.127585, accuracy: 20 } }));
+  const card = await makeService({}, backend, { hass: backend.hass({}) }); // Home Assistant has no home location here
+  assert.equal(spy.calls, 0);
+  assert.equal(backend.calls.length, 0); // no location yet, so nothing was requested; the Area panel is already open
+  click(byClass(card.shadowRoot, "use-mine")[0]);
+  await wait(40);
+  assert.equal(spy.calls, 1);
+  const spec = backend.calls.filter(([n]) => n === "ensure").at(-1)[1].spec;
+  assert.deepEqual([spec.latitude, spec.longitude, spec.name], [51.51, -0.13, "My location"]); // about 1 km, not the exact position
+  assert.equal(roundCoordinate(51.507222), 51.51);
+  for (const [behavior, expected] of [[(ok, fail) => fail({ code: 1 }), /permission was denied/], [(ok, fail) => fail({ code: 3 }), /took too long/]]) {
+    const other = createBackend();
+    geolocationSpy(behavior);
+    const denied = await makeService({ title: `denied ${expected}` }, other, { hass: other.hass({}) });
+    click(byClass(denied.shadowRoot, "use-mine")[0]);
+    assert.match(text(byClass(denied.shadowRoot, "area-message")[0]), expected);
+    assert.equal(other.calls.length, 0);
+    assert.equal(savedArea(denied), undefined);
+  }
+});
+
+test("service mode: the Home Assistant home button, saved areas and the default area", async () => {
+  const backend = createBackend();
+  backend.make("a_00000000aaaa", "Cabin", 33.0, -117.0);
+  const card = await makeService({ area: { name: "Office", latitude: 40.7, longitude: -74.0 } }, backend);
+  assert.equal(backend.count("list"), 0); // the list is fetched when the panel is opened, not on load
+  openFilters(card.shadowRoot);
+  await wait(30);
+  assert.equal(backend.count("list"), 1);
+  const names = byClass(card.shadowRoot, "saved-area").map((b) => text(b));
+  assert.deepEqual(names.sort(), ["Cabin", "Default area"]);
+  click(byClass(card.shadowRoot, "use-home")[0]);
+  await wait(40);
+  assert.equal(backend.calls.filter(([n]) => n === "ensure").at(-1)[1].spec.name, "Home");
+  click(byClass(card.shadowRoot, "saved-area").find((b) => text(b) === "Default area"));
+  await wait(40);
+  assert.equal(savedArea(card).id, "default");
+  assert.deepEqual(byClass(card.shadowRoot, "event").map((e) => text(byClass(e, "title")[0])), ["Default Show"]);
+});
+
+test("service mode: an area the server forgot is recreated from the saved choice", async () => {
+  const backend = createBackend();
+  window.localStorage.setItem(prefsKey({ source: "service" }), JSON.stringify({ v: 1, selected: [], custom: [],
+    service_area: { id: "a_deadbeef0000", name: "Lost", spec: { latitude: 30.27, longitude: -97.74, radius_miles: 25 } } }));
+  const card = await makeService({}, backend);
+  assert.equal(backend.count("ensure"), 1);
+  assert.deepEqual(byClass(card.shadowRoot, "event").map((e) => text(byClass(e, "title")[0])), ["Lost Show"]);
+  assert.notEqual(savedArea(card).id, "a_deadbeef0000");
+});
+
+test("service mode: refresh now, and the server's rate limit", async () => {
+  const backend = createBackend();
+  const card = await makeService({}, backend);
+  openFilters(card.shadowRoot);
+  click(byClass(card.shadowRoot, "refresh-area")[0]);
+  await wait(30);
+  assert.equal(backend.count("refresh"), 1);
+  assert.match(text(byClass(card.shadowRoot, "area-message")[0]), /Refresh requested/);
+  backend.refreshLimited = true;
+  click(byClass(card.shadowRoot, "refresh-area")[0]);
+  await wait(30);
+  assert.match(text(byClass(card.shadowRoot, "area-message")[0]), /refreshed a moment ago/);
+});
+
+test("service mode: only Home Assistant scripts are used, never the network or a credential", async () => {
+  const backend = createBackend();
+  const card = await makeService({ script_prefix: "my_events" }, backend);
+  assert.ok(backend.wsCalls.length > 0);
+  assert.throws(() => new CardClass().setConfig({ source: "service", script_prefix: "bad prefix; rm" }), /script_prefix/);
+  assert.throws(() => new CardClass().setConfig({ source: "service", script_prefix: "../x" }), /script_prefix/);
+  const services = backend.wsCalls.filter((m) => m.type === "call_service");
+  assert.ok(services.every((m) => m.domain === "script" && /^my_events_(list|ensure|get|feed|refresh)$/.test(m.service)));
+  const everything = JSON.stringify(backend.wsCalls) + JSON.stringify(Object.fromEntries(window.localStorage.map));
+  assert.doesNotMatch(everything, /Bearer|authorization|api[_-]?key|http:\/\//i);
+  assert.equal(card._config.source, "service");
+});
+
+test("service mode: response shapes and stored areas are validated", () => {
+  assert.deepEqual(extractServiceResponse({ context: {}, response: { status: 200, content: '{"a": 1}' } }), { status: 200, content: { a: 1 } });
+  assert.deepEqual(extractServiceResponse({ response: { "script.area_events_feed": { status: 200, content: { b: 2 } } } }), { status: 200, content: { b: 2 } });
+  assert.deepEqual(extractServiceResponse({ status: 404, content: "plain text" }), { status: 404, content: "plain text" });
+  for (const bad of [undefined, null, {}, { response: null }, { response: { nope: 1 } }, "text"]) assert.throws(() => extractServiceResponse(bad), /returned no response/);
+  assert.equal(normalizeServiceArea({ id: "../etc", name: "x" }), undefined);
+  assert.equal(normalizeServiceArea({ id: "a_0123456789AB" }), undefined);
+  assert.deepEqual(normalizeServiceArea({ id: "a_0123456789ab", name: " Home ", spec: { latitude: 1, evil: "x", query: "q", url: "http://x" } }),
+    { id: "a_0123456789ab", name: "Home", spec: { latitude: 1, query: "q" } });
+  assert.equal(normalizePrefs({ selected: [], custom: [], service_area: { id: "nope" } }).service_area, undefined);
+});
+
+test("service mode leaves the existing feed, inline and entity modes alone", async () => {
+  const backend = createBackend();
+  const legacy = await make({ feed: "/f.json", title: "Legacy" }, { hass: backend.hass() });
+  assert.equal(byClass(legacy.shadowRoot, "event").length, 3);
+  assert.equal(backend.calls.length, 0);
+  assert.equal(byClass(legacy.shadowRoot, "service-area").length, 0);
+  assert.throws(() => new CardClass().setConfig({}), /Define 'feed', 'entity', 'events' or 'source: service'/);
+});

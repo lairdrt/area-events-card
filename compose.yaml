@@ -10,6 +10,8 @@ services:
     restart: unless-stopped
     environment:
       AREA_EVENTS_INTERVAL_SECONDS: ${AREA_EVENTS_INTERVAL_SECONDS:-3600}
+      # Empty (the default) leaves the management API off. Set a random key of 32+ characters in .env to turn it on.
+      AREA_EVENTS_API_KEY: ${AREA_EVENTS_API_KEY:-}
     ports:
       # Host side defaults to loopback only. Set AREA_EVENTS_BIND in .env to the
       # host's LAN address to serve the LAN; never 0.0.0.0 unless intended.
