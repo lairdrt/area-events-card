@@ -1,4 +1,5 @@
 """The profile engine and its HTTP API: ownership, isolation, failure handling, honest source reporting."""
+import hashlib
 import json
 import os
 import tempfile
@@ -9,12 +10,24 @@ import urllib.request
 
 from discovery import server as server_module
 from discovery.core import FetchError, save_events
+from discovery.location import LocationError
 from discovery.engine import Engine, EngineError
 from discovery.profiles import ProfileError, location_spec, normalize_profile, profile_id, public_host
 from discovery.server import Api, make_server
 
 TOKEN = "t" * 40
 AUSTIN = {"area": "Austin, TX", "radius_miles": 25}
+
+
+def fake_geocode(spec, fetcher, cache_path):
+    """Stands in for the shared geocoder: each distinct text is one distinct place; texts starting with Bad cannot be resolved."""
+    if "latitude" in spec:
+        return {"display_name": spec.get("name") or f"{spec['latitude']}, {spec['longitude']}", "latitude": spec["latitude"], "longitude": spec["longitude"], "country": "US"}
+    text = spec.get("query") or spec.get("zip")
+    if text.lower().startswith("bad"):
+        raise LocationError(f"no place called '{text}' was found")
+    digest = hashlib.md5(text.lower().encode()).digest()
+    return {"display_name": text, "latitude": 20 + digest[0] / 10, "longitude": -120 + digest[1] / 10, "country": "US", "timezone": "America/Chicago"}
 
 
 class Clock:
@@ -60,7 +73,7 @@ class EngineCase(unittest.TestCase):
 
     def make(self, **extra):
         options = dict(interval=3600, clock=self.clock, refresh_fn=self.refresh, fetcher_factory=lambda: object(),
-                       host_check=lambda host: host not in ("intranet.example",), probe=lambda fetcher, url: "localist" in url)
+                       host_check=lambda host: host not in ("intranet.example",), probe=lambda fetcher, url: "localist" in url, geocode=fake_geocode)
         options.update(extra)
         return Engine(self.tmp.name, **options)
 
@@ -139,7 +152,11 @@ class Scheduling(EngineCase):
         self.assertEqual(failed["state"], "error")
         self.assertIn("no enabled source applies", failed["error"])
         self.refresh.fail = None
-        self.clock.now += 700  # after the retry delay a request retries the run
+        self.clock.now += 700  # "no source covers it" cannot be fixed by trying again soon: a request does not repeat the search
+        self.engine.register({"area": "Nowhere"})
+        self.drain()
+        self.assertEqual(self.engine.snapshot(fresh)["state"], "error")
+        self.clock.now += 7 * 3600  # but it is retried now and then, in case sources were added
         self.engine.register({"area": "Nowhere"})
         self.drain()
         self.assertEqual(self.engine.snapshot(fresh)["state"], "ready")
@@ -179,7 +196,10 @@ class Admission(EngineCase):
         ids = []
         for i in range(len(text)):
             self.clock.now += 0.5  # keystrokes arrive over a few seconds
-            ids.append(engine.register({"area": text[: i + 1].rstrip(), "radius_miles": 25}))
+            try:
+                ids.append(engine.register({"area": text[: i + 1].rstrip(), "radius_miles": 25}))
+            except ProfileError:
+                pass  # "S", "Sa": refused outright, they never become profiles
         return ids
 
     def test_repeated_card_loads_and_equivalent_spellings_reuse_one_profile(self):
@@ -209,7 +229,7 @@ class Admission(EngineCase):
         original = self.refresh.__call__
 
         def busy(config, options, **kwargs):
-            for name in ("B", "C", "D", "E"):  # other areas arrive while this one is being searched
+            for name in ("Bravo", "Charlie", "Delta", "Echo"):  # other areas arrive while this one is being searched
                 engine.register({"area": name})
             outcome["still_there"] = engine.snapshot(running)["state"]
             return original(config, options, **kwargs)
@@ -233,15 +253,15 @@ class Admission(EngineCase):
 
     def test_when_every_profile_has_events_and_is_in_use_the_limit_is_reported_not_hidden(self):
         engine = self.make(max_profiles=2)
-        for name in ("A1", "A2"):
+        for name in ("Area One", "Area Two"):
             engine.register({"area": name})
         self.drain(engine)
         with self.assertRaises(EngineError) as raised:
-            engine.register({"area": "A3"})
+            engine.register({"area": "Area Three"})
         self.assertEqual(raised.exception.status, 429)
         self.assertIn("too many different areas", raised.exception.message)
         self.clock.now += 700  # idle ones with events can be evicted once nobody has asked for ten minutes
-        engine.register({"area": "A3"})
+        engine.register({"area": "Area Three"})
         self.assertEqual(engine.status()["profiles"], 2)
 
     def test_after_a_restart_abandoned_profiles_are_not_searched_but_used_ones_are(self):
@@ -274,6 +294,123 @@ class Admission(EngineCase):
         self.typed_letter_by_letter(self.engine, "Chicago, IL")
         self.assertEqual({e["id"].split(":")[0] for e in self.engine.snapshot(a)["events"]}, {"Austin, TX"})
         self.assertEqual({e["id"].split(":")[0] for e in self.engine.snapshot(b)["events"]}, {"Boston, MA"})
+
+
+class Geography(EngineCase):
+    """The place is resolved once, deterministically; unresolvable places fail cleanly and are not hammered."""
+
+    def make_with(self, geocode):
+        self.geocode_calls = []
+
+        def recording(spec, fetcher, cache_path):
+            self.geocode_calls.append((spec, cache_path))
+            return geocode(spec, fetcher, cache_path)
+
+        return self.make(geocode=recording)
+
+    def test_an_unresolvable_place_is_a_clear_permanent_error_and_never_reaches_discovery(self):
+        engine = self.make()
+        pid = engine.register({"area": "Badlands Nowhere"})
+        engine.run_next()
+        snapshot = engine.snapshot(pid)
+        self.assertEqual((snapshot["state"], snapshot["outcome"]), ("error", "failed"))
+        self.assertIn("no place called 'Badlands Nowhere' was found", snapshot["error"])
+        self.assertEqual(self.refresh.calls, [])  # no source was searched for a place nobody could find
+
+    def test_it_is_not_retried_on_a_timer_or_by_the_card_asking_again_but_is_retried_much_later(self):
+        engine = self.make()
+        engine.register({"area": "Badlands Nowhere"})
+        engine.run_next()
+        attempts = []
+        original = engine.geocode
+        engine.geocode = lambda *args: attempts.append(1) or original(*args)
+        for _ in range(30):  # a card (or a preview) polling for hours
+            self.clock.now += 600
+            engine.register({"area": "Badlands Nowhere"})
+            engine.tick()
+            engine.run_next()
+        self.assertEqual(attempts, [1] * len(attempts))
+        self.assertLessEqual(len(attempts), 3)  # 30 polls over five hours: at most the retries after six hours, not one per poll
+        self.clock.now += 7 * 3600
+        engine.register({"area": "Badlands Nowhere"})
+        before = len(attempts)
+        engine.run_next()
+        self.assertEqual(len(attempts), before + 1)
+
+    def test_an_old_profile_without_events_is_never_put_on_the_queue_by_the_timer(self):
+        engine = self.make()
+        engine.register({"area": "Badlands Nowhere"})
+        engine.run_next()
+        self.clock.now += 2 * 3600
+        engine.tick()
+        self.assertIsNone(engine.run_next())
+        self.assertEqual(engine.status()["profiles"], 0)  # dropped as abandoned
+        old = self.make()
+        old.register({"area": "Austin, TX"})  # never ran before this restart
+        self.clock.now += 3 * 3600
+        self.assertIsNone(self.make().run_next())  # and a restart does not search it
+
+    def test_incomplete_input_is_refused_before_it_costs_anything(self):
+        calls = []
+        engine = self.make_with(lambda spec, fetcher, cache: calls.append(spec) or fake_geocode(spec, fetcher, cache))
+        for partial in ("S", "Sa", "12", " ", "a,b", "!!"):
+            with self.assertRaises(ProfileError, msg=partial):
+                engine.register({"area": partial})
+        self.assertEqual((engine.status()["profiles"], calls, self.geocode_calls), (0, [], []))
+        for fine in ("Austin, TX", "78701", "30.27, -97.74", "São Paulo"):
+            engine.register({"area": fine, "country": "US"} if fine == "78701" else {"area": fine})
+        self.assertEqual(engine.status()["profiles"], 4)
+
+    def test_the_search_only_ever_receives_resolved_coordinates(self):
+        engine = self.make()
+        engine.register({"area": "Austin, TX", "radius_miles": 30})
+        engine.run_next()
+        location = self.refresh.calls[0][0]["location"]
+        self.assertEqual(sorted(location), ["country", "latitude", "longitude", "name", "radius_miles", "timezone"])
+        self.assertEqual((location["name"], location["radius_miles"]), ("Austin, TX", 30.0))
+
+    def test_all_profiles_share_one_geocoder_cache(self):
+        engine = self.make_with(fake_geocode)
+        engine.register({"area": "Austin, TX"})
+        engine.register({"area": "Boston, MA"})
+        self.drain(engine)
+        caches = {cache for _, cache in self.geocode_calls}
+        self.assertEqual(caches, {os.path.join(self.tmp.name, "geocode-cache.json")})
+
+    def test_different_spellings_of_the_same_place_reuse_one_search(self):
+        def canonical(spec, fetcher, cache):
+            alias = {"san diego, california": "San Diego, CA"}.get((spec.get("query") or "").lower())
+            return fake_geocode({**spec, "query": alias} if alias else spec, fetcher, cache)
+
+        engine = self.make_with(canonical)
+        first = engine.register({"area": "San Diego, CA", "radius_miles": 25})
+        engine.run_next()
+        second = engine.register({"area": "San Diego, California", "radius_miles": 25})
+        third = engine.register({"area": "San Diego, California", "radius_miles": 40})  # another radius is another search
+        engine.run_next()
+        engine.run_next()
+        self.assertEqual(len(self.refresh.calls), 2, "the second spelling did not search again; the other radius did")
+        self.assertEqual(engine.snapshot(second)["events"], engine.snapshot(first)["events"])
+        self.assertEqual((engine.snapshot(second)["state"], engine.snapshot(second)["outcome"], engine.snapshot(second)["initial"]), ("ready", "complete", False))
+        self.assertEqual(engine.snapshot(third)["state"], "ready")
+        self.assertNotEqual(first, second)  # still separate profiles: isolation is unchanged
+        folders = {os.path.dirname(call[2]) for call in self.refresh.calls}
+        self.assertEqual(len(folders), 2)
+
+    def test_a_reused_result_is_refreshed_independently_afterwards(self):
+        engine = self.make_with(lambda spec, f, c: fake_geocode({**spec, "query": "San Diego, CA"} if spec.get("query") else spec, f, c))
+        engine.register({"area": "San Diego, CA"})
+        engine.run_next()
+        twin = engine.register({"area": "San Diego, California"})
+        engine.run_next()
+        self.assertEqual(len(self.refresh.calls), 1)
+        self.clock.now += 3601
+        engine.tick()
+        engine.register({"area": "San Diego, CA"})
+        engine.register({"area": "San Diego, California"})
+        self.drain(engine)
+        self.assertEqual(len(self.refresh.calls), 3)  # both refreshed on their own schedule
+        self.assertEqual(engine.snapshot(twin)["state"], "ready")
 
 
 class Sources(EngineCase):

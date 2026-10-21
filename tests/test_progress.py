@@ -10,6 +10,7 @@ from discovery import refresh as refresh_module
 from discovery import sources as sources_module
 from discovery.core import FetchError, finish_event, make_event, save_events
 from discovery.engine import Engine
+from tests.test_engine import fake_geocode
 from discovery.publish import FeedError, validate_feed
 
 PDT = timezone(timedelta(hours=-7))
@@ -141,7 +142,7 @@ class EngineProgress(unittest.TestCase):
         self.during = []
 
     def refresh_fn(self, config, options, cache_path, output, lock_path, fetcher=None, location_cache_path=None, location_providers=None):
-        script = self.behaviour.get(config["location"].get("query") or "default", [])
+        script = self.behaviour.get(config["location"].get("name") or "default", [])
         notify = options["progress"]
         notify("start", total=3, sources=["KPBS", "DoSD", "Reader"])
         for step in script:
@@ -151,11 +152,11 @@ class EngineProgress(unittest.TestCase):
                 events = [{"id": f"e{i}", "title": f"Event {i}", "start": "2030-01-02T00:00:00+00:00", "url": "https://x.example"} for i in range(info["events"])]
                 save_events({"generated_at": f"2030-01-0{info['events']}T00:00:00+00:00", "location": {"display_name": "Somewhere"}, "sources": {}, "events": events}, output)
             if kind == "source_done":
-                self.during.append((config["location"].get("query"), self.engine.snapshot(self.pid)))
+                self.during.append((config["location"].get("name"), self.engine.snapshot(self.pid)))
         return self.behaviour.get("code", 0)
 
     def make(self, query="Austin, TX"):
-        self.engine = Engine(self.tmp.name, interval=3600, clock=self.clock, refresh_fn=self.refresh_fn, fetcher_factory=lambda: object())
+        self.engine = Engine(self.tmp.name, interval=3600, clock=self.clock, refresh_fn=self.refresh_fn, fetcher_factory=lambda: object(), geocode=fake_geocode)
         self.pid = self.engine.register({"area": query})
         return self.engine
 

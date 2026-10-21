@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 
 from . import registry
 from .core import FetchError, Fetcher
+from .location import LocationError, resolve_location
 from .profiles import ProfileError, location_spec, match_registered, normalize_profile, profile_id, public_host
 from .publish import FeedError, validate_feed, write_atomic
 from .refresh import SOURCES_FILE, load_config, refresh
@@ -30,6 +31,7 @@ log.addHandler(logging.NullHandler())
 
 MIN_INTERVAL = 900
 RETRY_SECONDS = 600            # after a failed run
+PERMANENT_RETRY_SECONDS = 6 * 3600  # after a failure that repeating cannot fix (place not found, no source covers it)
 ACTIVE_SECONDS = 7 * 86400     # profiles nobody asked for within this long stop refreshing ...
 DROP_SECONDS = 14 * 86400      # ... and are deleted after this long
 IDLE_EVICT_SECONDS = 600       # a profile with events asked for within this long is not evicted to make room
@@ -41,6 +43,10 @@ class EngineError(Exception):
     def __init__(self, status, message):
         super().__init__(message)
         self.status, self.message = status, message
+
+
+class PermanentError(EngineError):
+    """A failure that repeating the search will not fix, so it is not retried on a timer."""
 
 
 class _LogWriter:
@@ -75,8 +81,10 @@ def probe_localist(fetcher, url):
 
 class Engine:
     def __init__(self, data_dir, sources_path=SOURCES_FILE, interval=3600, clock=time.time, refresh_fn=refresh,
-                 fetcher_factory=None, host_check=public_host, probe=probe_localist, max_profiles=MAX_PROFILES):
+                 fetcher_factory=None, host_check=public_host, probe=probe_localist, max_profiles=MAX_PROFILES, geocode=None):
         self.data_dir = os.path.join(data_dir, "profiles")
+        self.geocode = geocode or resolve_location
+        self._geocode_cache = os.path.join(data_dir, "geocode-cache.json")  # shared: a place is looked up once, not once per profile
         self.sources_path = sources_path
         self.interval = max(MIN_INTERVAL, interval)
         self.clock, self.refresh_fn, self.host_check, self.probe, self.max_profiles = clock, refresh_fn, host_check, probe, max_profiles
@@ -97,7 +105,7 @@ class Engine:
         return os.path.join(self.data_dir, pid)
 
     def _save(self, record):
-        keys = ("id", "profile", "requested_at", "state", "error", "attempt_at", "success_at", "report", "outcome")
+        keys = ("id", "profile", "requested_at", "state", "error", "attempt_at", "success_at", "report", "outcome", "permanent", "place_key")
         try:
             write_atomic(os.path.join(self._dir(record["id"]), "profile.json"), json.dumps({k: record.get(k) for k in keys}, indent=2) + "\n")
         except OSError as error:
@@ -170,7 +178,8 @@ class Engine:
                 log.info("new profile %s: %s (%d in use)", pid, profile.get("area") or profile.get("name") or "home coordinates", len(self._profiles))
                 return pid
             record["requested_at"] = now
-            retry = record["state"] == "error" and now - (record.get("attempt_at") or 0) >= RETRY_SECONDS
+            wait = PERMANENT_RETRY_SECONDS if record.get("permanent") else RETRY_SECONDS
+            retry = record["state"] == "error" and now - (record.get("attempt_at") or 0) >= wait
             if self._feed(pid) is None and (retry or record["state"] == "pending"):
                 self._enqueue(pid)
             elif self._due(record):
@@ -242,7 +251,9 @@ class Engine:
         now = self.clock()
         if record["queued"] or self._running == record["id"] or now - record["requested_at"] > ACTIVE_SECONDS:
             return False
-        wait = RETRY_SECONDS if record["state"] == "error" else self.interval
+        if self._feed(record["id"]) is None:
+            return False  # a profile with no events is only searched when a card asks for it, never on a timer
+        wait = PERMANENT_RETRY_SECONDS if record.get("permanent") else RETRY_SECONDS if record["state"] == "error" else self.interval
         return now - (record.get("attempt_at") or 0) >= wait
 
     def _enqueue(self, pid):
@@ -358,11 +369,31 @@ class Engine:
             report.append({"url": url, "status": "supported", "adapter": "localist", "name": host})
         return entries, True, report
 
+    def _reuse(self, twin, folder):
+        """Copy a twin's feed (and source cache) into `folder`; False, copying nothing, if that is not possible."""
+        source = self._dir(twin["id"])
+        try:
+            feed_copy = os.path.join(folder, "events.json")
+            shutil.copyfile(os.path.join(source, "events.json"), feed_copy)
+            if os.path.exists(os.path.join(source, "source-cache.json")):
+                shutil.copyfile(os.path.join(source, "source-cache.json"), os.path.join(folder, "source-cache.json"))
+            return True
+        except OSError as error:
+            log.warning("could not reuse the results of %s: %s", twin["id"], error)
+            return False
+
+    def _equivalent(self, record):
+        """Another profile with results for exactly the same resolved place, radius and sources, if any."""
+        for other in self._profiles.values():
+            if other is not record and other.get("place_key") == record.get("place_key") and other.get("success_at") and self._feed(other["id"]):
+                return other
+        return None
+
     def _run(self, record):
         pid, profile = record["id"], record["profile"]
         started = self.clock()
         record["attempt_at"] = started
-        error, report, outcome = None, [], "failed"
+        error, report, outcome, permanent, reused = None, [], "failed", False, None
         folder = self._dir(pid)
         stderr = _LogWriter(logging.WARNING)
         try:
@@ -371,16 +402,34 @@ class Engine:
             entries, explicit, report = self._sources_for(profile, config, fetcher)
             if explicit and not entries:
                 raise EngineError(422, "none of the requested websites can be read by an available adapter")
+            # The place is resolved here, once, by the shared geocoder; the search below only ever sees coordinates.
+            try:
+                place = self.geocode(location_spec(profile), fetcher, self._geocode_cache)
+            except LocationError as caught:
+                raise PermanentError(422, str(caught)) from caught
+            location = {"latitude": place["latitude"], "longitude": place["longitude"], "radius_miles": profile["radius_miles"], "name": place["display_name"]}
+            location.update({key: place[key] for key in ("country", "region", "timezone") if place.get(key)})
             run_config = {"retention_days": config.get("retention_days", 3), "verification": config.get("verification", {}),
-                          "location": location_spec(profile), "sources": entries}
-            log.info("discovery starting for profile %s", pid)
+                          "location": location, "sources": entries}
             with self._lock:
-                record["state"] = "discovering"
-            with contextlib.redirect_stdout(_LogWriter(logging.INFO)), contextlib.redirect_stderr(stderr):
-                code = self.refresh_fn(run_config, {"interval": 2.0, "explicit_sources": explicit, "progress": self._progress_callback(record)}, fetcher=fetcher,
-                                       cache_path=os.path.join(folder, "source-cache.json"), output=os.path.join(folder, "events.json"),
-                                       lock_path=os.path.join(folder, ".refresh.lock"),
-                                       location_cache_path=os.path.join(folder, "location-cache.json"))
+                record["place_key"] = [round(place["latitude"], 3), round(place["longitude"], 3), profile["radius_miles"], sorted(profile.get("sources") or [])]
+                twin = self._equivalent(record)
+            if twin and self._feed(pid) is None and self._reuse(twin, folder):
+                # A different spelling of a place already searched with the same radius and sources: reuse those results.
+                log.info("profile %s reuses the results of %s (same place, radius and sources)", pid, twin["id"])
+                reused = twin["success_at"]
+                with self._lock:
+                    record["progress"] = {**self._new_progress("complete", record), "phase": "complete", "finished_at": _iso(self.clock())}
+                code = 0
+            else:
+                log.info("discovery starting for profile %s", pid)
+                with self._lock:
+                    record["state"] = "discovering"
+                with contextlib.redirect_stdout(_LogWriter(logging.INFO)), contextlib.redirect_stderr(stderr):
+                    code = self.refresh_fn(run_config, {"interval": 2.0, "explicit_sources": explicit, "progress": self._progress_callback(record)}, fetcher=fetcher,
+                                           cache_path=os.path.join(folder, "source-cache.json"), output=os.path.join(folder, "events.json"),
+                                           lock_path=os.path.join(folder, ".refresh.lock"),
+                                           location_cache_path=os.path.join(folder, "location-cache.json"))
             progress = record["progress"]
             if code not in (0, 2):
                 reasons = [line for line in stderr.lines if not line.startswith("No source refreshed")] or list(stderr.lines)
@@ -394,6 +443,7 @@ class Engine:
                 outcome = "partial" if code == 2 else "complete"
         except EngineError as caught:
             error = caught.message
+            permanent = isinstance(caught, PermanentError)
         except Exception as caught:  # a crashing adapter or bad configuration must not stop the worker
             log.exception("discovery for profile %s crashed", pid)
             error = f"discovery failed unexpectedly: {caught}"[:400]
@@ -401,6 +451,7 @@ class Engine:
             record["report"] = report
             record["error"] = error
             record["outcome"] = outcome
+            record["permanent"] = permanent or any(line.startswith("Coverage error") for line in stderr.lines)
             record["progress"] = {**(record.get("progress") or self._new_progress("complete", record)), "phase": "complete", "current": None,
                                   "finished_at": _iso(self.clock())}
             feed = self._feed(pid)
@@ -408,6 +459,6 @@ class Engine:
                 record["progress"]["events"] = len(feed["events"])
             record["state"] = "error" if error else "ready"
             if not error:
-                record["success_at"] = self.clock()
+                record["success_at"] = reused or self.clock()
             self._save(record)
         log.info("discovery for profile %s finished in %.0fs: %s", pid, self.clock() - started, error or "ok")

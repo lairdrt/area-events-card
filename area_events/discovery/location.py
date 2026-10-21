@@ -22,6 +22,7 @@ import json
 import math
 import re
 import time
+import unicodedata
 import urllib.parse
 
 from .core import FetchError
@@ -59,28 +60,85 @@ class GeocodingProvider:
         return self.parse(payload, spec)
 
 
+def _fold(text):
+    """Lower-case ASCII words only, so 'São Paulo' and 'Sao Paulo', or 'U.S.A.' and 'usa', compare equal."""
+    text = unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode()
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", text.lower()).split())
+
+
+ADMIN_PREFIX = re.compile(r"^(greater|city of|town of|village of|county of|municipality of|borough of|hamlet of) ")  # OSM: "Greater London", "City of London"
+MIN_NAME_LETTERS = 3
+AMBIGUITY_MILES = 25
+DOMINANCE = 1.3
+CITY_RANK = 16  # Nominatim place_rank of a city/town; villages, suburbs and streets (19+) need a qualifier to be accepted
+US_STATES = {"al", "ak", "az", "ar", "ca", "co", "ct", "de", "dc", "fl", "ga", "hi", "id", "il", "in", "ia", "ks", "ky", "la", "me", "md", "ma", "mi", "mn",
+             "ms", "mo", "mt", "ne", "nv", "nh", "nj", "nm", "ny", "nc", "nd", "oh", "ok", "or", "pa", "ri", "sc", "sd", "tn", "tx", "ut", "vt", "va", "wa",
+             "wv", "wi", "wy", "pr", "gu", "vi", "as", "mp"}
+GB_ALIASES = {"uk", "u k", "united kingdom", "great britain"}
+US_ALIASES = {"us", "u s", "usa", "u s a", "united states", "united states of america", "america"}
+NAME_FIELDS = ("city", "town", "village", "hamlet", "municipality", "suburb", "city_district", "county", "state")
+
+
 class NominatimProvider(GeocodingProvider):
-    """OpenStreetMap Nominatim. Usage policy: identifying User-Agent, <= 1 request/second, cache results."""
+    """OpenStreetMap Nominatim. Usage policy: identifying User-Agent, <= 1 request/second, cache results.
+
+    Nominatim ranks fuzzily, so its first hit is never trusted blindly. A hit is accepted only if it is a place with the
+    queried name and in every place the query's "City, State/Country" qualifiers name; if several different places
+    qualify and none clearly dominates, the query is ambiguous and refused instead of guessed.
+    """
     name = "nominatim"
 
     def url(self, spec):
-        params = {"q": spec["query"], "format": "jsonv2", "limit": 1, "addressdetails": 1}
+        params = {"q": spec["query"], "format": "jsonv2", "limit": 5, "addressdetails": 1}
         if spec.get("country"):
             params["countrycodes"] = spec["country"].lower()
         return "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(params)
 
+    @staticmethod
+    def _candidate(hit, primary, qualifiers):
+        """The normalized place if this hit is the queried name inside every qualifier, else None."""
+        address = hit.get("address") or {}
+        names = {_fold(hit.get("name")), _fold((hit.get("display_name") or "").split(",")[0])}
+        names.update(_fold(address.get(field)) for field in NAME_FIELDS)
+        names |= {ADMIN_PREFIX.sub("", name) for name in names}
+        if primary not in names:
+            return None
+        iso = address.get("ISO3166-2-lvl4", "")
+        region = iso.split("-")[-1] if iso else address.get("state")
+        country = (address.get("country_code") or "").upper() or None
+        fields = {_fold(region), _fold(iso), _fold(address.get("state")), _fold(address.get("county")), _fold(address.get("state_district")),
+                  _fold(address.get("country"))}
+        # "CA", "IN", "DE", "IL" ... are US states before they are countries: Austin, CA is California, never Canada.
+        if not any(q in US_STATES for q in qualifiers):
+            fields.add(_fold(country))
+        if country == "US":
+            fields |= US_ALIASES
+        if country == "GB":
+            fields |= GB_ALIASES
+        if any(q not in fields for q in qualifiers):
+            return None
+        return {"display_name": hit.get("display_name") or "", "latitude": float(hit["lat"]), "longitude": float(hit["lon"]),
+                "country": country, "region": region, "_importance": float(hit.get("importance") or 0), "_rank": int(hit.get("place_rank") or CITY_RANK),
+                "_label": ", ".join(x for x in (address.get("city") or address.get("town") or address.get("village") or hit.get("name"), address.get("state"), address.get("country")) if x)}
+
     def parse(self, payload, spec):
         if not isinstance(payload, list) or not payload:
             return None
-        hit = payload[0]
-        address = hit.get("address") or {}
-        region = address.get("ISO3166-2-lvl4", "")
-        return {
-            "display_name": hit.get("display_name") or spec["query"],
-            "latitude": float(hit["lat"]), "longitude": float(hit["lon"]),
-            "country": (address.get("country_code") or "").upper() or None,
-            "region": region.split("-")[-1] if region else address.get("state"),
-        }
+        parts = [part.strip() for part in spec["query"].split(",") if part.strip()]
+        primary, qualifiers = _fold(parts[0] if parts else ""), [_fold(part) for part in parts[1:]]
+        if len(primary.replace(" ", "")) < MIN_NAME_LETTERS:
+            raise LocationError("the place name is too short; enter a city such as 'Austin, TX'")
+        matches = [place for hit in payload if (place := self._candidate(hit, primary, qualifiers))]
+        if not qualifiers:
+            matches = [place for place in matches if place["_rank"] <= CITY_RANK]  # a bare name must be a city, not whichever village shares it
+        if not matches:
+            raise LocationError(f"no place called '{spec['query']}' was found" + (" (the state or country given does not match any place of that name)" if qualifiers else "; add a state or country, for example 'Austin, TX'"))
+        top = matches[0]
+        rivals = [m for m in matches[1:] if distance_miles(top["latitude"], top["longitude"], m["latitude"], m["longitude"]) > AMBIGUITY_MILES]
+        if rivals and top["_importance"] < DOMINANCE * rivals[0]["_importance"]:
+            names = "; ".join(dict.fromkeys(m["_label"] or m["display_name"] for m in [top, *rivals[:2]]))
+            raise LocationError(f"'{spec['query']}' matches several places ({names}); add a state or country")
+        return {key: value for key, value in top.items() if not key.startswith("_")}
 
 
 class ZippopotamProvider(GeocodingProvider):

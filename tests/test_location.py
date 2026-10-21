@@ -111,6 +111,92 @@ class Resolution(unittest.TestCase):
         place = resolve_location({"query": "Austin"}, None, self.cache, {"nominatim": FakeProvider(error="down")}, now=lambda: later)
         self.assertEqual(place["source"], "cache (stale)")
 
+    # --- deterministic geocoding: qualifiers are honored, nothing is guessed ---------------------------------
+
+    @staticmethod
+    def hit(name, lat, lon, state, iso, importance, country_code="us", country="United States", county=None, rank=16):
+        address = {"city": name, "state": state, "ISO3166-2-lvl4": iso, "country_code": country_code, "country": country}
+        if county:
+            address["county"] = county
+        return {"lat": str(lat), "lon": str(lon), "name": name, "display_name": f"{name}, {state}, {country}", "importance": importance, "place_rank": rank, "address": address}
+
+    def parse(self, query, hits):
+        return NominatimProvider().parse(hits, {"query": query})
+
+    def test_an_explicit_state_is_honored_even_when_another_state_ranks_first(self):
+        hits = [self.hit("Austin", 43.67, -92.97, "Minnesota", "US-MN", 0.6), self.hit("Austin", 30.27, -97.74, "Texas", "US-TX", 0.5)]
+        self.assertEqual((self.parse("Austin, TX", hits)["region"], self.parse("Austin, Texas", hits)["latitude"]), ("TX", 30.27))
+        self.assertEqual(self.parse("Austin, MN", hits)["region"], "MN")
+        self.assertEqual(self.parse("austin, tx, usa", hits)["region"], "TX")
+
+    def test_a_qualifier_that_matches_nothing_is_an_error_not_a_substitute(self):
+        hits = [self.hit("Austin", 30.27, -97.74, "Texas", "US-TX", 0.7)]
+        with self.assertRaisesRegex(LocationError, "no place called 'Austin, CA' was found"):
+            self.parse("Austin, CA", hits)  # never silently the Austin that exists
+        with self.assertRaisesRegex(LocationError, "no place called"):
+            self.parse("Austin, France", hits)
+        london_ca = [self.hit("London", 42.98, -81.25, "Ontario", "CA-ON", 0.6, "ca", "Canada")]
+        with self.assertRaisesRegex(LocationError, "no place called"):
+            self.parse("London, UK", london_ca)
+        self.assertEqual(self.parse("London, Canada", london_ca)["country"], "CA")
+
+    def test_fuzzy_and_partial_matches_are_not_the_place_asked_for(self):
+        hits = [self.hit("Austin", 30.27, -97.74, "Texas", "US-TX", 0.7)]
+        for partial in ("Aust", "Austi", "Austin Texas Foo", "ustin"):
+            with self.assertRaisesRegex(LocationError, "no place called"):
+                self.parse(partial, hits)
+        for tiny in ("S", "Sa", "  ", "1"):
+            with self.assertRaisesRegex(LocationError, "too short"):
+                self.parse(tiny, [self.hit("Sa", 1, 1, "Somewhere", "XX-YY", 0.1)])
+
+    def test_an_ambiguous_name_is_refused_unless_one_place_clearly_dominates(self):
+        springfields = [self.hit("Springfield", 39.8, -89.65, "Illinois", "US-IL", 0.62), self.hit("Springfield", 37.2, -93.3, "Missouri", "US-MO", 0.58),
+                        self.hit("Springfield", 42.1, -72.6, "Massachusetts", "US-MA", 0.5)]
+        with self.assertRaisesRegex(LocationError, r"matches several places \(Springfield, Illinois, United States; Springfield, Missouri.*\); add a state or country"):
+            self.parse("Springfield", springfields)
+        self.assertEqual(self.parse("Springfield, IL", springfields)["region"], "IL")
+        dominant = [self.hit("Austin", 30.27, -97.74, "Texas", "US-TX", 0.75), self.hit("Austin", 43.67, -92.97, "Minnesota", "US-MN", 0.4)]
+        self.assertEqual(self.parse("Austin", dominant)["region"], "TX")
+        nearby = [self.hit("Portland", 45.5, -122.6, "Oregon", "US-OR", 0.5), self.hit("Portland", 45.52, -122.62, "Oregon", "US-OR", 0.5)]
+        self.assertEqual(self.parse("Portland, OR", nearby)["region"], "OR")  # the same place twice is not ambiguity
+
+    def test_accents_and_spelling_variants_of_qualifiers_compare_equal(self):
+        hit = self.hit("São Paulo", -23.55, -46.63, "São Paulo", "BR-SP", 0.7, "br", "Brasil")
+        self.assertEqual(self.parse("Sao Paulo, SP", [hit])["country"], "BR")
+        self.assertEqual(self.parse("sao paulo, brasil", [hit])["country"], "BR")
+        usa = self.hit("San Diego", 32.7, -117.1, "California", "US-CA", 0.8)
+        for qualifier in ("CA", "California", "US", "U.S.A.", "United States"):
+            self.assertEqual(self.parse(f"San Diego, {qualifier}", [usa])["region"], "CA", qualifier)
+
+    def test_ca_is_california_not_canada_and_uk_is_great_britain(self):
+        quebec = self.hit("Austin", 45.18, -72.28, "Québec", "CA-QC", 0.3, "ca", "Canada")
+        texas = self.hit("Austin", 30.27, -97.74, "Texas", "US-TX", 0.7)
+        with self.assertRaisesRegex(LocationError, "no place called 'Austin, CA' was found"):
+            self.parse("Austin, CA", [quebec, texas])  # never the Canadian Austin
+        self.assertEqual(self.parse("Austin, Canada", [quebec, texas])["country"], "CA")
+        self.assertEqual(self.parse("Austin, QC", [quebec, texas])["region"], "QC")
+        london = self.hit("London", 51.5, -0.12, "England", "GB-ENG", 0.9, "gb", "United Kingdom")
+        for qualifier in ("UK", "GB", "England", "United Kingdom"):
+            self.assertEqual(self.parse(f"London, {qualifier}", [london])["country"], "GB", qualifier)
+
+    def test_osm_administrative_names_still_match_the_plain_name(self):
+        greater = {"lat": "51.5", "lon": "-0.12", "name": "Greater London", "display_name": "Greater London, England, United Kingdom", "importance": 0.89, "place_rank": 10,
+                   "address": {"city": "Greater London", "state": "England", "ISO3166-2-lvl4": "GB-ENG", "country": "United Kingdom", "country_code": "gb"}}
+        city = {**greater, "name": "City of London", "lat": "51.51", "importance": 0.66, "place_rank": 12, "address": {**greater["address"], "city": "City of London"}}
+        self.assertEqual(self.parse("London, UK", [greater, city])["country"], "GB")
+        self.assertEqual(self.parse("London, England", [greater, city])["latitude"], 51.5)  # the two are one place, not an ambiguity
+
+    def test_a_bare_name_must_be_a_city_but_a_qualified_name_may_be_smaller(self):
+        village = self.hit("Aust", 51.6, -2.62, "England", "GB-ENG", 0.4, "gb", "United Kingdom", rank=20)
+        with self.assertRaisesRegex(LocationError, "no place called 'Aust' was found"):
+            self.parse("Aust", [village])  # half-typed "Austin" does not become a village in Gloucestershire
+        self.assertEqual(self.parse("Aust, England", [village])["country"], "GB")
+        suburb = self.hit("Mission Beach", 32.77, -117.25, "California", "US-CA", 0.375, rank=19)
+        self.assertEqual(self.parse("Mission Beach, CA", [suburb])["region"], "CA")
+
+    def test_the_request_asks_for_several_candidates_so_the_choice_is_checked_here(self):
+        self.assertIn("limit=5", NominatimProvider().url({"query": "Austin, TX", "country": None}))
+
     def test_provider_response_parsing(self):
         nominatim = NominatimProvider().parse(
             [{"lat": "30.2711", "lon": "-97.7437", "display_name": "Austin, Texas",

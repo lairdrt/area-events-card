@@ -25,6 +25,7 @@ from .location import MAX_RADIUS_MILES, DEFAULT_RADIUS_MILES
 
 MAX_SOURCES = 10
 MAX_AREA_LENGTH = 100
+MIN_LETTERS = 3
 PAIR = re.compile(r"^(-?\d{1,3}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)$")
 POSTAL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 -]{2,10}$")
 
@@ -82,6 +83,10 @@ def normalize_profile(raw):
     timezone_name = raw.get("timezone")
     if timezone_name:
         profile["timezone"] = timezone_name
+    query = location_spec(profile).get("query")
+    if query and len(re.sub(r"[\W\d_]", "", query.split(",")[0])) < MIN_LETTERS:
+        # "S", "Sa": half-typed in an editor. Refused before it can become a profile, a lookup or a search.
+        raise ProfileError("the area is too short; enter a city such as 'Austin, TX', a ZIP code or 'latitude, longitude'")
 
     sources = raw.get("sources") or []
     if not isinstance(sources, list) or len(sources) > MAX_SOURCES:
