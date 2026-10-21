@@ -41,6 +41,9 @@
 .PARAMETER SkipBuild
   Do not run "npm run build" first.
 
+.PARAMETER CoreRecoveryTimeoutSeconds
+  How long, counted from the restart request, Home Assistant Core may take to go down and become healthy again. Default 180 (a Raspberry Pi 4 needs about 90).
+
 .PARAMETER SkipCoreRestart
   Install and rebuild the app but leave Home Assistant Core running (the integration then loads at its next restart).
 
@@ -64,7 +67,8 @@ param(
   [switch]$SkipBuild,
   [switch]$SkipCoreRestart,
   [int]$AppTimeoutSeconds = 900,
-  [int]$CoreTimeoutSeconds = 600
+  [Alias("CoreTimeoutSeconds")]
+  [int]$CoreRecoveryTimeoutSeconds = 180
 )
 
 $ErrorActionPreference = "Stop"
@@ -199,6 +203,96 @@ function Invoke-Supervisor([string]$Endpoint, [string]$Method = "get", [int]$Tim
   }
 }
 
+function Get-ErrorStatusCode($ErrorRecord) {
+  <# The HTTP status of a failed request, or $null when Home Assistant gave no HTTP answer at all (connection closed, reset, refused, timed out). #>
+  if ($null -eq $ErrorRecord -or $null -eq $ErrorRecord.Exception) { return $null }
+  if (-not ($ErrorRecord.Exception.PSObject.Properties.Name -contains "Response")) { return $null }
+  $response = $ErrorRecord.Exception.Response
+  if ($null -eq $response) { return $null }
+  try { return [int]$response.StatusCode } catch { return $null }
+}
+
+function Get-RestartRequestOutcome($StatusCode) {
+  <# "dropped": no usable answer, which is what a Core that is shutting down looks like (indeterminate, not an error);
+     "rejected": Home Assistant answered and refused (for example an invalid configuration), so nothing is restarting. #>
+  if ($null -eq $StatusCode) { return "dropped" }
+  if ($StatusCode -in 502, 503, 504) { return "dropped" }   # a proxy or Core answering while it shuts down
+  return "rejected"
+}
+
+function Send-CoreRestartRequest {
+  try {
+    Invoke-HaRest POST "/api/services/homeassistant/restart" 30 | Out-Null   # Home Assistant checks the configuration first and refuses if it is invalid
+    return [pscustomobject]@{ Outcome = "accepted"; Status = $null; Detail = "" }
+  } catch {
+    $status = Get-ErrorStatusCode $_
+    return [pscustomobject]@{ Outcome = (Get-RestartRequestOutcome $status); Status = $status; Detail = $_.Exception.Message }
+  }
+}
+
+function Test-CoreHealthy {
+  try {
+    $config = Invoke-HaRest GET "/api/config" 5
+    return [pscustomobject]@{ Healthy = ($config.state -eq "RUNNING"); Detail = "state $($config.state)" }
+  } catch {
+    return [pscustomobject]@{ Healthy = $false; Detail = $_.Exception.Message }
+  }
+}
+
+function Wait-CoreRestart {
+  <# Sends the restart request exactly once, then polls until Core has demonstrably gone down and come back.
+     The request's own connection closing is expected (Core is shutting down) and is NOT an error and NOT proof. A healthy API alone
+     is not proof of a restart either: success needs at least one unhealthy answer (unreachable, 5xx, or a state other than RUNNING)
+     after the request, followed by a healthy one. #>
+  param(
+    [scriptblock]$Request = { Send-CoreRestartRequest },
+    [scriptblock]$Poll = { Test-CoreHealthy },
+    [scriptblock]$Sleep = { param($Seconds) Start-Sleep -Seconds $Seconds },
+    [scriptblock]$Now = { Get-Date },
+    [int]$RecoveryTimeoutSeconds = 180,
+    [int]$ObserveSeconds = 45,
+    [int]$IntervalSeconds = 3,
+    [scriptblock]$Report = { param($Text) Write-Host "   $Text" }
+  )
+  $start = & $Now
+  $answer = & $Request    # the only restart request; it is never repeated, whatever happened to its connection
+  if ($answer.Outcome -eq "rejected") {
+    throw "Home Assistant rejected the restart request (HTTP $($answer.Status)): $($answer.Detail) Core was not restarted."
+  }
+  if ($answer.Outcome -eq "accepted") { & $Report "restart accepted; waiting for Core to go down and come back" }
+  else { & $Report "the restart request's connection was closed before an answer (expected while Core shuts down); not treating that as success or failure, polling the API" }
+  $downAt = $null
+  while ($true) {
+    $elapsed = [int]((& $Now) - $start).TotalSeconds
+    $probe = & $Poll
+    if (-not $probe.Healthy) {
+      if ($null -eq $downAt) { $downAt = $elapsed; & $Report "Core stopped answering normally after $elapsed s ($($probe.Detail))" }
+    } elseif ($null -ne $downAt) {
+      & $Report "Core is healthy again after $elapsed s (it was away from $downAt s)"
+      return [pscustomobject]@{ Confirmed = $true; DownAfterSeconds = $downAt; RecoveredAfterSeconds = $elapsed }
+    } elseif ($elapsed -ge $ObserveSeconds) {
+      throw "The restart could not be confirmed: the Home Assistant API stayed healthy for $ObserveSeconds s after the restart request and never went down, so there is no evidence that Core restarted. Check Settings > System > Restart, and do not assume the new integration code is running."
+    }
+    if ($elapsed -ge $RecoveryTimeoutSeconds) {
+      throw "Home Assistant did not become healthy again within $RecoveryTimeoutSeconds s of the restart request (last answer: $($probe.Detail)). It may still be starting; check its log before trying again."
+    }
+    & $Sleep $IntervalSeconds
+  }
+}
+
+function Test-FinalState {
+  <# The checks after a deployment: Core running, the integration loaded, the Area Events app started, the expected card build served. #>
+  param([scriptblock]$GetConfig, [scriptblock]$GetApp, [scriptblock]$GetServedBuild, [string]$Expected, [int]$BuildWaitSeconds = 60, [int]$BuildPollSeconds = 5)
+  $config = & $GetConfig
+  if ($config.state -ne "RUNNING") { throw "Home Assistant reports state $($config.state), not RUNNING." }
+  if ($config.components -notcontains "area_events") { throw "The Area Events integration is not loaded in Home Assistant (check Settings > Devices & services and the Core log)." }
+  $app = & $GetApp
+  Assert-AppIdentity $app $script:AppSlug $script:AppName
+  if ($app.state -ne "started") { throw "The Area Events app is '$($app.state)', not started." }
+  Wait-Until "the served card to carry build $Expected" { $script:Served = & $GetServedBuild; $script:Served -eq $Expected } $BuildWaitSeconds $BuildPollSeconds
+  return [pscustomobject]@{ Version = $config.version; AppState = $app.state; Build = $Expected }
+}
+
 function Get-AppInfo { Invoke-Supervisor "/addons/$script:AppSlug/info" "get" 30 }
 
 function Get-CardBuildFromHa {
@@ -297,23 +391,12 @@ function Invoke-Deployment {
 
     if ($needIntegration -and -not $SkipCoreRestart) {
       Write-Step "Restart Home Assistant Core"
-      Invoke-HaRest POST "/api/services/homeassistant/restart" 60 | Out-Null   # checks the configuration first; refuses to restart if it is invalid
-      Write-Host "   restart requested; waiting for the API to go down and come back"
-      try { Wait-Until "Home Assistant to stop answering" { try { Invoke-HaRest GET "/api/" 5 | Out-Null; $false } catch { $true } } 90 2 }
-      catch { Write-Host "   (the API never went down; checking that it is running the new build anyway)" -ForegroundColor Yellow }
-      Wait-Until "the Home Assistant API to answer again and report RUNNING" { (Invoke-HaRest GET "/api/config" 10).state -eq "RUNNING" } $CoreTimeoutSeconds 5
-      Write-Host "   Home Assistant is running again"
+      Wait-CoreRestart -RecoveryTimeoutSeconds $CoreRecoveryTimeoutSeconds | Out-Null
     }
 
     Write-Step "Verify"
-    $config = Invoke-HaRest GET "/api/config" 20
-    if ($config.state -ne "RUNNING") { throw "Home Assistant reports state $($config.state), not RUNNING." }
-    if ($config.components -notcontains "area_events") { throw "The Area Events integration is not loaded in Home Assistant (check Settings > Devices & services and the Core log)." }
-    $final = Get-AppInfo
-    Assert-AppIdentity $final $script:AppSlug $script:AppName
-    if ($final.state -ne "started") { throw "The Area Events app is '$($final.state)', not started." }
-    Wait-Until "the served card to carry build $expected" { $script:Served = Get-CardBuildFromHa; $script:Served -eq $expected } 60 5
-    Write-Host "   Home Assistant $($config.version): RUNNING; integration loaded; app $($final.state); card build $expected served"
+    $state = Test-FinalState -GetConfig { Invoke-HaRest GET "/api/config" 20 } -GetApp { $script:AppNow = $null; Wait-Until "the Supervisor to answer for the app again" { $script:AppNow = Get-AppInfo; $true } 60 3; $script:AppNow } -GetServedBuild { Get-CardBuildFromHa } -Expected $expected
+    Write-Host "   Home Assistant $($state.Version): RUNNING; integration loaded; app $($state.AppState); card build $expected served"
     Write-Host ""
     Write-Host ("Deployment complete {0} refresh the HA dashboard." -f [char]0x2014) -ForegroundColor Green
     if ($SkipCoreRestart -and $needIntegration) { Write-Host "(Core was not restarted; restart it to load the new integration code.)" -ForegroundColor Yellow }

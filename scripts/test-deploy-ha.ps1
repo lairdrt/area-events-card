@@ -84,5 +84,82 @@ Check "only the Area Events app is ever the target of a Supervisor write" {
   if ($text -match '/addons/(?!\$script:AppSlug)[a-z0-9_]+/(rebuild|restart|stop|start|update)') { throw "an app other than the Area Events app is addressed" }
 }
 
+# --- Core restart handling (a simulated clock: no real waiting, no Home Assistant) -------------------------------
+
+function Invoke-Sim($sim, [hashtable]$Extra = @{}) { $all = @{}; foreach ($k in $sim.Splat.Keys) { $all[$k] = $sim.Splat[$k] }; foreach ($k in $Extra.Keys) { $all[$k] = $Extra[$k] }; Wait-CoreRestart @all }
+
+function New-Sim([scriptblock]$Request, [scriptblock]$Poll) {
+  $sim = [pscustomobject]@{ T = 0; Requests = 0; Polls = 0; Reports = @() }
+  $sim | Add-Member -NotePropertyName Splat -NotePropertyValue @{
+    Request = { $sim.Requests++; & $Request $sim }.GetNewClosure()
+    Poll = { $sim.Polls++; & $Poll $sim }.GetNewClosure()
+    Sleep = { param($Seconds) $sim.T += $Seconds }.GetNewClosure()
+    Now = { ([datetime]"2030-01-01").AddSeconds($sim.T) }.GetNewClosure()
+    Report = { param($Text) $sim.Reports += $Text }.GetNewClosure()
+  }
+  return $sim
+}
+$accepted = { param($sim) [pscustomobject]@{ Outcome = "accepted"; Status = $null; Detail = "" } }
+$dropped = { param($sim) [pscustomobject]@{ Outcome = "dropped"; Status = $null; Detail = "The underlying connection was closed" } }
+$up = [pscustomobject]@{ Healthy = $true; Detail = "state RUNNING" }
+$down = [pscustomobject]@{ Healthy = $false; Detail = "connection refused" }
+
+Check "request failures are classified: no HTTP answer or a proxy 5xx is indeterminate, other answers are rejections" {
+  foreach ($status in @($null, 502, 503, 504)) { if ((Get-RestartRequestOutcome $status) -ne "dropped") { throw "status $status should be indeterminate" } }
+  foreach ($status in @(400, 401, 403, 404, 500)) { if ((Get-RestartRequestOutcome $status) -ne "rejected") { throw "status $status should be a rejection" } }
+  $error1 = try { Invoke-RestMethod -Uri "http://127.0.0.1:9/" -TimeoutSec 2 } catch { $_ }
+  if ($null -ne (Get-ErrorStatusCode $error1)) { throw "a refused connection has no HTTP status" }
+}
+Check "the connection closing during the restart request, then about 90 s of outage, is a confirmed restart (request sent once)" {
+  $sim = New-Sim $dropped { param($sim) if ($sim.T -ge 4 -and $sim.T -lt 94) { $down } else { $up } }
+  $r = Invoke-Sim $sim @{ RecoveryTimeoutSeconds = 180 }
+  if (-not $r.Confirmed) { throw "not confirmed" }
+  if ($sim.Requests -ne 1) { throw "the restart was requested $($sim.Requests) times" }
+  if ($r.DownAfterSeconds -gt 6 -or $r.RecoveredAfterSeconds -lt 90 -or $r.RecoveredAfterSeconds -gt 100) { throw "implausible timings: $($r.DownAfterSeconds) / $($r.RecoveredAfterSeconds)" }
+}
+Check "an accepted request, temporary HTTP errors and a state other than RUNNING all count as the restart in progress" {
+  $states = @("down", "starting", "up")
+  $sim = New-Sim $accepted { param($sim) if ($sim.T -lt 6) { $up } elseif ($sim.T -lt 30) { [pscustomobject]@{ Healthy = $false; Detail = "HTTP 503" } } elseif ($sim.T -lt 60) { [pscustomobject]@{ Healthy = $false; Detail = "state NOT_RUNNING" } } else { $up } }
+  $r = Invoke-Sim $sim
+  if (-not $r.Confirmed -or $sim.Requests -ne 1) { throw "not confirmed once" }
+}
+Check "Home Assistant that never recovers fails clearly at the timeout, without more requests" {
+  $sim = New-Sim $dropped { param($sim) if ($sim.T -lt 3) { $up } else { $down } }
+  Expect-Throw { Invoke-Sim $sim @{ RecoveryTimeoutSeconds = 180 } } "did not become healthy again within 180 s"
+  if ($sim.T -gt 190 -or $sim.Requests -ne 1) { throw "unbounded or repeated: T=$($sim.T) requests=$($sim.Requests)" }
+}
+Check "a request that Home Assistant explicitly rejects fails at once and polls nothing" {
+  $sim = New-Sim { param($sim) [pscustomobject]@{ Outcome = "rejected"; Status = 400; Detail = "Invalid config" } } { param($sim) $up }
+  Expect-Throw { Invoke-Sim $sim } "rejected the restart request \(HTTP 400\)"
+  if ($sim.Polls -ne 0 -or $sim.Requests -ne 1) { throw "polled or retried after a rejection" }
+}
+Check "an API that never goes down is not reported as a restart" {
+  foreach ($request in @($accepted, $dropped)) {
+    $sim = New-Sim $request { param($sim) $up }
+    Expect-Throw { Invoke-Sim $sim @{ ObserveSeconds = 45 } } "could not be confirmed"
+    if ($sim.T -gt 50 -or $sim.Requests -ne 1) { throw "took too long or repeated: T=$($sim.T)" }
+  }
+}
+Check "a recovery that arrives right at the timeout is still accepted, not turned into a failure" {
+  $sim = New-Sim $dropped { param($sim) if ($sim.T -lt 3) { $up } elseif ($sim.T -lt 177) { $down } else { $up } }
+  if (-not (Invoke-Sim $sim @{ RecoveryTimeoutSeconds = 180 }).Confirmed) { throw "not confirmed" }
+}
+Check "final verification fails clearly after recovery when something is wrong" {
+  $config = [pscustomobject]@{ state = "RUNNING"; version = "2026.10.2"; components = @("area_events", "frontend") }
+  $app = [pscustomobject]@{ slug = "local_area_events"; name = "Area Events"; state = "started" }
+  $good = Test-FinalState -GetConfig { $config } -GetApp { $app } -GetServedBuild { "AREA-EVENTS 0.2.0-aaaaaaaa" } -Expected "AREA-EVENTS 0.2.0-aaaaaaaa" -BuildWaitSeconds 2 -BuildPollSeconds 1
+  if ($good.Build -ne "AREA-EVENTS 0.2.0-aaaaaaaa") { throw "a good state was rejected" }
+  Expect-Throw { Test-FinalState -GetConfig { [pscustomobject]@{ state = "NOT_RUNNING"; components = @() } } -GetApp { $app } -GetServedBuild { "x" } -Expected "x" } "not RUNNING"
+  Expect-Throw { Test-FinalState -GetConfig { [pscustomobject]@{ state = "RUNNING"; components = @("frontend") } } -GetApp { $app } -GetServedBuild { "x" } -Expected "x" } "integration is not loaded"
+  Expect-Throw { Test-FinalState -GetConfig { $config } -GetApp { [pscustomobject]@{ slug = "local_area_events"; name = "Area Events"; state = "stopped" } } -GetServedBuild { "x" } -Expected "x" } "not started"
+  Expect-Throw { Test-FinalState -GetConfig { $config } -GetApp { [pscustomobject]@{ slug = "frigate"; name = "Frigate"; state = "started" } } -GetServedBuild { "x" } -Expected "x" } "Refusing to act"
+  Expect-Throw { Test-FinalState -GetConfig { $config } -GetApp { $app } -GetServedBuild { "AREA-EVENTS 0.2.0-bbbbbbbb" } -Expected "AREA-EVENTS 0.2.0-aaaaaaaa" -BuildWaitSeconds 2 -BuildPollSeconds 1 } "Timed out.*served card to carry build"
+}
+Check "the restart is requested from exactly one place, with the recovery timeout defaulting to 180 s" {
+  $text = Get-Content -Raw $script
+  if ([regex]::Matches($text, "homeassistant/restart").Count -ne 1) { throw "the restart command appears more than once" }
+  if ($text -notmatch "CoreRecoveryTimeoutSeconds = 180") { throw "default timeout is not 180" }
+}
+
 if ($failures) { Write-Host "$failures check(s) failed." -ForegroundColor Red; exit 1 }
 Write-Host "All checks passed."
