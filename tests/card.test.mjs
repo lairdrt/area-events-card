@@ -520,6 +520,19 @@ test("a card reloaded after the server already switched fetches the stale Home A
   assert.equal(synced.count("sync_now"), 0);
 });
 
+test("a set_location call that returns no response (script already running) is watched, not an error", async () => {
+  const server = createServer();
+  const hass = server.hass();
+  const callWS = hass.callWS;
+  hass.callWS = async (message) => {
+    if (message.service === "area_events_set_location") { server.change = { state: "queued", requested: message.service_data.spec }; return { context: {}, response: null }; }
+    return callWS(message);
+  };
+  const card = await makeControlled({ area: "Austin, TX" }, server, hass);
+  assert.doesNotMatch(noticeText(card), /returned no response|could not be applied/);
+  assert.match(noticeText(card), /Discovery for Austin, TX is waiting to start/);
+});
+
 test("a different radius counts as a different place", async () => {
   const server = createServer();
   await makeControlled({ area: "San Diego, CA", radius_miles: 40 }, server);

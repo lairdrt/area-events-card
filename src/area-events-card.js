@@ -307,7 +307,7 @@ function extractServiceResponse(result) {
     const nested = Object.values(response).find(looksRight);
     if (nested) response = nested;
   }
-  if (!looksRight(response)) throw new Error("The Home Assistant script returned no response.");
+  if (!looksRight(response)) throw Object.assign(new Error("The Home Assistant script returned no response."), { noResponse: true });
   let content = response.content;
   if (typeof content === "string") {
     try {
@@ -845,9 +845,15 @@ class AreaEventsCard extends HTMLElement {
       }
       if (!this._sameAsServer(desired.spec, content)) {
         this._setControl({ message: `Switching discovery to ${desired.spec.name}...` });
-        ({ status, content } = await this._controlCall("set_location", { spec: desired.spec }));
-        if (run !== this._control.run) return;
-        if (status !== 200 && status !== 202 && status !== 409) throw new Error(apiMessage(content, status));
+        try {
+          ({ status, content } = await this._controlCall("set_location", { spec: desired.spec }));
+          if (run !== this._control.run) return;
+          if (status !== 200 && status !== 202 && status !== 409) throw new Error(apiMessage(content, status));
+        } catch (error) {
+          // The script runs one at a time: a call made while another (the same dashboard's other card, or the card
+          // editor's preview) is running comes back empty. That request is the one switching; just watch it.
+          if (!error.noResponse) throw error;
+        }
       }
       this._controlWatch(run, desired.spec);
     } catch (error) {
