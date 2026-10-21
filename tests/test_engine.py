@@ -1,5 +1,4 @@
 """The profile engine and its HTTP API: ownership, isolation, failure handling, honest source reporting."""
-import io
 import json
 import os
 import tempfile

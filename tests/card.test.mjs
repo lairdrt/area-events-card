@@ -563,3 +563,15 @@ test("inline events show a header without a fabricated update time", async () =>
   assert.match(header, /1 event$/);
   assert.doesNotMatch(header, /Updated/);
 });
+
+// --- build -------------------------------------------------------------------------------
+
+test("the card the integration serves is the current source, stamped", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { createHash } = await import("node:crypto");
+  const source = readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  const { version } = JSON.parse(readFileSync(new URL("../custom_components/area_events/manifest.json", import.meta.url), "utf8"));
+  const identifier = `AREA-EVENTS ${version}-${createHash("sha1").update(source).digest("hex").slice(0, 8)}`;
+  const served = readFileSync(new URL("../custom_components/area_events/frontend/area-events-card.js", import.meta.url), "utf8");
+  assert.equal(served, source.replaceAll("__AREA_EVENTS_CARD_BUILD__", identifier), "run npm run build and commit the result");
+});

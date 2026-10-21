@@ -1,0 +1,15 @@
+# A fully configured card. Every option is optional; see README.md.
+type: custom:area-events-card
+title: Austin Events
+area: Austin, TX
+radius_miles: 25
+sources:
+  - https://calendar.utexas.edu
+categories: [music, food-drink]
+interests:
+  - "Board games: board game, tabletop"
+exclude: [politics]
+days: 14
+max_events: 30
+sort: date
+columns: 3

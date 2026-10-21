@@ -1,0 +1,3 @@
+# The simplest card: events around the Home Assistant home location.
+type: custom:area-events-card
+title: Area Events
