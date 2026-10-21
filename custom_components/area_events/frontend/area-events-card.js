@@ -9,8 +9,13 @@
  * visual editor; the filter chips are the viewer's own choices, saved per card instance (see "Preferences").
  */
 
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-2ee614c0";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-be2eea40";
 const CARD_TAG = "area-events-card";
+
+// Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
+// evaluated (the request failed or was never made), has defined: false when evaluation stopped before the card was
+// defined (see the console error), and has defined: true once it is registered.
+globalThis.__AREA_EVENTS_CARD_LOAD__ = { build: AREA_EVENTS_CARD_BUILD, started: Date.now(), defined: false };
 
 /*
  * Theme: colors come only from Home Assistant theme variables, so the card
@@ -179,6 +184,8 @@ const STYLES = `
     margin: 0 0 8px; padding: 6px 12px; border-radius: 8px; font-size: 0.875rem;
     border: 1px solid var(--divider-color); color: var(--primary-text-color); overflow-wrap: anywhere;
   }
+  .notice summary { cursor: pointer; }
+  .notice .detail-line { margin-top: 4px; color: var(--secondary-text-color); }
   .empty { padding: 16px 4px; color: var(--secondary-text-color); }
   .progress {
     display: flex; flex-direction: column; gap: 8px; margin: 0 0 8px; padding: 14px 16px; border-radius: 12px; box-sizing: border-box;
@@ -828,8 +835,8 @@ class AreaEventsCard extends HTMLElement {
   }
 
   /** What the viewer should know about the search, or undefined when there is nothing to say. */
-  _feedNotice(count) {
-    if (this._usesInline()) return undefined;
+  _noticeParts(count) {
+    if (this._usesInline()) return {};
     const updated = this._feed && this._feed.generatedAt ? this._formatDate(this._feed.generatedAt) : undefined;
     const status = this._status || {};
     const notes = [];
@@ -858,19 +865,34 @@ class AreaEventsCard extends HTMLElement {
     } else if (count === 0) {
       notes.push("No upcoming events match.");
     }
+    // Websites added to the card are extras: one short line says how many could not be read; the reasons sit behind a disclosure.
+    const problems = [], provided = [];
+    let providedEvents = 0;
     for (const item of status.report || []) {
-      if (item.status === "unsupported") notes.push(`Source not supported: ${item.url} (${item.reason}).`);
-      else if (item.status === "blocked") notes.push(`Source blocked: ${item.url} (${item.reason}).`);
-      else if (item.status === "unavailable") notes.push(`Source unavailable: ${item.url} (${item.reason}).`);
-      else if (item.status === "no_events") notes.push(`No events found at ${item.url} (${item.reason}).`);
+      if (item.status === "unsupported") problems.push(`Source not supported: ${item.url} (${item.reason}).`);
+      else if (item.status === "blocked") problems.push(`Source blocked: ${item.url} (${item.reason}).`);
+      else if (item.status === "unavailable") problems.push(`Source unavailable: ${item.url} (${item.reason}).`);
+      else if (item.status === "no_events") problems.push(`No events found at ${item.url} (${item.reason}).`);
       else if (item.status === "supported" && item.id && (item.adapter === "web" || item.adapter === "localist") && !this._discovering()) {
-        // a website the viewer added: say what it produced once its events have been read
         const found = this._feed && this._feed.sources && this._feed.sources[item.id];
-        if (found && found.ok !== false && found.events > 0) notes.push(`${item.name || item.url}: ${found.events} event${found.events === 1 ? "" : "s"} found.`);
-        else if (found && found.ok === false) notes.push(`${item.name || item.url}: no events found in the search area${found.error ? ` (${found.error})` : ""}.`);
+        if (found && found.ok !== false && found.events > 0) {
+          provided.push(`${item.name || item.url}: ${found.events} event${found.events === 1 ? "" : "s"} found.`);
+          providedEvents += found.events;
+        } else if (found && found.ok === false) {
+          problems.push(`${item.name || item.url}: no events found in the search area${found.error ? ` (${found.error})` : ""}.`);
+        }
       }
     }
-    return notes.join(" ") || undefined;
+    let summary;
+    if (problems.length) summary = `${problems.length} additional website${problems.length === 1 ? "" : "s"} couldn't be read.`;
+    else if (provided.length) summary = `Additional websites: ${providedEvents} event${providedEvents === 1 ? "" : "s"} found.`;
+    return { text: notes.join(" ") || undefined, summary, lines: [...problems, ...provided] };
+  }
+
+  /** The notice as plain text (the summary line included), or undefined when there is nothing to say. */
+  _feedNotice(count) {
+    const { text, summary } = this._noticeParts(count);
+    return [text, summary].filter(Boolean).join(" ") || undefined;
   }
 
   // --- rendering ----------------------------------------------------------------
@@ -1018,9 +1040,17 @@ class AreaEventsCard extends HTMLElement {
 
   _updateNotice(count) {
     if (!this._els || !this._els.notice) return;
-    const text = this._feedNotice(count === undefined ? (this._tiles || []).length : count) || "";
-    this._els.notice.textContent = text;
-    this._els.notice.hidden = !text;
+    const { text, summary, lines } = this._noticeParts(count === undefined ? (this._tiles || []).length : count);
+    const notice = this._els.notice;
+    notice.replaceChildren();
+    if (text) notice.append(this._el("div", "", text));
+    if (summary) {
+      const details = this._el("details", "");
+      details.append(this._el("summary", "", summary));
+      for (const line of lines) details.append(this._el("div", "detail-line", line));
+      notice.append(details);
+    }
+    notice.hidden = !(text || summary);
   }
 
   _visibleCount() {
@@ -1379,6 +1409,8 @@ if (!registered) {
     "the Area Events integration loads the card by itself."
   );
 }
+
+globalThis.__AREA_EVENTS_CARD_LOAD__.defined = customElements.get(CARD_TAG) === AreaEventsCard;
 
 window.customCards = window.customCards || [];
 if (!window.customCards.some((card) => card.type === `custom:${CARD_TAG}`)) {

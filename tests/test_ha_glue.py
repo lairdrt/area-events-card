@@ -8,8 +8,11 @@ import asyncio
 import dataclasses
 import importlib
 import importlib.util
+import json
 import os
+import pathlib
 import sys
+import tempfile
 import types
 import unittest
 from datetime import timedelta
@@ -262,6 +265,40 @@ class Setup(unittest.TestCase):
         url = sys.modules["homeassistant.components.frontend"].add_extra_js_url.call_args[0][1]
         self.assertTrue(url.startswith("/area_events/area-events-card.js?v="))
         self.assertTrue(os.path.exists(os.path.join(ROOT, "frontend", "area-events-card.js")), "the built card ships with the integration")
+
+    def test_the_card_script_is_registered_after_its_file_is_served_and_follows_the_file(self):
+        """Registration lifecycle: the static path exists before the page can reference it, it is never cached stale, and a changed file gets a new URL."""
+        order, urls = [], []
+
+        async def register(configs):
+            order.append(("static", configs))
+
+        announce = lambda hass, url: (order.append(("script", url)), urls.append(url))
+        hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=register), async_add_executor_job=lambda func: asyncio.sleep(0, func()))
+        with tempfile.TemporaryDirectory() as folder:
+            card = pathlib.Path(folder, "area-events-card.js")
+            card.write_text("// v1")
+            with mock.patch.object(init, "CARD_FILE", card), mock.patch.object(init, "add_extra_js_url", announce):
+                os.utime(card, ns=(1_000_000_000, 1_000_000_000))
+                self.assertTrue(run(init.async_setup(hass, {})))
+                os.utime(card, ns=(2_000_000_000, 2_000_000_000))
+                self.assertTrue(run(init.async_setup(hass, {})))
+        self.assertEqual([kind for kind, _ in order[:2]], ["static", "script"])  # served first, announced to the frontend second
+        (path, file_path), options = order[0][1][0]
+        self.assertEqual((path, options), ("/area_events/area-events-card.js", {"cache_headers": False}))  # the file is revalidated, never served stale
+        self.assertEqual(urls, ["/area_events/area-events-card.js?v=1000000000", "/area_events/area-events-card.js?v=2000000000"])
+        self.assertTrue(all(url.split("?")[0] == path for url in urls))
+
+    def test_the_integration_depends_on_the_frontend_so_the_script_list_exists_when_it_is_added(self):
+        manifest = json.load(open(os.path.join(ROOT, "manifest.json"), encoding="utf-8"))
+        self.assertIn("frontend", manifest["dependencies"])
+        self.assertIn("http", manifest["dependencies"])
+
+    def test_the_served_card_is_the_built_card_and_is_not_the_placeholder(self):
+        served = open(os.path.join(ROOT, "frontend", "area-events-card.js"), encoding="utf-8").read()
+        self.assertNotIn("__AREA_EVENTS_CARD_BUILD__", served)
+        self.assertIn("customElements.define(CARD_TAG, AreaEventsCard)", served)
+        self.assertIn("__AREA_EVENTS_CARD_LOAD__", served)
 
     def test_setup_connects_polls_and_keeps_the_coordinator_listening(self):
         entry = Entry({"url": "http://host:8765", "token": TOKEN})

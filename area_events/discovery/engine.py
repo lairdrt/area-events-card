@@ -456,6 +456,10 @@ class Engine:
         pid, profile = record["id"], record["profile"]
         started = self.clock()
         record["attempt_at"] = started
+        with self._lock:
+            # A new run supersedes the outcome of the last one: a failure recorded earlier (even by an older version of the app,
+            # persisted in profile.json) must not be reported while this run is already publishing events. The run sets both again.
+            record["error"], record["outcome"] = None, None
         error, report, outcome, permanent, reused = None, [], "failed", False, None
         folder = self._dir(pid)
         stderr = _LogWriter(logging.WARNING)

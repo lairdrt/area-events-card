@@ -1,6 +1,7 @@
 """Websites added to a card supplement the automatic sources; they never replace them, and a failing one never removes their events."""
 import json
 import os
+import sys
 import tempfile
 import unittest
 
@@ -52,6 +53,8 @@ class SourceRefresh:
                 cache[sid] = {"ok": True, "error": None, "events": [event(sid, title) for title in answer]}
                 succeeded += 1
         if active and not succeeded:
+            for sid in active:
+                print(f"[{sid}] FAILED: {cache[sid].get('error')}", file=sys.stderr)
             return 1  # nothing refreshed: the published feed is left exactly as it was
         events = [e for sid in chosen for e in cache.get(sid, {}).get("events", [])]
         if not events:
@@ -270,6 +273,65 @@ class Additive(unittest.TestCase):
             pass
         self.assertEqual(len(restarted.snapshot(pid)["events"]), 4)
         self.assertEqual(restarted.snapshot(pid)["report"][0]["status"], "supported")
+
+    def saved_profile(self, sources, **fields):
+        """Write a profile.json as an earlier version of the app left it."""
+        profile = normalize_profile({"area": "Austin, TX", "sources": sources})
+        pid = profile_id(profile)
+        folder = os.path.join(self.tmp.name, "profiles", pid)
+        os.makedirs(folder)
+        record = {"id": pid, "profile": profile, "requested_at": self.clock(), "state": "pending", "error": None, "attempt_at": None, "success_at": None,
+                  "report": [], "outcome": None, "permanent": False, "place_key": None, **fields}
+        json.dump(record, open(os.path.join(folder, "profile.json"), "w", encoding="utf-8"))
+        return pid
+
+    def test_an_error_left_by_the_old_source_only_behaviour_is_not_reported_while_the_new_run_publishes_events(self):
+        old = "none of the requested websites can be read by an available adapter"
+        pid = self.saved_profile([ST_MICHAELS, GOOD], state="error", error=old, outcome="failed", attempt_at=self.clock())
+        self.use_ids()
+        engine = self.make()  # loading the saved profile queues it again
+        seen = []
+        self.refresh.hook = lambda number, output: seen.append((number, engine.snapshot(pid)))
+        while engine.run_next():
+            pass
+        first, second = seen
+        self.assertEqual((first[1]["error"], first[1]["outcome"], first[1]["state"]), (None, None, "discovering"))  # the old message is gone as soon as the run starts
+        self.assertEqual((second[1]["error"], second[1]["state"], len(second[1]["events"])), (None, "ready", 2))  # events visible, no stale failure, while the added site is read
+        done = engine.snapshot(pid)
+        self.assertEqual((done["error"], done["state"], done["outcome"]), (None, "ready", "complete"))
+        self.assertEqual(self.titles(done), ["Campus Lecture", "Good One", "Good Two", "Library Talk"])
+        self.assertEqual({r["url"]: r["status"] for r in done["report"]}, {ST_MICHAELS: "unsupported", GOOD: "supported"})
+
+    def test_a_genuine_failure_is_reported_and_cleared_by_the_next_successful_run(self):
+        self.refresh.results["ut_austin"] = RuntimeError("all sources are down")
+        pid, snapshot = self.search([ST_MICHAELS])
+        self.assertEqual((snapshot["state"], snapshot["outcome"]), ("error", "failed"))
+        self.assertIn("all sources are down", snapshot["error"])
+        self.refresh.results["ut_austin"] = ["Campus Lecture"]
+        self.clock.now += 7200
+        self.engine.register({"area": "Austin, TX", "sources": [ST_MICHAELS]})
+        while self.engine.run_next():
+            pass
+        recovered = self.engine.snapshot(pid)
+        self.assertEqual((recovered["state"], recovered["error"], recovered["outcome"]), ("ready", None, "complete"))
+        self.assertEqual(self.titles(recovered), ["Campus Lecture"])
+
+    def test_a_failed_refresh_keeps_the_events_and_a_later_run_clears_the_message(self):
+        pid, _ = self.search([ST_MICHAELS])
+        self.refresh.results["ut_austin"] = RuntimeError("site down")
+        self.clock.now += 7200
+        self.engine.tick()
+        while self.engine.run_next():
+            pass
+        failed = self.engine.snapshot(pid)
+        self.assertEqual((failed["state"], self.titles(failed)), ("ready", ["Campus Lecture", "Library Talk"]))
+        self.assertIn("site down", failed["error"])
+        self.refresh.results["ut_austin"] = ["Campus Lecture"]
+        self.clock.now += 7200
+        self.engine.tick()
+        while self.engine.run_next():
+            pass
+        self.assertEqual((self.engine.snapshot(pid)["error"], self.titles(self.engine.snapshot(pid))), (None, ["Campus Lecture"]))
 
 
 if __name__ == "__main__":

@@ -965,3 +965,79 @@ test("a card registered first by an older Area Events resource is reported, with
     console.error = realError;
   }
 });
+
+// --- runtime reliability: card registration and optional-website notices ------------------------------------------
+
+test("the card module is one self-contained script that defines its element during evaluation and records its load", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /^\s*(import|export)\s/m, "no imports or exports: nothing to fetch or link between the request and customElements.define");
+  assert.doesNotMatch(source, /\bimport\s*\(|^\s*await\s/m, "no dynamic import or top-level await before the element is defined");
+
+  const saved = { get: customElements.get, define: customElements.define, cards: window.customCards, marker: globalThis.__AREA_EVENTS_CARD_LOAD__ };
+  const seen = { defines: 0 };
+  let defined;
+  customElements.get = (name) => (name === "area-events-card" ? defined : undefined);
+  customElements.define = (name, cls) => {
+    seen.defines++;
+    seen.markerAtDefine = { ...globalThis.__AREA_EVENTS_CARD_LOAD__ };
+    defined = cls;
+  };
+  delete globalThis.__AREA_EVENTS_CARD_LOAD__;
+  window.customCards = undefined;
+  try {
+    await import("../src/area-events-card.js?cold-load");
+    assert.equal(seen.defines, 1);
+    assert.equal(seen.markerAtDefine.defined, false); // the record exists before the element is defined...
+    assert.equal(typeof seen.markerAtDefine.started, "number");
+    assert.equal(globalThis.__AREA_EVENTS_CARD_LOAD__.defined, true); // ...and says so once it is
+    assert.equal(window.customCards.filter((card) => card.type === "custom:area-events-card").length, 1);
+    assert.equal(typeof defined.getConfigForm, "function");
+  } finally {
+    Object.assign(customElements, { get: saved.get, define: saved.define });
+    window.customCards = saved.cards;
+    globalThis.__AREA_EVENTS_CARD_LOAD__ = saved.marker;
+  }
+});
+
+test("an unsupported added website is one short, nonfatal line with its reason behind a disclosure, and the events stay", async () => {
+  const reason = "the page builds its events with JavaScript, which Area Events does not run, and it offers no calendar feed";
+  const report = [{ url: "https://www.smpoway.org/calendar", status: "unsupported", reason }];
+  const card = await make({ sources: ["https://www.smpoway.org/calendar"] }, { reply: () => answer(makeFeed(), { report, outcome: "complete", initial: false, progress: searching({ phase: "complete" }) }) });
+  const [notice] = byClass(card.shadowRoot, "notice");
+  assert.equal(notice.hidden, false);
+  const details = notice.children.find((child) => child.tag === "details");
+  assert.equal(details.children[0].tag, "summary");
+  assert.equal(details.children[0].textContent, "1 additional website couldn't be read.");
+  assert.match(text(details), /smpoway\.org\/calendar.*JavaScript/);
+  assert.doesNotMatch(text(notice), /refresh failed|could not be found|not available/i);
+  assert.equal(byClass(card.shadowRoot, "event").length, 3);
+});
+
+test("a healthy search never shows a failure for the optional website while it is still being processed", async () => {
+  const report = [{ url: "https://www.smpoway.org/calendar", status: "unsupported", reason: "needs JavaScript" }];
+  // events visible, the app is still reading other sources, nothing is wrong with the profile itself
+  const working = await make({ sources: ["https://www.smpoway.org/calendar"] }, { reply: () => answer(makeFeed(), { report, refreshing: true, initial: false, message: null, progress: searching() }) });
+  assert.doesNotMatch(text(byClass(working.shadowRoot, "notice")[0]), /last refresh failed/);
+  assert.equal(byClass(working.shadowRoot, "event").length, 3);
+  // a genuine failure of the whole run is still reported, whatever the added websites did
+  const failing = await make({ sources: ["https://www.smpoway.org/calendar"] }, { reply: () => answer(makeFeed(), { report, refreshing: true, initial: false, message: "all sources are down", progress: searching() }) });
+  assert.match(text(byClass(failing.shadowRoot, "notice")[0]), /The last refresh failed \(all sources are down\)/);
+  // once a later run succeeds the message is gone and only the short line remains
+  const recovered = await make({ sources: ["https://www.smpoway.org/calendar"] }, { reply: () => answer(makeFeed(), { report, message: null, outcome: "complete", initial: false, progress: searching({ phase: "complete" }) }) });
+  assert.doesNotMatch(text(byClass(recovered.shadowRoot, "notice")[0]), /refresh failed|all sources are down/);
+  assert.match(text(byClass(recovered.shadowRoot, "notice")[0]), /1 additional website couldn't be read\./);
+});
+
+test("events already shown stay while a later answer adds source status", async () => {
+  const feed = makeFeed();
+  let next = answer(feed, { refreshing: true, initial: false, progress: searching() });
+  const card = await make({ sources: ["https://www.smpoway.org/calendar"] }, { reply: () => next });
+  const before = byClass(card.shadowRoot, "event").map((el) => el);
+  next = answer(feed, { report: [{ url: "https://www.smpoway.org/calendar", status: "unsupported", reason: "x" }], initial: false, progress: searching({ phase: "complete" }) });
+  await pollAgain(card);
+  const after = byClass(card.shadowRoot, "event");
+  assert.match(text(byClass(card.shadowRoot, "notice")[0]), /1 additional website couldn't be read/); // the new answer was applied
+  assert.equal(after.length, before.length);
+  assert.ok(after.every((el, i) => el === before[i]), "tiles are reused, not rebuilt or blanked");
+});
