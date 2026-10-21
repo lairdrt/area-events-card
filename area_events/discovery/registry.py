@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 from . import sources as adapters
 from .location import distance_miles
+from .safe import SafeFetcher
 
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_]{0,39}$")
 RESERVED_OPTIONS = {"details", "limit", "source_id", "source_name", "url", "location"}
@@ -40,6 +41,8 @@ class Source:
 
     def discover(self, fetcher, previous, details=True, limit=None, location=None):
         options = dict(self.options, source_id=self.id, source_name=self.name, url=self.url)
+        if options.pop("safe", False):  # a website a person typed in: public addresses only, pinned connections, robots.txt (see safe.py)
+            fetcher = SafeFetcher(getattr(fetcher, "interval", 2.0))
         if self.wants_location:
             options["location"] = location
         return self.module.discover(fetcher, previous, details=details, limit=limit, **options)

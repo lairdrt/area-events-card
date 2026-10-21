@@ -46,7 +46,7 @@ show_filters: true
 | `title` | Header text. |
 | `id` | Optional short name (letters, digits, `-`, `_`) that keeps saved filters separate for identical cards on one dashboard. |
 | `area`, `radius_miles` | What to search (radius 1 to 250, default 25). Without `area`, the Home Assistant home location is used; if Home Assistant has none, the card says so. |
-| `sources` | Up to 10 website addresses. Only websites with an adapter work; the rest are listed in the card as unsupported. |
+| `sources` | Up to 10 website addresses: an events page, a calendar (ICS) feed or an RSS/Atom feed. Addresses the app cannot read are listed in the card with the reason. |
 | `categories` | Built-in category ids or names to keep: music, festivals, food-drink, arts, sports, science, technology, family, community, outdoors, education, history, theater, comedy, markets, other. |
 | `interests` | Extra topics as `Name: keyword, keyword` (or `{name, keywords}`), up to 20. |
 | `exclude` | Topics to hide, matched as whole words in title, description and categories. |
@@ -62,12 +62,18 @@ Event fields the card shows: `title`, `start`, `end`, `location`/`venue`, `categ
 
 ## Source websites
 
-Accepting an address in `sources` does **not** mean any website can be read. The app reads:
+Type the address of an events page, an ICS calendar or an RSS/Atom feed into **Source websites** in the card editor and save; the app discovers the events itself, with no per-site code. In order of preference it reads:
 
-- the registered sources in [area_events/discovery/sources.json](area_events/discovery/sources.json): KPBS, San Diego Reader, DoSD and City of San Diego (San Diego, CA) and UT Austin Events (Localist);
-- any public calendar that runs on **Localist** (the app probes the address and says whether it is one).
+1. **Schema.org events** in the page (JSON-LD, including `@graph`, lists and nested events, and microdata);
+2. **calendar feeds** the page links to on the same site: iCalendar (ICS, including simple recurrences) and RSS/Atom feeds that state event dates;
+3. only when neither exists, **listing blocks** that hold a `<time datetime>` and a titled link;
+4. a few same-site **event pages**, to fill in a venue or picture a listing lacks, or to follow links a list gave without dates.
 
-Anything else is reported in the card as *Source not supported* with the reason, and is never fetched. Addresses that resolve to private or local network addresses are refused. Without `sources`, the app uses the registered sources whose declared coverage overlaps the area; for an area with no such source the card says that no source applies. Adding a source for another place means adding an adapter module or a Localist entry, see [docs/architecture.md](docs/architecture.md).
+The address may also be a feed itself, or a single event page. Nothing is invented: an event with no start time (a bare date is not one), no determinable time zone, an online-only venue, or a past end is skipped. Venue, address, image, organizer and price appear only when the page states them. Events then go through the same location filter, de-duplication, classification and image handling as every other source.
+
+The card shows what happened to each address: *events found*, *no events found*, *unsupported format* (for example a page that builds its events with JavaScript, which the app never runs), *blocked* (robots.txt, HTTP 401/403/429, or a non-public address) or *unavailable*. Not every website can be read: pages without structured data or feeds, sites that require JavaScript, logins or CAPTCHAs, and sites whose robots.txt forbids the app are reported, not worked around. The registered sources in [area_events/discovery/sources.json](area_events/discovery/sources.json) (KPBS, San Diego Reader, DoSD, City of San Diego, UT Austin) and any public **Localist** calendar keep their dedicated readers, which take precedence for those addresses.
+
+**Safety.** Typed-in addresses are untrusted: http/https on ports 80 and 443 only; the host is resolved once, every address must be public (loopback, private, link-local, metadata and carrier-grade addresses are refused) and the connection is made to that exact address, so DNS rebinding cannot swap it; each redirect (at most four) is re-checked; robots.txt and Crawl-delay are honoured; requests to a host are spaced at least two seconds apart; responses are limited to 1.5 MB (compressed bodies are inflated within the same limit) and a site gets at most 30 requests (12 event pages, 3 list pages, 3 feeds) and about 100 seconds. The result of a crawl is cached for 15 minutes so profiles that share a website do not fetch it twice. No JavaScript is executed and no browser is involved. Without `sources`, the app uses the registered sources whose declared coverage overlaps the area; for an area with no such source the card says that no source applies. Details are in [docs/architecture.md](docs/architecture.md).
 
 ## Development
 

@@ -25,6 +25,8 @@ from .location import LocationError, resolve_location
 from .profiles import ProfileError, location_spec, match_registered, normalize_profile, profile_id, public_host
 from .publish import FeedError, validate_feed, write_atomic
 from .refresh import SOURCES_FILE, load_config, refresh
+from .safe import SafeFetcher
+from .sources import web
 
 log = logging.getLogger("area-events")
 log.addHandler(logging.NullHandler())
@@ -72,22 +74,29 @@ def _iso(timestamp):
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat(timespec="seconds")
 
 
+def probe_web(fetcher, url):
+    """What can the generic website adapter read at `url`? See sources/web.py: a dict with status and reason."""
+    return web.probe(fetcher, url)
+
+
 def probe_localist(fetcher, url):
     """Is `url` a Localist calendar? Returns True/False; raises FetchError when it cannot be reached."""
     origin = "/".join(url.split("/", 3)[:3])
-    payload = json.loads(fetcher.get(f"{origin}/api/2/events?pp=1"))
+    client = fetcher if hasattr(fetcher, "fetch") else SafeFetcher(getattr(fetcher, "interval", 2.0))  # a typed-in address: never the local network
+    payload = json.loads(client.get(f"{origin}/api/2/events?pp=1"))
     return isinstance(payload, dict) and isinstance(payload.get("events"), list)
 
 
 class Engine:
     def __init__(self, data_dir, sources_path=SOURCES_FILE, interval=3600, clock=time.time, refresh_fn=refresh,
-                 fetcher_factory=None, host_check=public_host, probe=probe_localist, max_profiles=MAX_PROFILES, geocode=None):
+                 fetcher_factory=None, host_check=public_host, probe=probe_localist, max_profiles=MAX_PROFILES, geocode=None, web_probe=probe_web):
         self.data_dir = os.path.join(data_dir, "profiles")
         self.geocode = geocode or resolve_location
         self._geocode_cache = os.path.join(data_dir, "geocode-cache.json")  # shared: a place is looked up once, not once per profile
         self.sources_path = sources_path
         self.interval = max(MIN_INTERVAL, interval)
         self.clock, self.refresh_fn, self.host_check, self.probe, self.max_profiles = clock, refresh_fn, host_check, probe, max_profiles
+        self.web_probe = web_probe
         self.fetcher_factory = fetcher_factory or (lambda: Fetcher(2.0))
         self.started = clock()
         self._lock = threading.RLock()
@@ -350,24 +359,39 @@ class Engine:
         entries, report = [], []
         for url, source in matched:
             entries.append(raw_by_id[source.id])
-            report.append({"url": url, "status": "supported", "adapter": source.adapter, "name": source.name})
+            report.append({"url": url, "status": "supported", "adapter": source.adapter, "name": source.name, "id": source.id})
         for url in rest:
             host = url.split("/")[2]
             try:
                 if not self.host_check(host):
                     raise FetchError("the address is not a public website")
-                is_localist = self.probe(fetcher, url)
-            except (FetchError, ValueError) as error:
-                report.append({"url": url, "status": "unsupported", "reason": f"could not be read: {error}"[:200]})
+                is_localist = self._is_localist(fetcher, url)
+            except FetchError as error:
+                report.append({"url": url, "status": "blocked", "reason": f"{error}"[:200]})
                 continue
-            if not is_localist:
-                report.append({"url": url, "status": "unsupported", "reason": "no adapter reads this website (only the registered sources and Localist calendars are supported)"})
+            if is_localist:
+                digest = hashlib.sha1(host.encode()).hexdigest()[:8]
+                entries.append({"id": f"localist_{digest}", "name": host, "adapter": "localist", "url": "/".join(url.split("/", 3)[:3]),
+                                "coverage": {"type": "global"}, "options": {"days": 14, "safe": True}})
+                report.append({"url": url, "status": "supported", "adapter": "localist", "name": host, "id": f"localist_{digest}"})
                 continue
-            digest = hashlib.sha1(host.encode()).hexdigest()[:8]
-            entries.append({"id": f"localist_{digest}", "name": host, "adapter": "localist", "url": "/".join(url.split("/", 3)[:3]),
-                            "coverage": {"type": "global"}, "options": {"days": 14}})
-            report.append({"url": url, "status": "supported", "adapter": "localist", "name": host})
+            found = self.web_probe(fetcher, url)
+            if found["status"] != "supported":
+                report.append({"url": url, "status": found["status"], "reason": found.get("reason", "")})
+                continue
+            digest = hashlib.sha1(url.encode()).hexdigest()[:8]
+            name = (found.get("name") or host)[:60]
+            entries.append({"id": f"web_{digest}", "name": name, "adapter": "web", "url": url, "coverage": {"type": "global"}, "options": {"days": 60, "safe": True}})
+            report.append({"url": url, "status": "supported", "adapter": "web", "name": name, "id": f"web_{digest}", "format": found.get("format"),
+                           "found": found.get("events")})
         return entries, True, report
+
+    def _is_localist(self, fetcher, url):
+        """Is `url` a Localist calendar? A site that cannot be read as one simply is not (the generic reader tries next)."""
+        try:
+            return bool(self.probe(fetcher, url))
+        except (FetchError, ValueError):
+            return False
 
     def _reuse(self, twin, folder):
         """Copy a twin's feed (and source cache) into `folder`; False, copying nothing, if that is not possible."""

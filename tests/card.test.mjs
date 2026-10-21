@@ -166,6 +166,28 @@ test("discovery states are told apart: finding, not reachable, nothing found, un
   assert.equal(byClass(partial.shadowRoot, "event").length, 3);
 });
 
+test("added websites report what happened to them: blocked, unavailable, no events, and how many events were found", async () => {
+  const report = [
+    { url: "https://a.example", status: "blocked", reason: "robots.txt does not allow this page" },
+    { url: "https://b.example", status: "unavailable", reason: "could not be read: HTTP 503" },
+    { url: "https://c.example", status: "no_events", reason: "no upcoming events were found" },
+    { url: "https://d.example", status: "unsupported", reason: "no event data was found" },
+    { url: "https://e.example/events", status: "supported", adapter: "web", name: "E Events", id: "web_e" },
+    { url: "https://f.example/events", status: "supported", adapter: "web", name: "F Events", id: "web_f" },
+    { url: "https://kpbs.org", status: "supported", adapter: "kpbs", name: "KPBS", id: "kpbs" },
+  ];
+  const sources = { web_e: { ok: true, events: 12 }, web_f: { ok: false, events: 0, error: "extraction produced no events" }, kpbs: { ok: true, events: 9 } };
+  const card = await make({ sources: report.map((item) => item.url) }, { reply: () => answer(makeFeed(), { report, sources }) });
+  const notice = text(byClass(card.shadowRoot, "notice")[0]);
+  assert.match(notice, /Source blocked: https:\/\/a\.example \(robots\.txt does not allow this page\)/);
+  assert.match(notice, /Source unavailable: https:\/\/b\.example \(could not be read: HTTP 503\)/);
+  assert.match(notice, /No events found at https:\/\/c\.example \(no upcoming events were found\)/);
+  assert.match(notice, /Source not supported: https:\/\/d\.example \(no event data was found\)/);
+  assert.match(notice, /E Events: 12 events found\./);
+  assert.match(notice, /F Events: no events found in the search area \(extraction produced no events\)\./);
+  assert.doesNotMatch(notice, /KPBS/); // built-in sources are not announced
+});
+
 test("a refresh failure keeps the earlier events and says so", async () => {
   const card = await make({});
   card.hassStub.fail = { code: "unknown_error", message: "offline" };

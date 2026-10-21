@@ -316,8 +316,8 @@ function normalizePrefs(raw, extraIds = []) {
  *   title, id                  header text; `id` keeps saved filters apart for identical cards on one dashboard
  *   area, radius_miles         the place (a city, a ZIP code or "latitude, longitude") and the search radius;
  *                              without `area` the Home Assistant home location is used
- *   sources                    website addresses to read events from; only some websites have an adapter and the
- *                              card reports the ones that do not
+ *   sources                    website addresses to read events from (an events page, an ICS calendar or an RSS/Atom
+ *                              feed); the card reports the ones it cannot read and why
  *   categories                 limit events to these built-in categories (ids or names); omit for all
  *   interests                  extra topics: "Name: keyword, keyword" (or {name, keywords})
  *   exclude                    topics to hide (any event mentioning one is dropped)
@@ -860,6 +860,15 @@ class AreaEventsCard extends HTMLElement {
     }
     for (const item of status.report || []) {
       if (item.status === "unsupported") notes.push(`Source not supported: ${item.url} (${item.reason}).`);
+      else if (item.status === "blocked") notes.push(`Source blocked: ${item.url} (${item.reason}).`);
+      else if (item.status === "unavailable") notes.push(`Source unavailable: ${item.url} (${item.reason}).`);
+      else if (item.status === "no_events") notes.push(`No events found at ${item.url} (${item.reason}).`);
+      else if (item.status === "supported" && item.id && (item.adapter === "web" || item.adapter === "localist") && !this._discovering()) {
+        // a website the viewer added: say what it produced once its events have been read
+        const found = this._feed && this._feed.sources && this._feed.sources[item.id];
+        if (found && found.ok !== false && found.events > 0) notes.push(`${item.name || item.url}: ${found.events} event${found.events === 1 ? "" : "s"} found.`);
+        else if (found && found.ok === false) notes.push(`${item.name || item.url}: no events found in the search area${found.error ? ` (${found.error})` : ""}.`);
+      }
     }
     return notes.join(" ") || undefined;
   }
@@ -1345,7 +1354,7 @@ const EDITOR_LABELS = {
 };
 const EDITOR_HELP = {
   area: "Leave empty to use the Home Assistant home location.",
-  sources: "Type an address and press Enter. Only websites with an adapter work; the card says which ones do not.",
+  sources: "Type a website address and press Enter: an events page, a calendar (ICS) feed or an RSS feed. The card says which addresses it cannot read and why.",
   interests: "Extra topics that become their own filters, for example Board games: board game, tabletop",
 };
 

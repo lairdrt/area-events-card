@@ -17,6 +17,7 @@ ADAPTERS = {
     "dosd": "dosd",
     "sandiego_gov": "sandiego_gov",
     "localist": "localist",
+    "web": "web",
 }
 
 

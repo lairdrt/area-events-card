@@ -29,7 +29,7 @@ Result:
 ```json
 {"state": "pending | discovering | ready | error | unavailable", "message": null, "refreshing": false, "connected": true,
  "generated_at": "...", "location": {"display_name": "Austin, TX", "...": "..."}, "sources": {"ut_austin": {"ok": true, "events": 323}},
- "report": [{"url": "...", "status": "supported | unsupported", "adapter": "...", "reason": "..."}],
+ "report": [{"url": "...", "status": "supported | unsupported | blocked | unavailable | no_events", "adapter": "...", "reason": "..."}],
  "events": [], "unchanged": true}
 ```
 
@@ -63,11 +63,16 @@ All requests under `/api/v1` carry `Authorization: Bearer <token>`; five wrong t
 
 1. an address whose host matches a registered source (`area_events/discovery/sources.json`) uses that source's adapter, regardless of its declared coverage;
 2. any other address is probed once as a Localist calendar (`/api/2/events`); hosts that do not resolve to public addresses are refused without any request;
-3. otherwise it is reported as unsupported with the reason.
+3. otherwise the generic **web** adapter (`sources/web.py`) crawls it: `webparse.py` (HTML tree, JSON-LD, microdata, links, listing cards), `webfeeds.py` (ICS with simple recurrence, RSS/Atom) and `webtime.py` (ISO/RFC 822 dates; US zones without tzdata). The crawl is staged: structured data first (JSON-LD, microdata), then linked same-site feeds, then, only if those found nothing, `<time datetime>` listing blocks; a bounded number of same-site event pages complete or extend the result. The outcome of this probe is the status in the report;
+4. an address nothing can read is reported with a status and reason: `unsupported` (no event data, a non-page content type, or a page built by JavaScript), `no_events`, `blocked` (robots.txt, HTTP 401/403/429, non-public address) or `unavailable` (network, 404, 5xx, too large).
 
-If none of the named addresses is supported the profile fails with that explanation instead of silently using other sources. Without `sources`, registered sources are chosen by the coverage each declares; a source with unknown coverage is never assumed to apply. Pacific-time handling exists only inside the San Diego adapters, which read local wall-clock times; Localist reports UTC offsets.
+Every request for a typed-in address goes through `SafeFetcher` (`safe.py`): public addresses only, connection pinned to the validated address, manual and re-validated redirects, RFC 9309 robots.txt, shared per-host spacing, size/time limits. The registry entries the engine creates for such addresses carry `options.safe`, which makes `registry.Source.discover` use that fetcher, including for user-entered Localist sites. Crawl results are cached for 15 minutes (`web.crawl`), so profiles sharing a website do not refetch it; the probe and the later discovery of the same run share one crawl.
 
-To support a new place: add a Localist entry to `sources.json`, or write an adapter module (see `area_events/discovery/sources/__init__.py`) and register it with its coverage.
+The report entries are `{"url", "status": "supported | unsupported | blocked | unavailable | no_events", "adapter", "name", "id", "format", "found", "reason"}`; `id` names the source in the feed's `sources` block so the card can show how many events a website produced.
+
+If none of the named addresses is supported the profile fails with that explanation instead of silently using other sources. Without `sources`, registered sources are chosen by the coverage each declares; a source with unknown coverage is never assumed to apply. Pacific-time handling exists only inside the San Diego adapters, which read local wall-clock times; Localist and web sources report UTC offsets, and a web event's wall-clock time without an offset takes the page's time zone (ICS `TZID`) or else the search area's, and is skipped when neither is known.
+
+To support a new place with its own reader: add a Localist entry to `sources.json`, or write an adapter module (see `area_events/discovery/sources/__init__.py`) and register it with its coverage.
 
 ## The app
 

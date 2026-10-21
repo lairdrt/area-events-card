@@ -45,7 +45,12 @@ def normalize_url(raw):
     parts = urlparse(url)
     if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password:
         raise ProfileError(f"'{raw[:80]}' is not a plain http(s) website address")
-    return f"{parts.scheme}://{parts.hostname.lower()}{parts.path.rstrip('/') if parts.path != '/' else ''}"
+    try:
+        port = f":{parts.port}" if parts.port and parts.port != (443 if parts.scheme == "https" else 80) else ""
+    except ValueError as error:
+        raise ProfileError(f"'{raw[:80]}' has an invalid port") from error
+    query = f"?{parts.query}" if parts.query else ""
+    return f"{parts.scheme}://{parts.hostname.lower()}{port}{parts.path.rstrip('/') if parts.path != '/' else ''}{query}"
 
 
 def normalize_profile(raw):

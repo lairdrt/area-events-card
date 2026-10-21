@@ -73,7 +73,8 @@ class EngineCase(unittest.TestCase):
 
     def make(self, **extra):
         options = dict(interval=3600, clock=self.clock, refresh_fn=self.refresh, fetcher_factory=lambda: object(),
-                       host_check=lambda host: host not in ("intranet.example",), probe=lambda fetcher, url: "localist" in url, geocode=fake_geocode)
+                       host_check=lambda host: host not in ("intranet.example",), probe=lambda fetcher, url: "localist" in url, geocode=fake_geocode,
+                       web_probe=lambda fetcher, url: {"status": "unsupported", "reason": "no event data was found"})
         options.update(extra)
         return Engine(self.tmp.name, **options)
 
@@ -426,7 +427,8 @@ class Sources(EngineCase):
         report = {item["url"]: item for item in self.engine.snapshot(pid)["report"]}
         self.assertEqual(report["https://www.kpbs.org/events"]["status"], "supported")
         self.assertEqual(report["https://news.example/localist"]["adapter"], "localist")
-        self.assertIn("no adapter", report["https://blog.example"]["reason"])
+        self.assertEqual(report["https://blog.example"]["status"], "unsupported")
+        self.assertIn("no event data", report["https://blog.example"]["reason"])
         self.assertIn("not a public website", report["https://intranet.example"]["reason"])
 
     def test_only_unsupported_websites_is_an_honest_error_and_runs_nothing(self):
@@ -441,7 +443,7 @@ class Sources(EngineCase):
     def test_an_unreachable_website_is_unsupported_not_a_crash(self):
         def probe(fetcher, url):
             raise FetchError("timed out")
-        engine = self.make(probe=probe)
+        engine = self.make(probe=probe, web_probe=lambda fetcher, url: {"status": "unavailable", "reason": "could not be read: timed out"})
         pid = engine.register({"area": "Austin, TX", "sources": ["https://calendar.utexas.edu", "https://down.example"]})
         self.drain(engine)
         report = {item["url"]: item for item in engine.snapshot(pid)["report"]}
