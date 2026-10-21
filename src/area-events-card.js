@@ -834,7 +834,15 @@ class AreaEventsCard extends HTMLElement {
       if (run !== this._control.run) return;
       if (status !== 200) throw new Error(apiMessage(content, status));
       const state = content.change && content.change.state;
-      if (this._sameAsServer(desired.spec, content) && state !== "queued" && state !== "running") return; // already active: nothing to do
+      if (this._sameAsServer(desired.spec, content) && state !== "queued" && state !== "running") {
+        // Already the active place. The change may have finished while no card was watching (editing the YAML
+        // reloads the card), leaving Home Assistant's copy of the feed behind: fetch it now.
+        if (!this._feed) await this._loadFeed();
+        const shown = this._feed && this._feed.location && (this._feed.location.display_name || this._feed.location.name);
+        const served = content.feed && content.feed.location;
+        if (run === this._control.run && shown && served && String(shown).toLowerCase() !== String(served).toLowerCase()) await this._controlFetchResults(run);
+        return;
+      }
       if (!this._sameAsServer(desired.spec, content)) {
         this._setControl({ message: `Switching discovery to ${desired.spec.name}...` });
         ({ status, content } = await this._controlCall("set_location", { spec: desired.spec }));

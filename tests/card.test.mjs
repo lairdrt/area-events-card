@@ -504,6 +504,22 @@ test("a different area is applied once, the old events stay, and the new feed is
   assert.equal(server.count("set_location"), 1); // never repeated
 });
 
+test("a card reloaded after the server already switched fetches the stale Home Assistant feed", async () => {
+  // Editing the YAML reloads the card, so none was watching when discovery finished: the server serves Austin
+  // while Home Assistant's copy (what the card loads) is still San Diego.
+  const server = createServer();
+  server.active = { name: "Austin, TX", latitude: 30.2649, longitude: -97.7474, radius_miles: 25 };
+  server.feedLocation = "Austin, TX";
+  server.change = { state: "succeeded", requested: { ...server.active } };
+  const card = await makeControlled({ area: "Austin, TX" }, server);
+  assert.equal(server.count("set_location"), 0);
+  assert.equal(server.count("sync_now"), 1);
+  assert.equal(card.feedLoads(), 2); // initial load, then the reload after the sync
+  const synced = createServer(); // and when Home Assistant already has the same feed nothing is synced
+  await makeControlled({ area: "San Diego, CA" }, synced);
+  assert.equal(synced.count("sync_now"), 0);
+});
+
 test("a different radius counts as a different place", async () => {
   const server = createServer();
   await makeControlled({ area: "San Diego, CA", radius_miles: 40 }, server);
