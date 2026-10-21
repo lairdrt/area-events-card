@@ -796,25 +796,22 @@ test("the artwork is shipped inside the card the integration serves, so it needs
   assert.match(served, /Illustration/);
 });
 
-test("artwork follows the event's category, with a general illustration when there is none", () => {
-  const kind = (e) => artFor(categoriesFor(e));
-  assert.equal(kind({ title: "Jazz concert at the park" }), "music");
-  assert.equal(kind({ title: "Shakespeare in the park", description: "theatre" }), "theater");
-  assert.equal(kind({ title: "Stand up comedy night" }), "theater");
-  assert.equal(kind({ title: "Street festival" }), "festival");
-  assert.equal(kind({ title: "Wine tasting dinner" }), "food");
-  assert.equal(kind({ title: "Marathon and 5k" }), "sports");
-  assert.equal(kind({ title: "Gallery exhibition" }), "arts");
-  assert.equal(kind({ title: "Astronomy lecture" }), "science");
-  assert.equal(kind({ title: "Kids storytime" }), "family");
-  assert.equal(kind({ title: "Neighborhood cleanup volunteers" }), "community");
-  assert.equal(kind({ title: "Guided hike on the trail" }), "outdoors");
-  assert.equal(kind({ title: "Quarterly planning meeting" }), "general");
-  assert.equal(kind({ title: "Jazz brunch at the beach", description: "wine" }), "music", "the first category in priority order wins");
+test("the card draws the illustration category the engine resolved, and falls back to the general one", () => {
+  for (const kind of Object.keys(ART)) assert.equal(artFor({ illustration: { category: kind } }), kind);
+  for (const unknown of [undefined, null, {}, { illustration: null }, { illustration: {} }, { illustration: { category: "nonsense" } },
+    { illustration: { category: "constructor" } }, { illustration: { category: 7 } }, { illustration: { category: "__proto__" } }]) {
+    assert.equal(artFor(unknown), "general", JSON.stringify(unknown));
+  }
+});
+
+test("the card does not classify events itself: the title never changes the illustration", async () => {
+  const feed = makeFeed({ events: [event("Jazz concert at the park", 1, { categories: ["Music"] })] });
+  const card = await make({}, { feed });
+  assert.match(artOf(tileFor(card, "Jazz concert at the park")).className, /art general/, "no engine decision, so the general illustration");
 });
 
 test("an event with a photo shows its illustration until the photo has loaded, then the photo", async () => {
-  const feed = makeFeed({ events: [withImages("Jazz Night", ["https://img.example/jazz.jpg"], { categories: ["Music"] })] });
+  const feed = makeFeed({ events: [withImages("Jazz Night", ["https://img.example/jazz.jpg"], { illustration: { category: "music" } })] });
   const card = await make({}, { feed });
   const tile = tileFor(card, "Jazz Night");
   const img = imgOf(tile);
@@ -833,7 +830,7 @@ test("an event with a photo shows its illustration until the photo has loaded, t
 });
 
 test("a photo that fails to load falls back through the other candidates, then to the illustration", async () => {
-  const feed = makeFeed({ events: [withImages("Folk Band", ["https://a.example/1.jpg", "https://b.example/2.jpg", "https://c.example/3.jpg"], { categories: ["Music"] })] });
+  const feed = makeFeed({ events: [withImages("Folk Band", ["https://a.example/1.jpg", "https://b.example/2.jpg", "https://c.example/3.jpg"], { illustration: { category: "music" } })] });
   const card = await make({}, { feed });
   const tile = tileFor(card, "Folk Band");
   const img = imgOf(tile);
@@ -849,7 +846,7 @@ test("a photo that fails to load falls back through the other candidates, then t
 });
 
 test("events with no photo, and cards with images switched off, show only the illustration and make no image request", async () => {
-  const none = makeFeed({ events: [event("Quarterly planning meeting", 1), event("Wine tasting", 2)] });
+  const none = makeFeed({ events: [event("Quarterly planning meeting", 1), event("Wine tasting", 2, { illustration: { category: "food" } })] });
   const before = created.img;
   const card = await make({}, { feed: none });
   assert.equal(created.img, before, "no image element at all");

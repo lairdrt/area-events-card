@@ -1,0 +1,704 @@
+{
+ "note": "Excerpts of public event listings (San Diego and Austin, collected 2026-10-20/21) (descriptions cut to the 600 characters the classifier reads) used only to regression-test event classification. `before` is the card's former keyword matching, `after` the engine classifier when this file was written (a snapshot, not ground truth). `review` is the maintainer's reading of the changed cases from the title and description.",
+ "events": [
+  {
+   "id": "sandiego_gov:gaslamp-artisan-market-2026-80@2026-10-24",
+   "city": "San Diego",
+   "source": "City of San Diego",
+   "title": "Gaslamp Artisan Market 2026",
+   "description": "The Gaslamp Artisan Market is a thriving outdoor-shopping event located on Fifth Avenue in the heart of the Gaslamp where shoppers will find hand-crafted treasures, art, jewelry and clothing every Saturday and Sunday.",
+   "tags": [],
+   "venue": "400 and 500 blocks of 5th Avenue between Market Street and J street barricaded at both ends where 5th Avenue intersects with Market and J Streets. Island Ave between 4th and 5th both sides barricaded at intersection of Island and 4th Avenue. Island Avenue between 5th and 6th south side only barricaded just after the entrance to the private paid parking lot to allow access.",
+   "before": "arts",
+   "after": "festival",
+   "review": "neutral"
+  },
+  {
+   "id": "sandiego_gov:gaslamp-artisan-market-2026-81@2026-10-25",
+   "city": "San Diego",
+   "source": "City of San Diego",
+   "title": "Gaslamp Artisan Market 2026",
+   "description": "The Gaslamp Artisan Market is a thriving outdoor-shopping event located on Fifth Avenue in the heart of the Gaslamp where shoppers will find hand-crafted treasures, art, jewelry and clothing every Saturday and Sunday.",
+   "tags": [],
+   "venue": "400 and 500 blocks of 5th Avenue between Market Street and J street barricaded at both ends where 5th Avenue intersects with Market and J Streets. Island Ave between 4th and 5th both sides barricaded at intersection of Island and 4th Avenue. Island Avenue between 5th and 6th south side only barricaded just after the entrance to the private paid parking lot to allow access.",
+   "before": "arts",
+   "after": "festival",
+   "review": "neutral"
+  },
+  {
+   "id": "sandiego_gov:ascendkemet-collective-certified-farmers-market-city-heights-88@2026-10-31",
+   "city": "San Diego",
+   "source": "City of San Diego",
+   "title": "ASCENDKemet Collective Certified Farmers Market (City Heights)",
+   "description": "ASCENDKemet Collective Farmer's Market aims to engage and educate the community on the rich cultural heritage of Kemet (ancient Egypt) through arts, environmental education, and wellness activities, fostering a deeper connection with our historical roots and promoting cultural appreciation and understanding",
+   "tags": [],
+   "venue": "This event will take place between 43rd and Fairmount at 4325 Wightman",
+   "before": "arts",
+   "after": "food",
+   "review": "better"
+  },
+  {
+   "id": "ut_austin:54126535248861:54126535248862",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "Digital Scholars in Practice: 3D Humanities in Practice",
+   "description": "How can digital encounters with cultural objects transform research, interpretation and public access? In 3D Humanities in Practice: Designing Meaningful Archival Encounters, you'll explore how 3D and immersive technologies are opening new ways to study cultural life, shape digital archives and influence whose stories and perspectives become visible. Presenter: Dr. Craig Stevens Location: Scholars Lab Data Lab (PCL 2.202)",
+   "tags": [
+    "Arts & Humanities",
+    "Science & Technology",
+    "World & Culture"
+   ],
+   "venue": "Perry-Castañeda Library (PCL)",
+   "before": "arts",
+   "after": "science",
+   "review": "worse"
+  },
+  {
+   "id": "ut_austin:54179724777394:54179724778419",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "Mitchell Sustainability Symposium",
+   "description": "This year's Mitchell Sustainability Symposium will continue its focus on the intersection of sustainability and student education on UT Austin’s campus and beyond. We’ll look into the state of sustainability at UT Austin through a series of panel discussions, lectures, and student presentations. Dr. David Vanden Bout, Dean of the College of Natural Sciences, will provide the lunchtime keynote address. Programming will take place from 8:30 a.m. to 4:15 p.m. in the WCP Ballroom, followed by a reception from 4:30 to 5:30 p.m. in the Visual Arts Center. The event is open to all UT students, staff ",
+   "tags": [
+    "Academics",
+    "Campus & Community",
+    "Sustainability"
+   ],
+   "venue": "WILLIAM C. POWERS, JR. STUDENT ACTIVITY CENTER (WCP) & Visual Arts Center",
+   "before": "arts",
+   "after": "general",
+   "review": "better"
+  },
+  {
+   "id": "sandiegoreader:367694",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Free Affordable Housing Summit",
+   "description": "As housing affordability continues to shape our communities, bringing people together to explore solutions is more important than ever.This educational event will bring together real estate professionals, housing advocates, community partners, and aspiring homebuyers for meaningful conversations about the future of homeownership.Topics will include:Housing affordability challenges and opportunitiesEmerging homebuyer trends and the next generation of buyersCreative financing strategies and innovative housing solutionsExpanding access to homeownership through education and collaborationWhether y",
+   "tags": [],
+   "venue": "Martin Luther King Jr Community Center",
+   "before": "community",
+   "after": "community"
+  },
+  {
+   "id": "sandiegoreader:365420",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Alzheimer's San Diego: Managing Resistance",
+   "description": "Explore what causes resistance in people living with dementia. Learn strategies to strengthen relationships, build trust, and preserve dignity. In partnership with ElderHelp.This class is presented by local nonprofit Alzheimer’s San Diego and is designed specifically for care partners.",
+   "tags": [],
+   "venue": "Online Internet Events",
+   "before": "community",
+   "after": "general",
+   "review": "neutral"
+  },
+  {
+   "id": "kpbs:2026/12/16/historic-places-lunch-learn-women-who-built-san-diego",
+   "city": "San Diego",
+   "source": "KPBS",
+   "title": "Historic Places Lunch & Learn: Women Who Built San Diego",
+   "description": "Who were the women who built San Diego, and why don’t we hear more about them?\nJoin Elsa Sevilla, an Emmy-nominated and award-winning journalist, filmmaker, and creator and host of \"Historic Places with Elsa Sevilla,\" at KPBS on Wednesday, December 16. Elsa has dreamed of bringing this Lunch & Learn series to life for three years. Its first event begins at KPBS, where she produces the series.\nWatch a selection from \"Women Who Built San Diego,\" featuring Juana Machado, Vicenta Carrillo, Margaret Robinson and Belle Benchley, four women whose contributions helped shape our city. Hear stories behi",
+   "tags": [
+    "Lectures & Classes",
+    "Heritage & Cultural"
+   ],
+   "venue": "KPBS Conrad Prebys Media Complex at Copley Center",
+   "before": "community",
+   "after": "general",
+   "review": "neutral"
+  },
+  {
+   "id": "ut_austin:53755084950278:53755084950279",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "May Term in Australia: The Politics of Protecting the Great Barrier Reef - Info Session",
+   "description": "Attend this info session to learn about program details, housing, excursions, and activities for May Term in Australia! The program coordinator will walk you through the application process, with info on program costs, scholarships, and financial aid. Dr. Rhonda Evans J.D. will provide course and location-specific information. Take advantage of this opportunity to prepare yourself to apply to this faculty-led program.",
+   "tags": [
+    "Academics",
+    "Policy & Law",
+    "World & Culture",
+    "Campus & Community",
+    "Sustainability"
+   ],
+   "venue": "George I. Sanchez Building (SZB)",
+   "before": "community",
+   "after": "community"
+  },
+  {
+   "id": "ut_austin:53934256923936:53934256949543",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "\"Heavy Hearts Collective: Support for Sadness & Depression\" SHARE Community Meeting",
+   "description": "Have you been feeling the weight of sadness, grief, or depression? In this community, we share our stories and support each other through the loneliness and self-judgment that often accompany tough times. We'll use low-effort activities like journaling and doodling to explore our emotions as we engage in discussion, anonymous advice sessions, and more. At your own pace, join us in opening up without filters and connecting over shared struggles. No formal diagnosis required. Note: This is not a replacement for clinical mental health services. SHARE Communities are weekly student-led groups wher",
+   "tags": [
+    "Campus & Community",
+    "Health & Wellness"
+   ],
+   "venue": "CMHC @ WCP - WCP 1.102",
+   "before": "community",
+   "after": "community"
+  },
+  {
+   "id": "kpbs:2026/10/23/kpbs-kids-event-elinor-wonders-why",
+   "city": "San Diego",
+   "source": "KPBS",
+   "title": "KPBS Kids Event: Elinor Wonders Why",
+   "description": "Join KPBS Kids and the Children's Museum of Discovery for costume character meet-and-greets and hands-on workshops.\nJoin us at the museum for a visit by the costume character*, a special story time, book giveaway, and special activities throughout the Museum.\nThe price of KPBS Kids Events is included in Museum admission. For Museum admission pricing, please visit our Admission & Pricing page.\nSee the full 2026 Event Schedule\n*Note: Costume character meet-and-greets are subject to availability. Costume characters are selected for specific events, given availability. Access to the meet-and-greet",
+   "tags": [
+    "Museums",
+    "Kids",
+    "Family",
+    "Storytelling",
+    "Books"
+   ],
+   "venue": "Children's Museum of Discovery",
+   "before": "family",
+   "after": "family"
+  },
+  {
+   "id": "sandiegoreader:366594",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Treats in the Suites: Trick-or-Treating",
+   "description": "The 3rd Annual Treats in the Suites is a free and fun family-friendly community event designed to give local youth a safe and memorable Halloween experience. Frontwave Arena’s suites will be transformed into a unique Halloween-themed experience open to the public. Along with plenty of treats, guests will enjoy Halloween activities, games, photo opportunities, special appearances, and fun surprises throughout the arena. Staff, players, community partners, sponsors, and volunteers will come together to help create an experience for local families.",
+   "tags": [],
+   "venue": "Frontwave Arena",
+   "before": "family",
+   "after": "family"
+  },
+  {
+   "id": "sandiegoreader:367454",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Reel Wednesday: Hocus Pocus",
+   "description": "A teenage boy and his little sister move to Salem, where he struggles to fit in before awakening a trio of diabolical witches.Reel Wednesday - A heart-forward, crowd-pleasing lineup of fast-paced, emotionally resonant films that keep audiences cheering for characters as they find love, chase dreams, reconnect with family, or simply figure life out—united by a yearlong theme of connection, from cozy hometown tales to high-energy summer hits.",
+   "tags": [],
+   "venue": "Carlsbad City Library",
+   "before": "family",
+   "after": "general",
+   "review": "neutral"
+  },
+  {
+   "id": "ut_austin:50830946535493:54122130943949",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "AHA BLS Provider (CPR)",
+   "description": "Dates/Times/Locations: Friday, October 2, 2026 | 8:30 AM – 12:30 PM | NUR 5.178Friday, October 16, 2026 | 8:30 AM – 12:30 PM | NUR 5.178Friday, October 23, 2026 | 8:30 AM – 12:30 PM | NUR 5.178Friday, October 23, 2026 | 2:00 PM – 6:00 PM | NUR 5.178Friday, October 30, 2026 | 8:30 AM – 12:30 PM | NUR 1.106All courses are held at UT Austin School of Nursing – (View Map). Parking: Parking is available in Trinity Garage (TRG) for a fee. We are unable to validate parking. ​Cost: $10 – Nursing Faculty & Staff$40 – UT Student & UT Non-Nursing Faculty & Staff$60 – Non-UT ParticipantsCourse Overview: A",
+   "tags": [],
+   "venue": "NUR - various",
+   "before": "family",
+   "after": "general",
+   "review": "better"
+  },
+  {
+   "id": "ut_austin:53934630542372:53934630547499",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "\"Black Sheep: Outsiders Together\" SHARE Community Meeting",
+   "description": "Sometimes we feel like we’re on the outside of our communities, be it family, friends, religious groups, identity-based community, or on campus, etc., leading to feelings of isolation and loneliness (and that’s okay!). Join Black Sheep as we navigate these feelings, build confidence in expressing ourselves, and learn to take up the space we deserve. Everyone is welcome to share and find support as we grow together. Come join the Herd, we’d love to have you! Note: This is not a replacement for clinical mental health services. SHARE Communities are weekly student-led groups where peers with simi",
+   "tags": [
+    "Campus & Community",
+    "Health & Wellness"
+   ],
+   "venue": "Main Building (Tower) MAI 13",
+   "before": "family",
+   "after": "community",
+   "review": "better"
+  },
+  {
+   "id": "sandiegoreader:367496",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Magickal Masquerade: An Enchanted Samhain Event",
+   "description": "As we enter the dark half of the season, the veil separating the physical world from the spirit realm grows beautifully thin. Step across the threshold into an evening shrouded in mystery, elegance, and primal mysticism. Slip behind a mask, don your most enchanting attire, and join a coven of kindred spirits for an unforgettable celebration of Samhain. Highlights of the event:The Sacred Samhain RitualThe Grand Costume ContestThe Enchanted RaffleThe Night Bazaar (Vendor Marketplace)",
+   "tags": [],
+   "venue": "Universal Spirit Center",
+   "before": "festival",
+   "after": "general",
+   "review": "neutral"
+  },
+  {
+   "id": "sandiegoreader:367502",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Sleepy Hollow at Rooftop Cinema Club",
+   "description": "The one-and-only Rooftop Cinema Club, San Diego’s most-popular outdoor cinema that sits five stories above Columbia Street, is slashing out its Halloween costumes and décor for an American Psycho, Supernatural, Silence of the Lambs, Nightmare on Elm Street, Hocus Pocus, and Scream filled Halloween celebration all October long from its perch atop the Porto Vista Hotel in Little Italy.It’s a Practical Magic lineup of nearly 100 films that includes Halloween classics like the Michael Myers classic Halloween, Scream and Scream 2, The Conjuring, Beetlejuice, The Rocky Horror Picture Show, Sinners a",
+   "tags": [],
+   "venue": "Porto Vista Hotel &amp; Suites",
+   "before": "festival",
+   "after": "general",
+   "review": "better"
+  },
+  {
+   "id": "sandiegoreader:366874",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "The Conjuring at Rooftop Cinema Club",
+   "description": "The one-and-only Rooftop Cinema Club, San Diego’s most-popular outdoor cinema that sits five stories above Columbia Street, is slashing out its Halloween costumes and décor for an American Psycho, Supernatural, Silence of the Lambs, Nightmare on Elm Street, Hocus Pocus, and Scream filled Halloween celebration all October long from its perch atop the Porto Vista Hotel in Little Italy.It’s a Practical Magic lineup of nearly 100 films that includes Halloween classics like the Michael Myers classic Halloween, Scream and Scream 2, The Conjuring, Beetlejuice, The Rocky Horror Picture Show, Sinners a",
+   "tags": [],
+   "venue": "Porto Vista Hotel &amp; Suites",
+   "before": "festival",
+   "after": "general",
+   "review": "better"
+  },
+  {
+   "id": "ut_austin:53989411618423:53989411713662",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "Austin Tech Week",
+   "description": "Austin Tech Week is a five day celebration, uniting the brightest minds in Austin’s tech ecosystem. For over a decade, this annual event has drawn thousands of local entrepreneurs, tech leaders, and friends together to connect, learn, and maximize business impact. Be part of this thrilling evolution from Austin Startup Week that echoes the extraordinary growth of startups since our inception in 2011. What began as a celebration of entrepreneurship has matured into a dynamic explosion of innovation, spotlighting the very companies that once ignited our startup community and have now become the ",
+   "tags": [],
+   "venue": "Off-Campus",
+   "before": "festival",
+   "after": "science",
+   "review": "better"
+  },
+  {
+   "id": "ut_austin:54036863306880:54036863307905",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "UT Austin Fall 2026 Liz Carpenter Lecture with Eddie S. Glaude",
+   "description": "UT Austin Fall 2026 Liz Carpenter Lecture with Eddie S. Glaude The Plan II Honors Program presents the annual Liz Carpenter Lecture at LBJ Auditorium, featuring Eddie S. Glaude, author of America, U.S.A. The Spring 2026 Liz Carpenter Lecture features best-selling author, distinguished scholar, and public intellectual Eddie S. Glaude. He will discuss his most recent book, America, U.S.A.: How Race Shadows the Nation's Anniversaries, which analyzes the historical contexts of myriad milestone American anniversary celebrations to frame and illuminate our current historical moment at 250. A convers",
+   "tags": [
+    "Academics",
+    "Arts & Humanities",
+    "World & Culture",
+    "Social Justice"
+   ],
+   "venue": "LBJ Auditorium",
+   "before": "festival",
+   "after": "general",
+   "review": "better"
+  },
+  {
+   "id": "sandiegoreader:367489",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Thursday Happy Hour Club",
+   "description": "Community-connecting group Walkabout is hosting Thursday Happy Hour Club. The Walkabout app is free to download and use, and the Happy Hour Club is a way for Walkabouters to get out, meet neighbors, and try a local spot together. In addition to happy hour specials, Walkabouters get 10% off their total bill during this time.",
+   "tags": [],
+   "venue": "619 Spirits North Park",
+   "before": "food",
+   "after": "food"
+  },
+  {
+   "id": "sandiego_gov:ocean-beach-certified-farmers-market-2026-40@2026-10-21",
+   "city": "San Diego",
+   "source": "City of San Diego",
+   "title": "Ocean Beach Certified Farmers' Market 2026",
+   "description": "This farmer's market in Ocean Beach offers an array of groceries and goodies. Featured items include fresh fruits and vegetables, meat, seafood, dairy products, dry goods, prepared foods, and specialty treats. There are also art & craft items, jewelry, and clothing. Come and shop!",
+   "tags": [],
+   "venue": "The event is located in the street and utilizes the entire length of the 4900 block of Newport Avenue.",
+   "before": "food",
+   "after": "food"
+  },
+  {
+   "id": "sandiego_gov:little-italy-mercato-saturday-40@2026-10-24",
+   "city": "San Diego",
+   "source": "City of San Diego",
+   "title": "Little Italy Mercato (Saturday)",
+   "description": "The Little Italy certified farmers market features fresh fruits and vegetables, pastured eggs, meat, seafood, bread and pastries, yogurt, cheese and sauces, coffee and specialty treats, along with local artists and crafters, candles, and handmade soap. Shop every Saturday, year-round, rain or shine!",
+   "tags": [],
+   "venue": "The Little Italy Mercato operates on West Date Street from the cul de sac west of Kettner Boulevard to Kettner Blvd, from Kettner Blvd to India Street, on the Piazza from India to Columbia Street, from Columbia to State Street, from State to Union Street, and from Union to Front Street. Those East/West blocks are closed and barricaded; all North/South Streets remain open to through traffic.",
+   "before": "food",
+   "after": "food"
+  },
+  {
+   "id": "ut_austin:53989420156577:53989420157603",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "KomoriPOP!",
+   "description": "Announcing KomoriPOP! A FREE Pop-up anime convention here in Austin, TX at the Texas Union! KomoriPOP! is coming to UT Austin on October 24th, 2026, 11am - 6pm! There will be FREE entry, FREE Collectibles, FREE photo booth (with photo strips), and so much more!! Open to ALL, KomoriPOP! will highlight wonderful artists, performers, and organizations from both the UT Austin and Greater Austin Community. Special features include: - LADS Meetup with cosplayers and themed boba drinks! - Smiski giveaway every hour! - Alienware Lounge Access and free play with games like Mecca Chameleon, Mario Kart, ",
+   "tags": [],
+   "venue": "Texas Union",
+   "before": "food",
+   "after": "general",
+   "review": "better"
+  },
+  {
+   "id": "ut_austin:53613908319295:53613908320320",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "GSLI Impact Chat - Sustainability & AI",
+   "description": "Please join us for the GSLI's Fall Impact Chat on Sustainability & AI in Crum Auditorium (RRH 1.400)! We will begin the evening at 5:30 PM with dinner and networking, followed by our impact chat and Q&A with the speaker. RSVP at https://bit.ly/GSLIImpactChatFall2026 to attend on 10/27/2026, 5:30-7:15 PM.",
+   "tags": [
+    "Campus & Community",
+    "Sustainability"
+   ],
+   "venue": "Robert B. Rowling Hall (RRH)",
+   "before": "food",
+   "after": "science",
+   "review": "better"
+  },
+  {
+   "id": "sandiegoreader:358832",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Weezer",
+   "description": "The bill includes The Shins and Silversun Pickups .",
+   "tags": [],
+   "venue": "Viejas Arena",
+   "before": "general",
+   "after": "general"
+  },
+  {
+   "id": "sandiegoreader:359331",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Weatherday",
+   "description": "-",
+   "tags": [],
+   "venue": "Quartyard",
+   "before": "general",
+   "after": "general"
+  },
+  {
+   "id": "sandiegoreader:360742",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Hovvdy",
+   "description": "-",
+   "tags": [],
+   "venue": "Quartyard",
+   "before": "general",
+   "after": "general"
+  },
+  {
+   "id": "ut_austin:51096342382904:53803597915900",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "Longhorn Recovery Circle",
+   "description": "N/A",
+   "tags": [],
+   "venue": "Center for Students in Recovery, WCP 2.112",
+   "before": "general",
+   "after": "community",
+   "review": "better"
+  },
+  {
+   "id": "ut_austin:53803606869758:53803606961925",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "Fall 2026 Information Session: Internal Transfer",
+   "description": "Internal transfer applicants are current UT Austin undergraduate in a non-nursing major who applies to transfer into the School of Nursing in order to pursue the BSN degree. To apply, visit the Office of Admissions: Internal Transfer. Important Note: Please note, you must log on through zoom account to be able to attend the information sessions listed below. You can attend virtually from wherever you are located. Information presented at each event is identical, so you only need to attend one session. Join the below Internal Transfer Information Session via Zoom. Date: Monday, September 14, 20",
+   "tags": [],
+   "venue": "Zoom Meeting",
+   "before": "general",
+   "after": "community",
+   "review": "better"
+  },
+  {
+   "id": "dosd:2026/10/23/flamingosis-bright-moments-10-year-anniversary-tickets",
+   "city": "San Diego",
+   "source": "DoSD",
+   "title": "Flamingosis: Bright Moments 10 Year Anniversary",
+   "description": "",
+   "tags": [
+    "Music"
+   ],
+   "venue": "Quartyard",
+   "before": "music",
+   "after": "music"
+  },
+  {
+   "id": "sandiegoreader:367459",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Cinema Club Friday: Tár",
+   "description": "Set in the international world of Western classical music, the film centers on Lydia Tár, widely considered one of the greatest living composer-conductors.Cinema Club Friday - A bold, thought-provoking slate of independent, international and documentary films that examine identity, power and belonging—revealing how culture, institutions and perception shape our stories and asking, month after month, what endures, what fractures and what we rebuild when life applies pressure.",
+   "tags": [],
+   "venue": "Carlsbad City Library",
+   "before": "music",
+   "after": "general",
+   "review": "better"
+  },
+  {
+   "id": "dosd:2026/10/23/hillandale-drive-tickets",
+   "city": "San Diego",
+   "source": "DoSD",
+   "title": "Hillandale Drive",
+   "description": "",
+   "tags": [
+    "Music"
+   ],
+   "venue": "Humphreys Backstage Live",
+   "before": "music",
+   "after": "music"
+  },
+  {
+   "id": "ut_austin:54122136102494:54122136104544",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "Tex-jano Night",
+   "description": "Bringing the spirit of Texas music to UT, with a night full of line dancing, two stepping, cumbias, wepas and more. Break out your nicest boots and pearl snaps and show off your best moves here on the 40 Acres!",
+   "tags": [],
+   "venue": "Shirley Bird Perry Ballroom",
+   "before": "music",
+   "after": "general",
+   "review": "worse"
+  },
+  {
+   "id": "ut_austin:53821309560612:53821309561638",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "Volney And the Late Arrivals Live at The Cactus Cafe!",
+   "description": "Buy Tickets! Volney Campbell is a guitarist, singer, songwriter living in Austin Texas. Volney has journeyed on a musical odyssey, from Tennessee to Virginia, to New Orleans, and finally Austin. These places and their people have all influenced and shaped him as an artist and as a creative spirit. Due to these unique places and their cultures, his music often defies genres but always carries strong melodies and lyrics that expose human emotion. His music has received accolades and excellent reviews both locally and around the world, and has been heard on radio, national television, and in nume",
+   "tags": [],
+   "venue": "Cactus Cafe",
+   "before": "music",
+   "after": "music"
+  },
+  {
+   "id": "sandiegoreader:366970",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Wings Over Water",
+   "description": "Across the heartland of North America, a wetland kingdom of connected rivers, lakes, and waterways has provided an oasis for wildlife since the retreat of the last ice age over 10,000 years ago. Today, these water highways are home to countless species. Alongside herds of bison in the Great Plains and salamanders in the smallest ponds, millions of frequent fliers rely on this pristine wilderness for survival.Wings Over Water, narrated by Michael Keaton, follows three magnificent bird species—the Sandhill Crane, the Yellow Warbler, and the Mallard Duck—as they migrate along these epic “flyways.",
+   "tags": [],
+   "venue": "Fleet Science Center",
+   "before": "outdoors",
+   "after": "outdoors"
+  },
+  {
+   "id": "sandiegoreader:366972",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Wings Over Water",
+   "description": "Across the heartland of North America, a wetland kingdom of connected rivers, lakes, and waterways has provided an oasis for wildlife since the retreat of the last ice age over 10,000 years ago. Today, these water highways are home to countless species. Alongside herds of bison in the Great Plains and salamanders in the smallest ponds, millions of frequent fliers rely on this pristine wilderness for survival.Wings Over Water, narrated by Michael Keaton, follows three magnificent bird species—the Sandhill Crane, the Yellow Warbler, and the Mallard Duck—as they migrate along these epic “flyways.",
+   "tags": [],
+   "venue": "Fleet Science Center",
+   "before": "outdoors",
+   "after": "outdoors"
+  },
+  {
+   "id": "sandiegoreader:366974",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Wings Over Water",
+   "description": "Across the heartland of North America, a wetland kingdom of connected rivers, lakes, and waterways has provided an oasis for wildlife since the retreat of the last ice age over 10,000 years ago. Today, these water highways are home to countless species. Alongside herds of bison in the Great Plains and salamanders in the smallest ponds, millions of frequent fliers rely on this pristine wilderness for survival.Wings Over Water, narrated by Michael Keaton, follows three magnificent bird species—the Sandhill Crane, the Yellow Warbler, and the Mallard Duck—as they migrate along these epic “flyways.",
+   "tags": [],
+   "venue": "Fleet Science Center",
+   "before": "outdoors",
+   "after": "outdoors"
+  },
+  {
+   "id": "ut_austin:51340385401130:51340385411380",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "H-E-B Free Fourth Sunday",
+   "description": "Enjoy FREE museum admission all day during H-E-B Free Fourth Sundays, held the fourth Sunday of every month. Explore the story of life in the natural world in Texas from the formation of our planet, through the age of the dinosaurs, into our current environment. See fascinating fossils and examples of Texas wildlife, touch real meteorites, and walk beneath the 33-foot wingspan of a pterosaur and tyrannosaur! The museum is open from 1 to 5 p.m. on Sundays (last admission is at 4:30 p.m.).",
+   "tags": [
+    "Campus & Community"
+   ],
+   "venue": "Texas Science & Natural History Museum",
+   "before": "outdoors",
+   "after": "general",
+   "review": "better"
+  },
+  {
+   "id": "ut_austin:54263678493535:54263678494560",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "Free Meta AI Glasses for Texas Veterans with Vision Loss",
+   "description": "Free Meta AI Glasses for Texas Veterans with Vision LossEast Texas Lighthouse for the Blind is offering opportunities for eligible veterans who are blind or have significant vision loss to receive Meta AI glasses at no cost, including hands-on setup and training. Meta AI glasses connect with a compatible smartphone and can use AI-powered features to help describe surroundings, read text aloud, identify objects and provide other useful visual information. This is not a walk-in event. Veterans must apply in advance; approved applicants receive a scheduled appointment time. Apply Here Location: 2",
+   "tags": [],
+   "venue": "Austin, TX",
+   "before": "outdoors",
+   "after": "general",
+   "review": "better"
+  },
+  {
+   "id": "sandiegoreader:364213",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Let’s Learn Polish at Yiddishland",
+   "description": "This course offers a thoughtful introduction to the Polish language and an opportunity to explore culture and conversation in a supportive, international setting. It is perfect for first-time learners and focused on useful, real-life language you can start using right away.Instructor Marta Kowalczyk graduated in Polish philology at the University of Adam Mickiewicz and postgraduate studies in teaching Polish as a foreign language, also at the Adam Mickiewicz University in Poznań. Since 2016, she has been teaching Polish at Migrant Info Point, a non-governmental organization supporting migrants",
+   "tags": [],
+   "venue": "Online Internet Events",
+   "before": "science",
+   "after": "general",
+   "review": "better"
+  },
+  {
+   "id": "sandiegoreader:366642",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Halloween Aglow",
+   "description": "The ocean’s mysteries come to life as Birch Aquarium casts a spell of science and seasonal fun with a splash of science. From unusual animals to enchanting illuminations, Halloween Aglow offers a unique way to dive into fall fun while learning about the amazing world beneath the waves. T",
+   "tags": [],
+   "venue": "Birch Aquarium at Scripps",
+   "before": "science",
+   "after": "science"
+  },
+  {
+   "id": "sandiegoreader:366336",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Candlelight Open Air: A Haunted Evening of Halloween Classics",
+   "description": "Set against a mesmerizing backdrop of thousands of candles, the Candlelight® experience comes to San Diego this Halloween with a live musical program built around mystery and the supernatural. Featured programming to include:Funeral March of a Marionette – Charles GounodDanse Macabre – Camille Saint-SaënsNight on Bald Mountain – Modest MussorgskyDer Erlkönig – Franz SchubertIn the Hall of the Mountain King – Edvard GriegTheme from Stranger ThingsSelections from The Nightmare Before ChristmasMichael Jackson's Thriller",
+   "tags": [],
+   "venue": "Mount Helix Park",
+   "before": "science",
+   "after": "festival",
+   "review": "better"
+  },
+  {
+   "id": "ut_austin:54228307307019:54228307308044",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "WCAAR Weekly Meeting - Patrick Liang (Dunsmoor Lab): &quot;Neural representations underlying the generalization of fear and safety memories&quot;",
+   "description": "WCAAR Weekly Meeting - Patrick Liang (Dunsmoor Lab)",
+   "tags": [
+    "Research"
+   ],
+   "venue": "SEAY Library - Room 4.244",
+   "before": "science",
+   "after": "general",
+   "review": "better"
+  },
+  {
+   "id": "ut_austin:53511621845053:53511622604929",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "PowerHouse Texas 2027 Energy Policy Fellowship — Applications Open",
+   "description": "This paid, full-time, five-month fellowship from January 11, 2027 to June 1, 2027 places STEM students at the Texas Capitol in Austin. Fellows will research and analyze energy legislation alongside weekly seminars with scientists, industry leaders, and agency staff. The program is open to undergraduates with two or more years completed, graduate students, and recent graduates within two years of January 9, 2027, with a 2.5 GPA minimum. Applications are reviewed on a rolling basis — early decision August 30, 2026, regular deadline October 15, 2026, final deadline November 30, 2026. Full details",
+   "tags": [],
+   "venue": null,
+   "before": "science",
+   "after": "science"
+  },
+  {
+   "id": "dosd:2026/10/23/oceanside-shock-vs-minnesota-northern-lights-tickets",
+   "city": "San Diego",
+   "source": "DoSD",
+   "title": "Oceanside Shock vs Minnesota Northern Lights",
+   "description": "",
+   "tags": [
+    "Sports"
+   ],
+   "venue": "Frontwave Arena ",
+   "before": "sports",
+   "after": "sports"
+  },
+  {
+   "id": "dosd:2026/10/21/san-diego-gulls-vs-coachella-valley-firebirds-tickets",
+   "city": "San Diego",
+   "source": "DoSD",
+   "title": "San Diego Gulls vs. Coachella Valley Firebirds",
+   "description": "",
+   "tags": [
+    "Sports"
+   ],
+   "venue": "Pechanga Arena at San Diego Sports Arena",
+   "before": "sports",
+   "after": "sports"
+  },
+  {
+   "id": "sandiegoreader:367403",
+   "city": "San Diego",
+   "source": "San Diego Reader",
+   "title": "Car Show",
+   "description": "The Annual Saint Augustine High School Car Show features everything from classic American muscle to the newest German sports cars. Hosted by the Saints Car Club, this community event proudly benefits the Hogar Infantil La Gloria Orphanage in Tijuana.",
+   "tags": [],
+   "venue": "St. Augustine High School",
+   "before": "sports",
+   "after": "general",
+   "review": "better"
+  },
+  {
+   "id": "ut_austin:53626633858087:54015989273283",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "BCBSTX Fitness Discount Program: Enrollment Fee Waived",
+   "description": "New Member Special: Pay No Enrollment Fee When you Join the Fitness Program starting in August and running through the end of October. Beginning August 1, new members can join the Fitness Program without paying the $19 enrollment fee. Sign up by October 31 to get this great deal! The Fitness Program offers flexible options and access to a nationwide network of fitness locations. Other features of the Fitness Program include: • Online enrollment and tracking. • Automatic monthly payment withdrawal. • A choice of gym networks to fit your budget and preferences. • Mobile app with check-in and act",
+   "tags": [],
+   "venue": null,
+   "before": "sports",
+   "after": "sports"
+  },
+  {
+   "id": "ut_austin:54135338660652:54135338662701",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "Adaptive Sport Night",
+   "description": "Join us for Adapted Sports Night, an open-house style event where students can try out various adapted sports and learn more about accessibility and recreation for people with disabilities. It’s a great opportunity to engage your members, meet new people, and show support for disability and adapted sports on campus. Some of the sports that we will be showcasing include but are not limited to adapted running, beep baseball, power soccer, and more! Our event will be on Thursday, October 22nd from 6:30 PM - 8:30 PM at the Clark-Caven Courts on campus (301 Jester Circle, Austin, TX 78712).",
+   "tags": [
+    "Campus & Community",
+    "Sports & Recreation"
+   ],
+   "venue": "Clark-Caven Courts",
+   "before": "sports",
+   "after": "sports"
+  },
+  {
+   "id": "dosd:2026/10/21/the-mad-house-favorites-show-tickets",
+   "city": "San Diego",
+   "source": "DoSD",
+   "title": "The Mad House Favorites Show!",
+   "description": "",
+   "tags": [
+    "Comedy"
+   ],
+   "venue": "Mad House Comedy Club",
+   "before": "theater",
+   "after": "theater"
+  },
+  {
+   "id": "dosd:2026/10/21/job-tickets",
+   "city": "San Diego",
+   "source": "DoSD",
+   "title": "Job",
+   "description": "",
+   "tags": [
+    "Performing Arts"
+   ],
+   "venue": "Cygnet Theatre",
+   "before": "theater",
+   "after": "theater"
+  },
+  {
+   "id": "kpbs:2026/10/24/ghostbusters-halloween-movie-night-under-the-stars",
+   "city": "San Diego",
+   "source": "KPBS",
+   "title": "'Ghostbusters' Halloween Movie Night Under the Stars",
+   "description": "Celebrate spooky season with a family-friendly movie night under the stars at Hilton San Diego Gaslamp Quarter!\nOn Saturday, October 24, Hilton San Diego Gaslamp Quarter will transform its Sunset Terrace into an outdoor movie theater for a free screening of \"Ghostbusters\" from 8 to 10 p.m. Guests can grab a cozy spot under the stars, enjoy food and drinks available for purchase, and settle in for a family-friendly Halloween movie night in the heart of the Gaslamp Quarter.\nEvent Details\nDate: Saturday, October 24\nTime: 8:00 PM\nLocation: Starlight Terrace at Hilton San Diego Gaslamp Quarter\nFeat",
+   "tags": [
+    "Films",
+    "Halloween",
+    "Holidays",
+    "Family",
+    "Kids",
+    "Teens"
+   ],
+   "venue": "Hilton San Diego Gaslamp Quarter",
+   "before": "theater",
+   "after": "family",
+   "review": "neutral"
+  },
+  {
+   "id": "ut_austin:53735669626535:53735669627560",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "Ali Wong",
+   "description": "Ali Wong is an Emmy award-winning actress, comedian, writer, and producer known for her breakout Netflix stand-up specials \"Baby Cobra,\" \"Hard Knock Wife,\" and the Emmy-nominated \"Don Wong.\" She released her fourth and latest Netflix comedy special, \"Ali Wong: Single Lady\" in October 2024. Ali received a Golden Globe Award for the special and was nominated for a Critics Choice TV Award and a Directors Guild of America Award. Wong recently directed Frankie Quiñones’ upcoming stand up special for Hulu.",
+   "tags": [
+    "Arts & Humanities"
+   ],
+   "venue": "Bass Concert Hall, Performing Arts Center (PAC)",
+   "before": "theater",
+   "after": "theater"
+  },
+  {
+   "id": "ut_austin:54254837505886:54254837507935",
+   "city": "Austin",
+   "source": "UT Austin Events",
+   "title": "Postdoc Zumba Wellness Session!",
+   "description": "The UT Austin Postdoc Association welcomes you to start your day with movement and energy at our next wellness event, Zumba! The combination of cardio and Latin-inspired dance is sure to get your heart pumping and your brain ready for your next inspiration to strike. What: Wellness session - Zumba dance fitness When: Wednesday, October 21st, 9:00-10:00amWhere: WCP (aka. Student Activity Center), Dance rehearsal studio 2.310Sign up: https://forms.cloud.microsoft/pages/responsepage.aspx?id=peLXMdi9TkGel76pmOvf4cLr-DRYr91MrfFgGpBXcH9UMVNMUk03RE42TUhFNEdaR1lNN09DVjZLTy4u&route=shorturlWe encourage",
+   "tags": [],
+   "venue": "WCP 2.310",
+   "before": "theater",
+   "after": "sports",
+   "review": "better"
+  }
+ ]
+}

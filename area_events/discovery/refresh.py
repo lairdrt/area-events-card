@@ -5,7 +5,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-from . import images, registry
+from . import classify, images, registry
 from .place import CityResolver, locate_events
 from .core import FetchError, Fetcher, save_events
 from .location import LocationError, PROVIDERS, resolve_location
@@ -91,6 +91,7 @@ def build_document(config, cache, now, selected, location=None):
     minimum = config.get("verification", {}).get("min_independent_publishers", 2)
     merged = merge_events(records, publishers, minimum)
     images.drop_overused(merged)
+    classify.annotate(merged)  # which illustration an event gets when it has no photo; never touches the photo choice
     document = {"generated_at": now.isoformat(timespec="seconds"), "sources": status, "events": merged}
     if location:
         document["location"] = location

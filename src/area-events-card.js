@@ -464,7 +464,8 @@ const EMPTY_PREFS = () => ({ v: 1, selected: [], custom: [] });
  * Category artwork. Original flat illustrations drawn for this card (no third-party assets), embedded here so they
  * ship with the card, need no network and follow the Home Assistant theme: every colour is a theme variable or a
  * tint of one. They are shown when an event has no usable photo, and are always labelled as illustrations.
- * Which one an event gets follows its categories, in ART_PRIORITY order; events without a category get "general".
+ * Which one an event gets is decided by the engine from what the event is about (discovery/classify.py) and arrives
+ * as event.illustration.category; the card only draws it, and events without one get "general".
  */
 const SVG_HEAD = '<svg viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false"><rect class="bg" width="320" height="180"/>';
 const ART = {
@@ -530,17 +531,10 @@ const ART_LABELS = {
   arts: "Arts and exhibitions", science: "Science and technology", family: "Family activities", community: "Community events",
   outdoors: "Outdoors and recreation", general: "Events",
 };
-const ART_FOR_CATEGORY = {
-  music: "music", theater: "theater", comedy: "theater", festivals: "festival", markets: "festival", "food-drink": "food", sports: "sports",
-  arts: "arts", history: "arts", science: "science", technology: "science", education: "science", family: "family", community: "community",
-  outdoors: "outdoors",
-};
-const ART_PRIORITY = ["music", "theater", "comedy", "festivals", "food-drink", "sports", "arts", "science", "technology", "family", "outdoors", "community", "markets", "education", "history"];
-
-/** The artwork for an event's categories: the first match in ART_PRIORITY, else the general illustration. */
-function artFor(categoryIds) {
-  const found = ART_PRIORITY.find((id) => categoryIds.has(id));
-  return found ? ART_FOR_CATEGORY[found] : "general";
+/** The illustration for an event: the category the engine resolved (see discovery/classify.py), else the general one. */
+function artFor(event) {
+  const resolved = event && event.illustration && event.illustration.category;
+  return typeof resolved === "string" && Object.prototype.hasOwnProperty.call(ART, resolved) ? resolved : "general";
 }
 
 class AreaEventsCard extends HTMLElement {
@@ -787,6 +781,7 @@ class AreaEventsCard extends HTMLElement {
     const categories = Array.isArray(event.categories) ? event.categories : event.category ? [event.category] : [];
     return {
       id: event.id,
+      illustration: event.illustration,
       title: event.title,
       start: event.start,
       end: event.end,
@@ -1225,7 +1220,7 @@ class AreaEventsCard extends HTMLElement {
     const item = this._el("div", "event");
 
     const image = this._el("div", "image");
-    const artKind = artFor(categoriesFor(event, [...this._settings.interests, ...this._prefs.custom]));
+    const artKind = artFor(event);
     // The illustration is always there first, so a tile never shows an empty box, a broken-image icon or a layout shift.
     const art = this._el("div", `art ${artKind}`);
     art.innerHTML = ART[artKind];
