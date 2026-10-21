@@ -58,3 +58,16 @@ Update: run the script again (it backs up the earlier copy first to `area-events
 | Integration asks for re-authentication | The app's token option changed; restart the app so it announces itself again, or enter the token. |
 | "Source not supported" | The website has no adapter; see the README's *Source websites*. |
 | "no enabled source applies" | No built-in source covers that area yet. |
+
+## One-command deployment
+
+For repeated updates from this PC, `scripts\deploy-ha.ps1` wraps the installer: it builds the card, installs the files (`install-ha.ps1`), rebuilds only the Area Events app, restarts Home Assistant Core once and checks the result.
+
+```powershell
+.\scripts\deploy-ha.ps1 -AppsShare X:\ -DryRun   # shows the plan, changes nothing
+.\scripts\deploy-ha.ps1 -AppsShare X:\            # deploy; then refresh the HA dashboard
+```
+
+It restarts nothing that did not change (the app is rebuilt only when its files differ, Core is restarted only when the integration differs; `-Force` overrides), never touches any other app, does not restart Core if the install or the app rebuild fails, uses bounded waits, and refuses to run twice at once. It never automates the browser.
+
+**One-time setup.** The script uses Home Assistant's own API with an administrator's long-lived token (no SSH, nothing stored in the repository): Profile > Security > Long-lived access tokens > Create token, then in a terminal run `setx HA_URL "http://homeassistant.local:8123"` and `setx HA_TOKEN "<token>"` and open a new terminal. Alternatively keep the token alone in a file outside the repository and pass `-TokenFile <path>`. Revoke the token on the same profile page if it is ever exposed. `scripts	est-deploy-ha.ps1` runs the script's offline checks.
