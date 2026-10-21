@@ -70,7 +70,7 @@ class Evidence(unittest.TestCase):
         result = pick("Hovvdy, Emma Ogeir", tags=["Music"])
         self.assertEqual(result["category"], "music")
         self.assertEqual(result["strength"], "weak")
-        self.assertIn('source tag "music"', result["reasons"][0])
+        self.assertIn('source tag "Music"', result["reasons"][0])  # quoted as the source wrote it
 
     def test_the_title_outweighs_a_noisy_description(self):
         result = pick("Pottery class for beginners", "Bring a friend. Concert tickets, live music, a band and a choir are mentioned in the shop next door.")
@@ -89,6 +89,62 @@ class Evidence(unittest.TestCase):
 
     def test_mentioning_a_word_in_the_description_is_not_enough_alone(self):
         self.assertEqual(pick("Annual gathering", "There will be a band.")["category"], "general")
+
+
+class Corrections(unittest.TestCase):
+    """Real listings (excerpts) that the classifier got wrong, and the rule behind each fix."""
+
+    LISTINGS = {
+        "gulls": {"title": "San Diego Gulls Home Game", "venue": "Pechanga Arena San Diego", "categories": [],
+                  "description": "The San Diego Gulls will host 14 different Western Conference opponents at Pechanga Arena as part of their 2026-27 schedule."},
+        "affairs": {"title": "Student Affairs Meeting", "venue": None, "categories": ["Campus & Community"], "description": "N/A"},
+        "assembly": {"title": "Public Assembly", "venue": "WCP 2.302", "categories": ["Campus & Community"],
+                     "description": "Join us for our public assembly where you can engage in open forum, meet your representatives, listen to what is going on in Student Government, and propose your own ideas."},
+        "mannerism": {"title": "Virtual Talk - Understanding Mannerism", "venue": "Online Internet Events", "categories": [],
+                      "description": "Timken Museum of Art (Virtual): Mannerism originated primarily in Italy. It lasted from approximately 1530-1600 and was a reaction to the harmonious classicism and idealized naturalism of the High Renaissance art as practiced by Leonardo da Vinci, Michelangelo, and Raphael."},
+        "trail": {"title": "The Haunted Trail of Balboa Park", "venue": "On the corner of Balboa Drive and Eighth Drive.", "categories": [],
+                  "description": "The Haunted Trail of Balboa Park is BACK, with two haunts in one; a mile long terrifying outdoor trail through twisted pines and gnarled oaks and the 3,500 square foot eXperiment Maze, culminating with the NEW Dark Carnival!"},
+        "popsicle": {"title": "Popsicle Pop-Up", "venue": "Gordon White Building (GWB)", "categories": ["Campus & Community"],
+                     "description": "Refresh yourself with an ice-cold popsicle from Latino-owned Mom & Pop's all-natural and environmentally friendly frozen paletas! Grab a pop on your way to class."},
+    }
+
+    def category(self, key):
+        return classify.classify(self.LISTINGS[key])
+
+    def test_the_listings_now_get_the_category_their_content_supports(self):
+        expected = {"gulls": "sports", "affairs": "community", "assembly": "community", "mannerism": "arts", "trail": "festival", "popsicle": "food"}
+        for key, category in expected.items():
+            result = self.category(key)
+            self.assertEqual((result["category"], result["fallback"]), (category, False), key)
+            self.assertTrue(result["reasons"], key)
+
+    def test_home_and_away_games_are_sports_whoever_plays(self):
+        """The old rule erased the phrase "home game"; the fix is the rule, not the title."""
+        self.assertNotIn("home game", classify.NEGATIVE.pattern)
+        for title in ("Home Game", "Away Game: Tigers at Bears", "Thunder Home Game vs Lightning", "Rockets Home Game at the Arena"):
+            self.assertEqual(pick(title)["category"], "sports", title)
+        self.assertEqual(pick("Board game night at the library")["category"], "general")  # "game" alone stays weak
+
+    def test_a_negative_phrase_never_hides_a_term_the_lexicon_values(self):
+        """Negative phrases exist for words that mean something else; each may only contain lexicon words as part of that other meaning."""
+        phrases = classify.NEGATIVE.pattern.strip("\b()").replace("(?: a)?", "").split("|")
+        for phrase in phrases:
+            words = classify._tokens(re.sub(r"\(.*?\)\??", "", phrase))
+            for category, terms in classify.LEXICON.items():
+                for term, weight in terms.items():
+                    if weight >= 3 and term == " ".join(words):
+                        self.fail(f"negative phrase {phrase!r} erases the strong {category} term {term!r}")
+
+    def test_the_conservative_fallback_still_holds_for_thin_evidence(self):
+        self.assertEqual(pick("Meeting")["category"], "general")                        # a bare generic word
+        self.assertEqual(pick("Pop-Up")["category"], "general")
+        self.assertEqual(pick("Museum")["category"], "general")
+        self.assertEqual(pick("Student Union")["category"], "general")
+
+    def test_the_haunted_attraction_is_not_an_outdoor_trail_but_a_real_trail_still_is(self):
+        self.assertEqual(pick("Haunted Trail", "A scary walk.")["category"], "festival")
+        self.assertEqual(pick("Wildflower Trail Hike", "Walk the trail.")["category"], "outdoors")
+        self.assertEqual(pick("Haunted House at the old mill")["category"], "festival")
 
 
 class Uncertainty(unittest.TestCase):

@@ -51,7 +51,7 @@ LEXICON = {
     },
     "festival": {
         "festival": 4, "carnival": 4, "parade": 3.5, "fiesta": 4, "block party": 3.5, "street fair": 3.5, "fireworks": 3.5, "oktoberfest": 4,
-        "mardi gras": 4, "day of the dead": 3.5, "haunt": 2.5,
+        "mardi gras": 4, "day of the dead": 3.5, "haunt": 2.5, "haunted trail": 4, "haunted house": 4, "haunted maze": 4, "haunted attraction": 4,
         "halloween": 1.5, "celebration": 1, "fair": 1.5, "fair and": 1, "flea market": 3, "night market": 3, "artisan market": 3,
         "holiday market": 3, "tailgate": 2.5, "pride": 1.5, "fest": 3.5, "palooza": 3, "pumpkin": 1, "lantern": 2.5,
     },
@@ -59,7 +59,7 @@ LEXICON = {
         "food": 3, "farmers market": 4, "dinner": 2.5, "brunch": 3.5, "lunch": 2, "tasting": 3.5, "wine": 3, "beer": 3,
         "brewery": 3, "brew": 2, "cocktail": 3.5, "happy hour": 3.5, "yappy hour": 3.5, "chef": 3.5, "cooking": 3.5, "culinary": 4,
         "restaurant": 0.5, "taco": 3.5, "pizza": 3.5, "bbq": 3.5, "barbecue": 3.5, "food truck": 4, "coffee": 2, "bake": 3, "bakery": 3,
-        "ice cream": 3.5, "sushi": 3, "supper club": 4, "distillery": 3, "cider": 3, "spirits": 1.5,
+        "ice cream": 3.5, "popsicle": 3.5, "paleta": 3.5, "gelato": 3.5, "dessert": 3, "sushi": 3, "supper club": 4, "distillery": 3, "cider": 3, "spirits": 1.5,
         "dining": 3, "menu": 1, "eat": 2, "drink": 2, "grill": 1, "kitchen": 1, "tea": 1.5, "chocolate": 3,
     },
     "sports": {
@@ -67,14 +67,14 @@ LEXICON = {
         "swimming": 4, "diving": 2.5, "track and field": 4, "rugby": 4, "lacrosse": 4, "wrestling": 4, "gymnastics": 4, "rowing": 3.5,
         "marathon": 4, "half marathon": 4, "5k": 4, "10k": 4, "triathlon": 4, "fun run": 3.5, "race": 1.5, "run": 1, "yoga": 3, "pilates": 3,
         "zumba": 3, "crossfit": 3.5, "fitness": 3, "workout": 3, "tournament": 3.5, "league": 2.5, "match": 1.5, "athletic": 3, "sport": 3,
-        "pickleball": 4, "skate": 2.5, "boxing": 3.5, "martial art": 3, "team": 1, "game": 1, "coach": 1.5, "gym": 2.5, "cheer": 1.5,
+        "pickleball": 4, "home game": 3, "away game": 3, "opponent": 2.5, "skate": 2.5, "boxing": 3.5, "martial art": 3, "team": 1, "game": 1, "coach": 1.5, "gym": 2.5, "cheer": 1.5,
     },
     "arts": {
         "exhibit": 4, "exhibition": 4, "gallery": 3.5, "museum": 1.5, "art walk": 4, "painting": 3.5, "sculpture": 4, "photography": 3.5,
         "ceramic": 3.5, "pottery": 3.5, "artist talk": 4, "artist": 2, "art show": 4, "mural": 3.5, "drawing": 2.5, "craft": 2.5, "zine": 3.5,
         "on view": 3.5, "opening reception": 3, "art": 2, "poetry": 3.5, "poet": 3.5, "book signing": 3, "author": 2, "literary": 3,
         "novel": 2.5, "reading": 1, "printmaking": 4, "textile": 3, "collage": 3.5, "illustration": 3, "design": 1.5, "art history": 3,
-        "visual art": 4, "documentary": 2, "storytelling": 1.5, "calligraphy": 3.5, "sketching": 3,
+        "visual art": 4, "art museum": 3.5, "museum of art": 3.5, "mannerism": 3.5, "baroque": 3, "impressionism": 3, "painter": 3, "documentary": 2, "storytelling": 1.5, "calligraphy": 3.5, "sketching": 3,
     },
     "science": {
         "astronomy": 4, "astronomical": 4, "planetarium": 4, "telescope": 4, "stargazing": 3, "physics": 3.5, "chemistry": 3.5, "biology": 3.5,
@@ -94,7 +94,7 @@ LEXICON = {
         "volunteer": 3, "cleanup": 3.5, "clean up": 3.5, "charity": 3, "fundraiser": 3, "fundraising": 3, "town hall": 3.5, "neighborhood": 2,
         "community meeting": 3.5, "support group": 3.5, "recovery": 2.5, "info session": 2.5, "information session": 2.5, "committee": 2.5,
         "meeting": 2, "voter": 2.5, "vote": 2, "election": 2.5, "civic": 3, "nonprofit": 3, "career fair": 2.5, "job fair": 2.5, "networking": 2.5,
-        "advocacy": 3, "summit": 1.5, "housing": 1.5, "council": 2, "caucus": 3, "memorial": 2, "vigil": 3, "walk": 0.5, "rally": 2, "forum": 1.5, "mutual aid": 3.5,
+        "advocacy": 3, "student government": 3, "student affair": 1.5, "assembly": 2.5, "public assembly": 3.5, "summit": 1.5, "housing": 1.5, "council": 2, "caucus": 3, "memorial": 2, "vigil": 3, "walk": 0.5, "rally": 2, "forum": 1.5, "mutual aid": 3.5,
         "veterans": 2, "orientation": 2, "open house": 2, "workshop": 0.5, "drop in": 1, "peer led": 2, "wellness": 1.5,
     },
     "outdoors": {
@@ -122,7 +122,7 @@ TAGS = {
 
 # Phrases that look like a category word but are not (removed before matching).
 NEGATIVE = re.compile(r"\b(political science|social science|computer science education|science fiction|sci fi|dance floor|play(ing)? (?:a )?role|"
-                      r"fair (?:use|share|housing|trade)|lunch (?:and|n) learn|run of show|team building|home game(?! at)|food (?:pantry|bank|insecurity))\b")
+                      r"fair (?:use|share|housing|trade)|lunch (?:and|n) learn|run of show|team building|food (?:pantry|bank|insecurity))\b")
 VERSUS = re.compile(r"\b(vs|v|versus)\b\.?")
 
 _WORD = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
@@ -222,11 +222,14 @@ def classify(event):
             evidence[category].append((min(points, DESCRIPTION_CAP - total), label))
             total += points
 
-    tags = [_tag_key(tag) for tag in (event.get("categories") or []) if isinstance(tag, str)]
+    tags = {}
+    for tag in event.get("categories") or []:
+        if isinstance(tag, str):
+            tags.setdefault(_tag_key(tag), tag.strip())      # reasons quote the tag as the source wrote it
     for category, known in TAG_INDEX.items():
-        for tag in dict.fromkeys(tags):
-            if tag in known:
-                evidence[category].append((min(known[tag], TAG_CAP), f'source tag "{tag}"'))
+        for key, shown in tags.items():
+            if key in known:
+                evidence[category].append((min(known[key], TAG_CAP), f'source tag "{shown}"'))
 
     venue_points = {}
     for category, weight, term in _matches(str(event.get("venue") or "")):
