@@ -81,6 +81,18 @@ The 34 other candidates were visually approved and are unchanged. Four were repl
 
 Redistribution: unchanged from the licence section above (Pexels licence is silent on open-source repositories; Unsplash and Wikimedia were not used this round, Pexels covered all five). The replaced originals are dropped from the approved set.
 
+## Licensing review before integration (2026-10-21): BLOCKED
+
+Integration is on hold. Findings from the official pages:
+
+- **Permitted:** using the photos in an app UI, modifying them, no attribution ([license](https://www.pexels.com/license/)).
+- **Prohibited:** redistributing on stock-photo or wallpaper platforms; selling unaltered copies.
+- **Terms of Service ([terms](https://www.pexels.com/terms-of-service/), section 5):** the licence is non-exclusive and conditional on avoiding Prohibited Uses, including distributing content on a "standalone basis". A Pexels search snippet of the help centre defines standalone as content "substantially the same", for example only resized or cropped. The help-centre pages returned HTTP 403, so that definition is unconfirmed first-hand.
+- **Not addressed anywhere I could read:** open-source repositories or bundling in redistributed software. The terms also disclaim model, property and brand releases ("AS IS").
+- **Why it is material:** the 39 files would be resized or cropped copies, still substantially the same photographs, and a public repo makes each one a downloadable standalone file under an open-source licence that invites copying. That is the situation the standalone clause targets, and the project cannot sublicense the photos.
+
+Resolution options: (1) ask Pexels support for written permission for this exact use; (2) replace with CC0/public-domain photographs (Wikimedia Commons, or Pexels/Unsplash images individually marked CC0); (3) keep the SVG illustrations. Nothing was integrated, bundled or committed.
+
 ## Recommended integration approach (not implemented)
 
 1. **Keep the engine's category as the first key.** Photography is only a final tier: real event photo, then category photo, then the existing SVG illustration. The card still draws the illustration if the photo fails to load.
