@@ -97,12 +97,6 @@ const STYLES = `
   .editor .error { color: var(--error-color, var(--primary-text-color)); font-size: 0.8125rem; }
   .editor .actions { display: flex; gap: 6px; }
   .no-match { padding: 12px 4px; color: var(--secondary-text-color); }
-  .area { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--divider-color); font-size: 0.875rem; }
-  .area-line { color: var(--primary-text-color); overflow-wrap: anywhere; }
-  .area-detail, .area-note { color: var(--secondary-text-color); font-size: 0.8125rem; overflow-wrap: anywhere; }
-  .area-message { color: var(--primary-text-color); font-weight: min(var(--ha-font-weight-medium, 500), 600); overflow-wrap: anywhere; }
-  .area-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-
   .grid {
     display: grid; gap: 8px;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, max(220px, (100% - 3 * 8px) / 4)), 1fr));
@@ -250,24 +244,25 @@ function normalizePrefs(raw) {
   }
   const known = new Set([...DEFAULT_CATEGORIES, ...custom].map((c) => c.id));
   const selected = (Array.isArray(raw.selected) ? raw.selected : []).filter((id) => typeof id === "string" && known.has(id));
-  const prefs = { v: 1, selected: [...new Set(selected)], custom };
-  const area = normalizeArea(raw.area);
-  if (area && area.kind !== "configured") prefs.area = area;
-  return prefs;
+  return { v: 1, selected: [...new Set(selected)], custom };
 }
 
 /*
- * Area (where the user is interested in events). Resolution order, highest first:
- *   1. an area the user chose in the card (saved per card instance): "Home Assistant home" or "my location"
- *   2. an `area` set in the card configuration
- *   3. the Home Assistant home location (hass.config), read live and never hardcoded or persisted
- *   4. unavailable: the card says so and offers the choices above
- * The browser location is requested ONLY from a click on "Use my location", never on load. An area chosen
- * here is for this card; it does not change what the discovery service searches (see the area panel text).
+ * Location from YAML. With `location_control: true` the card makes sure the discovery server is working on the
+ * place named in its configuration:
+ *
+ *   area: San Diego, CA        a city, a ZIP code, or "latitude, longitude" (omit it to use the Home Assistant home)
+ *   radius_miles: 25
+ *
+ * It asks the server which place is active and only if that differs does it switch, once per page load, through
+ * the Home Assistant scripts script.area_events_location / _set_location / _sync_now (the signed-in user's own
+ * session; the server's key stays in secrets.yaml, so the card holds no credential and never contacts the server).
+ * The feed keeps showing the previous place until the server has finished discovery for the new one. Cards on one
+ * page that want different places are a conflict: only one place can be active, so none of them switches it.
  */
 const TIMEZONE_NAME = /^(UTC|[A-Za-z]+(\/[A-Za-z0-9_+-]+)+)$/;
-const GEO_TIMEOUT_MS = 10000;
-const GEO_MAX_AGE_MS = 10 * 60 * 1000;
+const CONTROL_POLL_MS = 15000;
+const CONTROL_MAX_WAIT_MS = 20 * 60 * 1000;
 
 function validCoordinates(latitude, longitude) {
   return Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180 &&
@@ -286,66 +281,7 @@ function haHomeArea(hass) {
   };
 }
 
-/** Validate a saved or configured area; returns a clean object or undefined. */
-function normalizeArea(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-  if (raw.kind === "ha_home") return { kind: "ha_home" };
-  const latitude = Number(raw.latitude);
-  const longitude = Number(raw.longitude);
-  if (raw.latitude === null || raw.longitude === null || raw.latitude === "" || raw.longitude === "" || !validCoordinates(latitude, longitude)) return undefined;
-  const area = { kind: raw.kind === "browser" ? "browser" : "configured", latitude, longitude };
-  if (typeof raw.name === "string" && raw.name.trim()) area.name = raw.name.trim().slice(0, 60);
-  if (typeof raw.timezone === "string" && TIMEZONE_NAME.test(raw.timezone)) area.timezone = raw.timezone;
-  if (Number.isFinite(raw.radius_miles) && raw.radius_miles > 0 && raw.radius_miles <= 250) area.radius_miles = raw.radius_miles;
-  if (Number.isFinite(raw.accuracy_m) && raw.accuracy_m >= 0) area.accuracy_m = raw.accuracy_m;
-  if (typeof raw.saved_at === "string") area.saved_at = raw.saved_at.slice(0, 40);
-  return area;
-}
-
-/** Decide which area applies. `saved` and `configured` come from normalizeArea. */
-function resolveArea({ saved, configured, hass }) {
-  const home = haHomeArea(hass);
-  if (saved && saved.kind === "ha_home") {
-    if (home) return { source: "selected_home_assistant", area: home };
-  } else if (saved) {
-    return { source: "selected_browser", area: { source: "browser", name: saved.name || "Browser location", ...saved } };
-  }
-  if (configured) return { source: "configured", area: { source: "configured", name: configured.name || "Configured area", ...configured } };
-  if (home) return { source: "home_assistant", area: home };
-  return { source: "unavailable", reason: saved && saved.kind === "ha_home" ? "The Home Assistant home location is not set." : "No location is available." };
-}
-
-function milesBetween(a, b) {
-  const rad = (d) => (d * Math.PI) / 180;
-  const h = Math.sin(rad(b.latitude - a.latitude) / 2) ** 2 +
-    Math.cos(rad(a.latitude)) * Math.cos(rad(b.latitude)) * Math.sin(rad(b.longitude - a.longitude) / 2) ** 2;
-  return 2 * 3958.8 * Math.asin(Math.sqrt(h));
-}
-
-function geolocationProblem(error) {
-  switch (error && error.code) {
-    case 1: return "Location permission was denied. Allow it for this site in the browser, or use the Home Assistant home location. (Browsers only offer location on https pages or localhost.)";
-    case 2: return "The browser could not determine a position.";
-    case 3: return "Finding your location took too long.";
-    default: return "Your location could not be read.";
-  }
-}
-
-/*
- * Location control (`location_control: true`): the card can ask the discovery server to switch its ONE active
- * location. It does so by running Home Assistant scripts (script.area_events_location / _set_location /
- * _sync_now) with the signed-in user's own session; those scripts call the server's authenticated API with a key
- * kept in secrets.yaml, so the card holds no credential and never contacts the server. The feed it shows stays
- * the previous location's until the server has finished discovery for the new one.
- */
-const CONTROL_POLL_MS = 15000;
-const CONTROL_MAX_WAIT_MS = 20 * 60 * 1000;
-
-function roundCoordinate(value) {
-  return Math.round(value * 100) / 100; // about 1 km: all the precision an event search needs
-}
-
-/** City, ZIP or "latitude, longitude" typed by the user -> a server request (or an error message). */
+/** City, ZIP or "latitude, longitude" from the configuration -> a server request (or an error message). */
 function parsePlace(text, country, radius) {
   const value = String(text || "").trim();
   if (!value) return { error: "Enter a city, a ZIP code, or latitude and longitude." };
@@ -385,6 +321,11 @@ function extractServiceResponse(result) {
 
 function apiMessage(content, status) {
   return (content && content.error && content.error.message) || (typeof content === "string" && content.slice(0, 200)) || `The server answered ${status}.`;
+}
+
+/** Cards on one page that want different places (card -> key); only one place can be active at a time. */
+function wantedPlaces() {
+  return (globalThis.__areaEventsWantedPlaces = globalThis.__areaEventsWantedPlaces || new Map());
 }
 
 function hashString(text) {
@@ -436,14 +377,18 @@ class AreaEventsCard extends HTMLElement {
     if (config.script_prefix !== undefined && !/^[a-z][a-z0-9_]{0,40}$/.test(String(config.script_prefix))) {
       throw new Error("'script_prefix' must be lowercase letters, digits and underscores.");
     }
-    if (config.area !== undefined && !normalizeArea({ kind: "configured", ...config.area })) {
-      throw new Error("'area' needs valid latitude and longitude (and optionally name, radius_miles, timezone).");
+    if (config.area !== undefined && (typeof config.area !== "string" || !config.area.trim())) {
+      throw new Error("'area' must be text such as 'San Diego, CA' (a city, a ZIP code or 'latitude, longitude').");
+    }
+    if (config.radius_miles !== undefined && !(Number(config.radius_miles) >= 1 && Number(config.radius_miles) <= 250)) {
+      throw new Error("'radius_miles' must be a number from 1 to 250.");
     }
     this._config = config;
     this._feed = undefined;
     this._feedError = undefined;
     this._control = { run: (this._control ? this._control.run : 0) + 1 };
     clearTimeout(this._controlTimer);
+    wantedPlaces().delete(this);
     this._filterOpen = false;
     this._editing = undefined;
     this._initPrefs();
@@ -451,6 +396,7 @@ class AreaEventsCard extends HTMLElement {
     this._render();
     if (this.isConnected) this._startFeed();
     this._loadRemotePrefs();
+    this._controlStart();
   }
 
   connectedCallback() {
@@ -465,7 +411,11 @@ class AreaEventsCard extends HTMLElement {
     clearInterval(this._ageTimer);
     clearTimeout(this._controlTimer);
     this._feedTimer = this._ageTimer = this._controlTimer = undefined;
-    if (this._control) this._control.run += 1; // answers still in flight are ignored
+    wantedPlaces().delete(this);
+    if (this._control) {
+      this._control.run += 1; // answers still in flight are ignored
+      this._control.started = false;
+    }
   }
 
   set hass(hass) {
@@ -475,6 +425,7 @@ class AreaEventsCard extends HTMLElement {
     // images are not reloaded on every state change. Themes need no re-render.
     if (first || (this._config && this._config.entity && !this._usesFeedOrInline())) this._render();
     this._loadRemotePrefs();
+    this._controlStart();
   }
 
   getCardSize() {
@@ -486,7 +437,7 @@ class AreaEventsCard extends HTMLElement {
   }
 
   static get _internals() {
-    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, haHomeArea, normalizeArea, resolveArea, milesBetween, parsePlace, extractServiceResponse, roundCoordinate };
+    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, haHomeArea, parsePlace, extractServiceResponse };
   }
 
   // --- preferences ------------------------------------------------------------
@@ -699,8 +650,9 @@ class AreaEventsCard extends HTMLElement {
     wrap.append(this._els.header);
     if (this._config.demo) wrap.append(this._el("div", "demo-banner", "DEMONSTRATION DATA - not real events"));
 
-    const notice = this._feedNotice(events.length);
-    if (notice) wrap.append(this._el("div", "notice", notice));
+    this._els.notice = this._el("div", "notice");
+    wrap.append(this._els.notice);
+    this._updateNotice(events.length);
 
     this._els.filters = this._el("div", "filters");
     wrap.append(this._els.filters);
@@ -726,6 +678,15 @@ class AreaEventsCard extends HTMLElement {
     card.append(wrap);
     root.append(style, card);
     this._refreshFilters();
+  }
+
+  _updateNotice(count) {
+    if (!this._els || !this._els.notice) return;
+    const control = this._control || {};
+    const text = [control.error ? `Location could not be applied: ${control.error}` : control.message,
+      this._feedNotice(count === undefined ? (this._tiles || []).length : count)].filter(Boolean).join(" ");
+    this._els.notice.textContent = text;
+    this._els.notice.hidden = !text;
   }
 
   _visibleCount() {
@@ -792,69 +753,7 @@ class AreaEventsCard extends HTMLElement {
     return button;
   }
 
-  // --- area ----------------------------------------------------------------------
-
-  _area() {
-    const configured = this._config.area ? normalizeArea({ kind: "configured", ...this._config.area }) : undefined;
-    return resolveArea({ saved: this._prefs.area, configured, hass: this._hass });
-  }
-
-  _chooseHomeAssistant() {
-    this._geoRequest = (this._geoRequest || 0) + 1; // a browser answer still pending no longer applies
-    this._geoMessage = undefined;
-    this._setPrefs({ ...this._prefs, area: { kind: "ha_home" } });
-  }
-
-  _clearArea() {
-    this._geoRequest = (this._geoRequest || 0) + 1;
-    this._geoMessage = undefined;
-    const { area, ...rest } = this._prefs;
-    this._setPrefs(rest);
-  }
-
-  /** Only ever called from a click: the browser's permission prompt must follow an explicit user action. */
-  _useMyLocation() {
-    const geolocation = globalThis.navigator && globalThis.navigator.geolocation;
-    if (!geolocation || typeof geolocation.getCurrentPosition !== "function") {
-      this._geoMessage = "This browser does not support location.";
-      this._renderFilterUI();
-      return;
-    }
-    const request = (this._geoRequest = (this._geoRequest || 0) + 1);
-    this._geoMessage = "Waiting for the browser's location permission...";
-    this._renderFilterUI();
-    const finish = (message) => {
-      if (request !== this._geoRequest) return;
-      this._geoMessage = message;
-      this._renderFilterUI();
-    };
-    try {
-      geolocation.getCurrentPosition(
-        (position) => {
-          const coords = position && position.coords;
-          if (!coords || !validCoordinates(coords.latitude, coords.longitude)) return finish("The browser returned an unusable position.");
-          let timezone;
-          try {
-            timezone = Intl.DateTimeFormat().resolvedOptions().timeZone; // this browser's own timezone setting
-          } catch {
-            timezone = undefined;
-          }
-          if (request !== this._geoRequest) return;
-          this._geoMessage = undefined;
-          this._setPrefs({
-            ...this._prefs,
-            area: { kind: "browser", latitude: coords.latitude, longitude: coords.longitude, accuracy_m: coords.accuracy, timezone, saved_at: new Date().toISOString() },
-          });
-        },
-        (error) => finish(geolocationProblem(error)),
-        { enableHighAccuracy: false, timeout: GEO_TIMEOUT_MS, maximumAge: GEO_MAX_AGE_MS },
-      );
-    } catch {
-      finish("Your location could not be read.");
-    }
-  }
-
-  // --- location control ---------------------------------------------------------------
+  // --- location control from YAML ---------------------------------------------------
 
   _canControl() {
     return Boolean(this._config.location_control);
@@ -874,74 +773,7 @@ class AreaEventsCard extends HTMLElement {
 
   _setControl(patch) {
     this._control = { ...this._control, ...patch };
-    if (this._filterOpen && this._els && this._els.filters && this._tiles && this._tiles.length) this._renderFilterUI();
-  }
-
-  /** Ask the server where it is discovering and how the latest change went; keep asking while a change runs. */
-  async _controlRefresh() {
-    if (!this._canControl()) return;
-    const run = this._control.run;
-    clearTimeout(this._controlTimer);
-    try {
-      const { status, content } = await this._controlCall("location");
-      if (run !== this._control.run) return;
-      if (status !== 200) throw new Error(apiMessage(content, status));
-      this._setControl({ status: content, error: undefined });
-      const state = content.change && content.change.state;
-      if (state === "queued" || state === "running") {
-        this._control.waitStarted = this._control.waitStarted || Date.now();
-        if (Date.now() - this._control.waitStarted < CONTROL_MAX_WAIT_MS) {
-          this._controlTimer = setTimeout(() => this._controlRefresh(), CONTROL_POLL_MS);
-        }
-      } else {
-        this._control.waitStarted = undefined;
-      }
-    } catch (error) {
-      if (run === this._control.run) this._setControl({ error: error.message });
-    }
-  }
-
-  async _controlApply(spec) {
-    const run = this._control.run;
-    this._setControl({ message: "Asking the server to switch discovery to this area...", error: undefined });
-    try {
-      const { status, content } = await this._controlCall("set_location", { spec });
-      if (run !== this._control.run) return;
-      if (status === 200) this._setControl({ message: "The server is already using this area." });
-      else if (status === 202) this._setControl({ message: "Discovery for the new area has started. The current events stay until it succeeds." });
-      else throw new Error(apiMessage(content, status));
-      this._control.waitStarted = undefined;
-      await this._controlRefresh();
-    } catch (error) {
-      if (run === this._control.run) this._setControl({ message: undefined, error: error.message });
-    }
-  }
-
-  _controlSearch(form) {
-    const parsed = parsePlace(form.place, this._defaultCountry(), Number(form.radius) || this._defaultRadius());
-    if (parsed.error) {
-      this._setControl({ error: parsed.error, message: undefined });
-      return;
-    }
-    if (form.name && form.name.trim()) parsed.spec.name = form.name.trim();
-    this._controlApply(parsed.spec);
-  }
-
-  _controlApplyArea(area) {
-    const round = area.source === "browser" ? roundCoordinate : (value) => Math.round(value * 10000) / 10000;
-    this._controlApply({ latitude: round(area.latitude), longitude: round(area.longitude), radius_miles: this._defaultRadius(),
-      ...(area.timezone ? { timezone: area.timezone } : {}), name: area.name });
-  }
-
-  async _controlSyncNow() {
-    try {
-      const { status, content } = await this._controlCall("sync_now");
-      this._setControl(status >= 200 && status < 300
-        ? { message: "Copied the server's latest results to Home Assistant. They appear when this card next reloads its feed." }
-        : { error: apiMessage(content, status) });
-    } catch (error) {
-      this._setControl({ error: error.message });
-    }
+    this._updateNotice();
   }
 
   _defaultCountry() {
@@ -949,110 +781,109 @@ class AreaEventsCard extends HTMLElement {
     return typeof country === "string" && /^[A-Za-z]{2}$/.test(country) ? country.toUpperCase() : undefined;
   }
 
-  _defaultRadius() {
-    const radius = Number(this._config.radius_miles);
-    return Number.isFinite(radius) && radius >= 1 && radius <= 250 ? radius : 25;
-  }
-
-  _renderControlPanel(panel, resolved) {
-    const line = (text, className = "area-line") => panel.append(this._el("div", className, text));
-    const control = this._control;
-    const server = control.status;
-    if (server && server.active && server.active.location) {
-      const where = server.active.location;
-      line(`The server discovers events for: ${where.name || "an unnamed area"}${where.radius_miles ? `, ${Math.round(where.radius_miles)} mi radius` : ""}`);
-    }
-    const change = server && server.change;
-    if (change && change.state && change.state !== "idle") {
-      const target = change.requested && change.requested.name ? ` to ${change.requested.name}` : "";
-      const shown = server.feed && server.feed.location ? ` The events shown are still for ${server.feed.location}.` : "";
-      if (change.state === "queued" || change.state === "running") line(`Switching${target}: discovery is ${change.state === "queued" ? "waiting to start" : "running"}.${shown}`, "area-detail");
-      else if (change.state === "failed") line(`The change${target} failed: ${change.error || "unknown error"}.${shown}`, "area-message");
-      else if (change.state === "succeeded") line(`Switched${target}. New results reach this card at the next Home Assistant sync.`, "area-detail");
-    }
-    if (resolved.area) {
-      const apply = this._button("Use this area for discovery", () => this._controlApplyArea(resolved.area));
-      apply.className = "apply-area";
-      panel.append(apply);
-    }
-    const form = this._form || (this._form = { place: "", radius: String(this._defaultRadius()), name: "" });
-    const field = (label, key, className) => {
-      const wrapper = this._el("label", "", label);
-      const input = document.createElement("input");
-      input.className = className;
-      input.type = "text";
-      input.value = form[key];
-      input.addEventListener("input", () => { form[key] = input.value; });
-      wrapper.append(input);
-      return wrapper;
-    };
-    const editor = this._el("div", "editor");
-    editor.append(field("City, ZIP code or latitude, longitude", "place", "place-input"), field("Radius (miles)", "radius", "radius-input"), field("Name (optional)", "name", "area-name-input"));
-    const search = this._button("Switch discovery to this place", () => this._controlSearch(form));
-    search.className = "search-area";
-    editor.append(search);
-    panel.append(editor);
-    if (change && change.state === "succeeded") {
-      const sync = this._button("Fetch the new results now", () => this._controlSyncNow());
-      sync.className = "sync-now";
-      panel.append(sync);
-    }
-    if (control.message) line(control.message, "area-detail");
-    if (control.error) line(control.error, "area-message");
-  }
-
-  _renderAreaPanel() {
-    const panel = this._el("div", "area");
-    const resolved = this._area();
-    const labels = {
-      selected_home_assistant: "Home Assistant home location (selected)", selected_browser: "your browser location (saved for this card)",
-      configured: "set in the card configuration", home_assistant: "Home Assistant home location",
-    };
-    const line = (text, className = "area-line") => panel.append(this._el("div", className, text));
-
-    if (resolved.area) {
-      const area = resolved.area;
-      line(`Area: ${area.name} - ${labels[resolved.source]}`);
-      line(`${area.latitude.toFixed(4)}, ${area.longitude.toFixed(4)}${area.timezone ? ` - ${area.timezone}` : ""}${Number.isFinite(area.accuracy_m) ? ` - accurate to about ${Math.round(area.accuracy_m)} m` : ""}`, "area-detail");
+  /** The place this card wants, from `area` (or the Home Assistant home) and `radius_miles`: {spec, key} or {error}. */
+  _desiredPlace() {
+    const radius = Number(this._config.radius_miles) || 25;
+    let spec;
+    if (this._config.area) {
+      const parsed = parsePlace(this._config.area, this._defaultCountry(), radius);
+      if (parsed.error) return { error: parsed.error };
+      spec = { ...parsed.spec, name: this._config.area.trim().slice(0, 60) };
     } else {
-      line(`${resolved.reason} Use the Home Assistant home location, or choose "Use my location" (the browser will ask permission).`);
+      const home = haHomeArea(this._hass);
+      if (!home) return { error: "No area is set in the card and Home Assistant has no home location." };
+      const round = (value) => Math.round(value * 10000) / 10000;
+      spec = { latitude: round(home.latitude), longitude: round(home.longitude), radius_miles: radius, name: home.name, ...(home.timezone ? { timezone: home.timezone } : {}) };
     }
+    const where = spec.latitude !== undefined ? `${spec.latitude.toFixed(3)},${spec.longitude.toFixed(3)}` : (spec.zip || spec.query).toLowerCase();
+    return { spec, key: `${where}|${radius}` };
+  }
 
-    const discovered = this._feed && this._feed.location;
-    if (discovered && validCoordinates(Number(discovered.latitude), Number(discovered.longitude))) {
-      line(`Events were discovered for: ${discovered.display_name || "an unnamed area"}, ${Math.round(discovered.radius_miles || 0)} mi radius`, "area-line");
-      if (resolved.area) {
-        const miles = milesBetween(resolved.area, { latitude: Number(discovered.latitude), longitude: Number(discovered.longitude) });
-        line(miles > (discovered.radius_miles || 0)
-          ? `Your area is ${Math.round(miles)} mi from the discovery area, so these events may not be near you.`
-          : "Your area is inside the discovery area.", "area-line");
+  /** Does the server's active place (or the change it is already running) match what this card wants? */
+  _sameAsServer(spec, status) {
+    const same = (place) => {
+      if (!place || Math.abs(Number(place.radius_miles) - spec.radius_miles) > 0.05) return false;
+      if (spec.latitude !== undefined) {
+        return Math.abs(Number(place.latitude) - spec.latitude) < 0.002 && Math.abs(Number(place.longitude) - spec.longitude) < 0.002;
       }
-    } else if (this._config.feed) {
-      line("This feed does not say which area its events were discovered for.");
-    }
-    line(this._canControl()
-      ? "Choosing an area above only changes this card; use the buttons below to switch what the server discovers."
-      : "Choosing an area here only changes this card. The server searches the area in its own configuration; nothing here is sent to it.", "area-note");
+      return typeof place.name === "string" && place.name.trim().toLowerCase() === (spec.name || "").toLowerCase();
+    };
+    const change = status.change || {};
+    const pending = change.state === "queued" || change.state === "running";
+    return same(status.active && status.active.location) || (pending && same(change.requested));
+  }
 
-    const buttons = this._el("div", "area-actions");
-    const home = haHomeArea(this._hass);
-    if (home) {
-      const useHome = this._button("Use Home Assistant home", () => this._chooseHomeAssistant(), Boolean(this._prefs.area && this._prefs.area.kind === "ha_home"));
-      useHome.className = "use-home";
-      buttons.append(useHome);
+  /** Once per page load: make sure the server works on this card's place, switching it only if it does not. */
+  async _controlStart() {
+    if (!this._canControl() || !this._hass || this._control.started) return;
+    this._control.started = true;
+    const run = this._control.run;
+    try {
+      const desired = this._desiredPlace();
+      if (desired.error) throw new Error(desired.error);
+      const wants = wantedPlaces();
+      const rival = [...wants].find(([card, key]) => card !== this && key !== desired.key);
+      wants.set(this, desired.key);
+      if (rival) {
+        const conflict = "Another Area Events card on this page wants a different place. Only one place can be active, so this card does not change it.";
+        this._setControl({ error: conflict });
+        rival[0]._setControl({ error: conflict });
+        return;
+      }
+      let { status, content } = await this._controlCall("location");
+      if (run !== this._control.run) return;
+      if (status !== 200) throw new Error(apiMessage(content, status));
+      const state = content.change && content.change.state;
+      if (this._sameAsServer(desired.spec, content) && state !== "queued" && state !== "running") return; // already active: nothing to do
+      if (!this._sameAsServer(desired.spec, content)) {
+        this._setControl({ message: `Switching discovery to ${desired.spec.name}...` });
+        ({ status, content } = await this._controlCall("set_location", { spec: desired.spec }));
+        if (run !== this._control.run) return;
+        if (status !== 200 && status !== 202 && status !== 409) throw new Error(apiMessage(content, status));
+      }
+      this._controlWatch(run, desired.spec);
+    } catch (error) {
+      if (run === this._control.run) this._setControl({ error: error.message, message: undefined });
     }
-    const mine = this._button("Use my location", () => this._useMyLocation());
-    mine.className = "use-mine";
-    buttons.append(mine);
-    if (this._prefs.area) {
-      const clear = this._button("Clear selection", () => this._clearArea());
-      clear.className = "clear-area";
-      buttons.append(clear);
+  }
+
+  /** While a change runs, keep checking; when it succeeds fetch the new feed, when it fails say why. */
+  async _controlWatch(run, spec) {
+    clearTimeout(this._controlTimer);
+    try {
+      const { status, content } = await this._controlCall("location");
+      if (run !== this._control.run) return;
+      if (status !== 200) throw new Error(apiMessage(content, status));
+      const change = content.change || {};
+      const mine = change.requested && (this._sameAsServer(spec, { change, active: undefined }) || change.requested.name === spec.name);
+      if (mine && (change.state === "queued" || change.state === "running")) {
+        this._control.waitStarted = this._control.waitStarted || Date.now();
+        if (Date.now() - this._control.waitStarted > CONTROL_MAX_WAIT_MS) throw new Error("Discovery is taking much longer than expected.");
+        this._setControl({ message: `Discovery for ${spec.name} is ${change.state === "queued" ? "waiting to start" : "running"}; the current events stay until it succeeds.` });
+        this._controlTimer = setTimeout(() => this._controlWatch(run, spec), CONTROL_POLL_MS);
+      } else if (mine && change.state === "failed") {
+        throw new Error(`${change.error || "discovery failed"} (the events shown are still for ${(content.feed && content.feed.location) || "the previous place"}).`);
+      } else if (mine && change.state === "succeeded") {
+        this._setControl({ message: undefined, error: undefined });
+        await this._controlFetchResults(run);
+      } else {
+        this._setControl({ message: undefined, error: undefined });
+      }
+    } catch (error) {
+      if (run === this._control.run) this._setControl({ error: error.message, message: undefined });
     }
-    panel.append(buttons);
-    if (this._geoMessage) line(this._geoMessage, "area-message");
-    if (this._canControl()) this._renderControlPanel(panel, resolved);
-    return panel;
+  }
+
+  /** Copy the server's new feed to Home Assistant now (the existing sync script) and reload it. */
+  async _controlFetchResults(run) {
+    try {
+      const { status, content } = await this._controlCall("sync_now");
+      if (run !== this._control.run) return;
+      if (status < 200 || status >= 300) throw new Error(apiMessage(content, status));
+      await this._loadFeed();
+    } catch (error) {
+      if (run === this._control.run) this._setControl({ message: `The new place is ready; its events arrive with the next Home Assistant sync (${error.message}).` });
+    }
   }
 
   _renderFilterUI() {
@@ -1067,7 +898,6 @@ class AreaEventsCard extends HTMLElement {
     const toggle = this._button(`Filters${selected.size ? ` (${selected.size})` : ""}`, () => {
       this._filterOpen = !this._filterOpen;
       this._renderFilterUI();
-      if (this._filterOpen) this._controlRefresh(); // the server's state is fetched when asked for, not on page load
     });
     toggle.className = "filter-toggle";
     toggle.setAttribute("aria-expanded", String(this._filterOpen));
@@ -1077,7 +907,6 @@ class AreaEventsCard extends HTMLElement {
     bar.append(all, toggle, this._el("span", "filter-summary", selected.size ? `Showing: ${names.join(", ")}` : "Showing all categories"));
     host.append(bar);
     if (!this._filterOpen) return;
-    host.append(this._renderAreaPanel());
 
     const chips = this._el("div", "chips");
     const allChip = this._button(`${selected.size ? "" : "✓ "}All`, () => this._setPrefs({ ...this._prefs, selected: [] }), selected.size === 0);

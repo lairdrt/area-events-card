@@ -398,187 +398,25 @@ test("inline events show a header without a fabricated update time", async () =>
 });
 
 
-// --- area: configured / Home Assistant home / browser location -------------------------------
+// --- location from YAML: area + radius_miles, applied through the Home Assistant scripts --------------------------
 
-const { haHomeArea, normalizeArea, resolveArea, parsePlace, extractServiceResponse, roundCoordinate } = CardClass._internals;
-const HOME = { latitude: 30.2672, longitude: -97.7431, time_zone: "America/Chicago", location_name: "Home" };
-const hassWith = (config) => ({ states: {}, config });
-const SAN_DIEGO_FEED_LOCATION = { display_name: "San Diego, CA", latitude: 32.7157, longitude: -117.1611, radius_miles: 25 };
-const openArea = (root) => { openFilters(root); return text(byClass(root, "area")[0]); };
-
-function geolocationSpy(behavior) {
-  const spy = { calls: 0, options: undefined, getCurrentPosition(success, failure, options) { spy.calls++; spy.options = options; behavior(success, failure); } };
-  Object.defineProperty(globalThis, "navigator", { value: { geolocation: spy }, configurable: true, writable: true });
-  return spy;
-}
-const noGeolocation = () => Object.defineProperty(globalThis, "navigator", { value: {}, configurable: true, writable: true });
-
-test("area priority: chosen in the card, then card configuration, then Home Assistant home, then unavailable", () => {
-  const hass = hassWith(HOME);
-  const configured = normalizeArea({ kind: "configured", name: "Office", latitude: 40.7, longitude: -74.0 });
-  const browser = normalizeArea({ kind: "browser", latitude: 51.5, longitude: -0.12 });
-  assert.equal(resolveArea({ saved: browser, configured, hass }).source, "selected_browser");
-  assert.equal(resolveArea({ saved: { kind: "ha_home" }, configured, hass }).source, "selected_home_assistant");
-  assert.equal(resolveArea({ configured, hass }).source, "configured");
-  const home = resolveArea({ hass });
-  assert.deepEqual([home.source, home.area.latitude, home.area.timezone], ["home_assistant", HOME.latitude, "America/Chicago"]);
-  assert.equal(resolveArea({ hass: hassWith({}) }).source, "unavailable");
-  assert.equal(resolveArea({ saved: { kind: "ha_home" }, hass: hassWith({}) }).source, "unavailable"); // chosen home, but HA has none
-});
-
-test("a missing or invalid Home Assistant location is treated as unavailable, never guessed", () => {
-  const bad = [undefined, {}, { latitude: 0, longitude: 0 }, { latitude: "30", longitude: "-97" }, { latitude: NaN, longitude: 1 },
-    { latitude: 91, longitude: 0 }, { latitude: 30, longitude: 181 }, { latitude: null, longitude: null }];
-  for (const config of bad) assert.equal(haHomeArea(hassWith(config)), undefined, JSON.stringify(config));
-  assert.equal(haHomeArea(undefined), undefined);
-  assert.equal(haHomeArea(hassWith({ latitude: 30, longitude: -97, time_zone: "Central" })).timezone, undefined); // no timezone is made up
-});
-
-test("without any location the panel says so and offers choices; the browser is not asked on load", async () => {
-  const spy = geolocationSpy(() => {});
-  const card = await make({ feed: "/f.json" }, { hass: hassWith({}) });
-  const out = openArea(card.shadowRoot);
-  assert.match(out, /No location is available/);
-  assert.equal(byClass(card.shadowRoot, "use-home").length, 0); // HA has no home location to offer
-  assert.equal(byClass(card.shadowRoot, "use-mine").length, 1);
-  assert.equal(spy.calls, 0);
-});
-
-test("the Home Assistant home location is used when nothing else is set, and is not stored", async () => {
-  const spy = geolocationSpy(() => {});
-  const card = await make({ feed: "/f.json" }, { hass: hassWith(HOME) });
-  const out = openArea(card.shadowRoot);
-  assert.match(out, /Area: Home - Home Assistant home location/);
-  assert.match(out, /America\/Chicago/);
-  assert.equal(spy.calls, 0);
-  assert.equal(window.localStorage.getItem(card._prefsKey), null); // read live from hass, never saved
-});
-
-test("choosing Home Assistant home saves a reference, not coordinates, and follows hass", async () => {
-  const hass = hassWith(HOME);
-  const card = await make({ feed: "/f.json" }, { hass });
-  openFilters(card.shadowRoot);
-  click(byClass(card.shadowRoot, "use-home")[0]);
-  assert.deepEqual(JSON.parse(window.localStorage.getItem(card._prefsKey)).area, { kind: "ha_home" });
-  hass.config = { ...HOME, latitude: 48.8566, longitude: 2.3522, location_name: "Paris", time_zone: "Europe/Paris" };
-  card.hass = hass;
-  card._renderFilterUI();
-  assert.match(text(byClass(card.shadowRoot, "area")[0]), /Area: Paris - Home Assistant home location \(selected\)/);
-});
-
-test("browser location is requested only by clicking, then saved for this card", async () => {
-  const spy = geolocationSpy((ok) => ok({ coords: { latitude: 51.5072, longitude: -0.1276, accuracy: 42.4 } }));
-  const card = await make({ feed: "/f.json" }, { hass: hassWith(HOME) });
-  openFilters(card.shadowRoot);
-  assert.equal(spy.calls, 0);
-  click(byClass(card.shadowRoot, "use-mine")[0]);
-  assert.equal(spy.calls, 1);
-  assert.equal(spy.options.timeout, 10000);
-  const saved = JSON.parse(window.localStorage.getItem(card._prefsKey)).area;
-  assert.deepEqual([saved.kind, saved.latitude, saved.longitude, saved.accuracy_m], ["browser", 51.5072, -0.1276, 42.4]);
-  const out = text(byClass(card.shadowRoot, "area")[0]);
-  assert.match(out, /Area: Browser location - your browser location \(saved for this card\)/);
-  assert.match(out, /accurate to about 42 m/);
-  const fresh = await make({ feed: "/f.json" }, { hass: hassWith(HOME) });
-  assert.match(openArea(fresh.shadowRoot), /Browser location/); // restored later, without asking the browser again
-  assert.equal(spy.calls, 1);
-});
-
-test("denied, timed-out, unavailable, unusable and unsupported browser locations save nothing", async () => {
-  const cases = [
-    [(ok, fail) => fail({ code: 1 }), /permission was denied/],
-    [(ok, fail) => fail({ code: 3 }), /took too long/],
-    [(ok, fail) => fail({ code: 2 }), /could not determine/],
-    [(ok, fail) => fail({}), /could not be read/],
-    [(ok) => ok({ coords: { latitude: 0, longitude: 0, accuracy: 1 } }), /unusable position/],
-    [(ok) => ok({ coords: { latitude: 200, longitude: 0 } }), /unusable position/],
-    [() => { throw new Error("blocked"); }, /could not be read/],
-  ];
-  for (const [behavior, expected] of cases) {
-    geolocationSpy(behavior);
-    const card = await make({ feed: "/f.json" }, { hass: hassWith({}) });
-    openFilters(card.shadowRoot);
-    click(byClass(card.shadowRoot, "use-mine")[0]);
-    assert.match(text(byClass(card.shadowRoot, "area-message")[0]), expected);
-    assert.equal(window.localStorage.getItem(card._prefsKey), null);
-    assert.match(text(byClass(card.shadowRoot, "area")[0]), /No location is available/); // nothing substituted
-  }
-  noGeolocation();
-  const card = await make({ feed: "/f.json" }, { hass: hassWith({}) });
-  openFilters(card.shadowRoot);
-  click(byClass(card.shadowRoot, "use-mine")[0]);
-  assert.match(text(byClass(card.shadowRoot, "area-message")[0]), /does not support location/);
-});
-
-test("a pending browser request that is superseded does not overwrite the newer choice", async () => {
-  let respond;
-  geolocationSpy((ok) => { respond = ok; });
-  const card = await make({ feed: "/f.json" }, { hass: hassWith(HOME) });
-  openFilters(card.shadowRoot);
-  click(byClass(card.shadowRoot, "use-mine")[0]);
-  click(byClass(card.shadowRoot, "use-home")[0]); // the user changed their mind before the browser answered
-  respond({ coords: { latitude: 51.5, longitude: -0.12, accuracy: 10 } });
-  assert.equal(JSON.parse(window.localStorage.getItem(card._prefsKey)).area.kind, "ha_home");
-});
-
-test("area choices are isolated per card instance and can be cleared", async () => {
-  geolocationSpy((ok) => ok({ coords: { latitude: 51.5, longitude: -0.12, accuracy: 10 } }));
-  const a = await make({ feed: "/f.json", title: "A" }, { hass: hassWith({}) });
-  openFilters(a.shadowRoot);
-  click(byClass(a.shadowRoot, "use-mine")[0]);
-  const b = await make({ feed: "/f.json", title: "B" }, { hass: hassWith({}) });
-  assert.match(openArea(b.shadowRoot), /No location is available/);
-  click(byClass(a.shadowRoot, "clear-area")[0]);
-  assert.equal(JSON.parse(window.localStorage.getItem(a._prefsKey)).area, undefined);
-  assert.match(text(byClass(a.shadowRoot, "area")[0]), /No location is available/);
-});
-
-test("an area in the card configuration is used and validated", async () => {
-  const card = await make({ feed: "/f.json", area: { name: "Office", latitude: 40.7, longitude: -74.0, radius_miles: 10, timezone: "America/New_York" } }, { hass: hassWith(HOME) });
-  assert.match(openArea(card.shadowRoot), /Area: Office - set in the card configuration/);
-  for (const area of [{ latitude: 100, longitude: 0 }, { latitude: 1 }, { latitude: 0, longitude: 0 }, "x"]) {
-    assert.throws(() => new CardClass().setConfig({ feed: "/f.json", area }), /'area' needs valid latitude and longitude/);
-  }
-});
-
-test("without location control the card never claims the chosen area reaches the discovery service", async () => {
-  const feed = makeFeed({ location: SAN_DIEGO_FEED_LOCATION });
-  const near = await make({ feed: "/f.json", area: { latitude: 32.8, longitude: -117.1 } }, { feed });
-  const nearText = openArea(near.shadowRoot);
-  assert.match(nearText, /Events were discovered for: San Diego, CA, 25 mi radius/);
-  assert.match(nearText, /inside the discovery area/);
-  assert.match(nearText, /nothing here is sent to it/);
-  assert.equal(byClass(near.shadowRoot, "apply-area").length + byClass(near.shadowRoot, "search-area").length, 0);
-  const far = await make({ feed: "/f.json", area: { name: "Austin", latitude: 30.2672, longitude: -97.7431 } }, { feed });
-  assert.match(openArea(far.shadowRoot), /Your area is \d+ mi from the discovery area, so these events may not be near you/);
-  const unlabeled = await make({ feed: "/f.json", area: { latitude: 30.27, longitude: -97.74 } });
-  assert.match(openArea(unlabeled.shadowRoot), /does not say which area/);
-});
-
-test("stored areas are validated", () => {
-  assert.deepEqual(normalizePrefs({ selected: [], custom: [], area: { kind: "ha_home" } }).area, { kind: "ha_home" });
-  assert.equal(normalizePrefs({ selected: [], custom: [], area: { kind: "browser", latitude: 0, longitude: 0 } }).area, undefined);
-  assert.equal(normalizePrefs({ selected: [], custom: [], area: { kind: "configured", latitude: 1, longitude: 2 } }).area, undefined); // configuration is not stored
-  assert.equal(normalizeArea({ kind: "browser", latitude: null, longitude: 5 }), undefined);
-  assert.equal(normalizeArea({ kind: "browser", latitude: "", longitude: 5 }), undefined);
-});
-
-
-// --- location control: switching the server's ONE active location through Home Assistant scripts ------------------
+const { haHomeArea, parsePlace, extractServiceResponse } = CardClass._internals;
+const HOME = { latitude: 30.267153, longitude: -97.743061, time_zone: "America/Chicago", location_name: "Home" };
 
 /** A stand-in for Home Assistant plus the discovery server's /api/v1/location, reached only through scripts. */
 function createServer() {
-  const server = { calls: [], wsCalls: [], change: { state: "idle" }, active: { name: "San Diego, CA", radius_miles: 25 }, feedLocation: "San Diego, CA", reject: undefined, syncFails: false };
+  const server = { calls: [], wsCalls: [], change: { state: "idle" }, rejectSet: undefined, syncFails: false,
+    active: { name: "San Diego, CA", latitude: 32.7157, longitude: -117.1611, radius_miles: 25 }, feedLocation: "San Diego, CA" };
   const handlers = {
     location: () => ({ status: 200, content: { active: { source: "configuration", location: server.active }, feed: { location: server.feedLocation }, change: server.change } }),
     set_location: ({ spec }) => {
-      if (server.reject) return { status: server.reject.status, content: { error: { code: "x", message: server.reject.message } } };
-      if (spec.query === "Nowhereville") return { status: 422, content: { error: { code: "location", message: "could not resolve location 'Nowhereville'" } } };
+      if (server.rejectSet) return { status: server.rejectSet.status, content: { error: { message: server.rejectSet.message } } };
+      if (spec.query === "Nowhereville") return { status: 422, content: { error: { message: "could not resolve location 'Nowhereville'" } } };
       if (server.change.state === "queued" || server.change.state === "running") return { status: 409, content: { error: { message: "a location change is already in progress" } } };
-      server.change = { state: "queued", requested: { ...spec, name: spec.name || spec.query || "unnamed" } };
+      server.change = { state: "queued", requested: spec };
       return { status: 202, content: { change: server.change } };
     },
-    sync_now: () => (server.syncFails ? { status: 500, content: "sync failed" } : { status: 200, content: "published: 1 events" }),
+    sync_now: () => (server.syncFails ? { status: 500, content: "sync failed" } : { status: 200, content: "published" }),
   };
   server.hass = (config = HOME) => ({
     states: {}, config: { country: "US", ...config },
@@ -593,176 +431,176 @@ function createServer() {
     },
   });
   server.count = (name) => server.calls.filter(([n]) => n === name).length;
+  server.setSpec = () => server.calls.find(([n]) => n === "set_location")[1].spec;
   return server;
 }
 
-async function makeControlled(config, server, hass) {
-  globalThis.fetch = okFetch(makeFeed({ location: SAN_DIEGO_FEED_LOCATION }));
+const open = [];
+async function makeControlled(config, server, hass, samePage = false) {
+  if (!samePage) delete globalThis.__areaEventsWantedPlaces; // each card is on its own page unless a test says otherwise
+  let feedLoads = 0;
+  globalThis.fetch = async () => { feedLoads++; return { ok: true, json: async () => makeFeed({ location: { display_name: "San Diego, CA", latitude: 32.7157, longitude: -117.1611, radius_miles: 25 } }) }; };
   const card = new CardClass();
+  open.push(card);
   card.setConfig({ feed: "/f.json", location_control: true, ...config });
   card.hass = hass || server.hass();
   await wait(40);
+  card.feedLoads = () => feedLoads;
   return card;
 }
-const controlText = (card) => text(byClass(card.shadowRoot, "area")[0]);
+test.afterEach(() => { open.splice(0).forEach((c) => c.disconnectedCallback()); delete globalThis.__areaEventsWantedPlaces; });
+const noticeText = (card) => (byClass(card.shadowRoot, "notice")[0].hidden ? "" : text(byClass(card.shadowRoot, "notice")[0]));
+const watchOnce = (card, spec) => card._controlWatch(card._control.run, spec);
 
-test("location control is off by default and then never calls a script", async () => {
+test("feed-only cards are unchanged: no script calls and no geographic controls", async () => {
   const server = createServer();
   const card = await make({ feed: "/f.json" }, { hass: server.hass() });
   openFilters(card.shadowRoot);
-  assert.equal(byClass(card.shadowRoot, "apply-area").length + byClass(card.shadowRoot, "search-area").length, 0);
   assert.equal(server.calls.length, 0);
-});
-
-test("location control: the server's state is fetched only when the panel is opened", async () => {
-  const server = createServer();
-  const card = await makeControlled({}, server);
-  assert.equal(server.count("location"), 0);
-  openFilters(card.shadowRoot);
-  await wait(30);
-  assert.equal(server.count("location"), 1);
-  assert.match(controlText(card), /The server discovers events for: San Diego, CA, 25 mi radius/);
-  card.disconnectedCallback();
-});
-
-test("location control: the Home Assistant home location can be applied, and the events stay until it succeeds", async () => {
-  const server = createServer();
-  const card = await makeControlled({}, server, server.hass({ latitude: 30.267153, longitude: -97.743061, location_name: "Home", time_zone: "America/Chicago" }));
-  openFilters(card.shadowRoot);
-  await wait(30);
-  click(byClass(card.shadowRoot, "apply-area")[0]);
-  await wait(40);
-  assert.deepEqual(server.calls.find(([n]) => n === "set_location")[1], { spec: { latitude: 30.2672, longitude: -97.7431, radius_miles: 25, timezone: "America/Chicago", name: "Home" } });
-  assert.match(controlText(card), /Switching to Home: discovery is waiting to start\. The events shown are still for San Diego, CA\./);
-  assert.equal(byClass(card.shadowRoot, "event").length, 3); // the displayed events are not touched
-  server.change = { ...server.change, state: "running" };
-  await card._controlRefresh();
-  assert.match(controlText(card), /discovery is running/);
-  server.change = { ...server.change, state: "succeeded" };
-  server.feedLocation = "Home";
-  await card._controlRefresh();
-  assert.match(controlText(card), /Switched to Home\. New results reach this card at the next Home Assistant sync/);
-  assert.equal(byClass(card.shadowRoot, "sync-now").length, 1);
-  card.disconnectedCallback();
-});
-
-test("location control: a failed change is reported without relabeling the old events", async () => {
-  const server = createServer();
-  const card = await makeControlled({ area: { name: "Austin", latitude: 30.2672, longitude: -97.7431 } }, server);
-  openFilters(card.shadowRoot);
-  await wait(30);
-  click(byClass(card.shadowRoot, "apply-area")[0]);
-  await wait(40);
-  server.change = { state: "failed", requested: { name: "Austin" }, error: "no enabled source applies to Austin" };
-  await card._controlRefresh();
-  const out = controlText(card);
-  assert.match(out, /The change to Austin failed: no enabled source applies to Austin\. The events shown are still for San Diego, CA\./);
   assert.equal(byClass(card.shadowRoot, "event").length, 3);
-  card.disconnectedCallback();
+  assert.equal(noticeText(card), "");
 });
 
-test("location control: typed places become the right requests; invalid input and server refusals are shown", async () => {
+test("no interactive geographic controls remain, and the browser location is never requested", async () => {
   const server = createServer();
-  const card = await makeControlled({}, server);
+  let asked = 0;
+  Object.defineProperty(globalThis, "navigator", { value: { geolocation: { getCurrentPosition: () => { asked++; } } }, configurable: true, writable: true });
+  const card = await makeControlled({ area: "San Diego, CA" }, server);
   openFilters(card.shadowRoot);
-  await wait(30);
-  type(byClass(card.shadowRoot, "place-input")[0], "Austin, TX");
-  type(byClass(card.shadowRoot, "radius-input")[0], "40");
-  type(byClass(card.shadowRoot, "area-name-input")[0], "Work");
-  click(byClass(card.shadowRoot, "search-area")[0]);
-  await wait(40);
-  assert.deepEqual(server.calls.find(([n]) => n === "set_location")[1], { spec: { query: "Austin, TX", country: "US", radius_miles: 40, name: "Work" } });
-  click(byClass(card.shadowRoot, "search-area")[0]); // a second request while the first is queued
-  await wait(40);
-  assert.match(controlText(card), /already in progress/);
-  server.change = { state: "idle" };
-  type(byClass(card.shadowRoot, "place-input")[0], "Nowhereville");
-  click(byClass(card.shadowRoot, "search-area")[0]);
-  await wait(40);
-  assert.match(controlText(card), /could not resolve location 'Nowhereville'/);
-  type(byClass(card.shadowRoot, "place-input")[0], "");
-  const before = server.count("set_location");
-  click(byClass(card.shadowRoot, "search-area")[0]);
-  assert.match(controlText(card), /Enter a city/);
-  assert.equal(server.count("set_location"), before); // nothing sent for an empty place
-  server.reject = { status: 429, message: "the location was changed a moment ago" };
-  type(byClass(card.shadowRoot, "place-input")[0], "30.1, -97.1");
-  click(byClass(card.shadowRoot, "search-area")[0]);
-  await wait(40);
-  assert.match(controlText(card), /changed a moment ago/);
-  card.disconnectedCallback();
+  for (const cls of ["area", "use-home", "use-mine", "clear-area", "search-area", "apply-area", "place-input", "saved-area", "sync-now"]) {
+    assert.equal(byClass(card.shadowRoot, cls).length, 0, cls);
+  }
+  assert.equal(asked, 0);
+  assert.equal(byClass(card.shadowRoot, "chip").length > 0, true); // the category filters are still there
 });
 
-test("location control: the browser location is requested only by a click and rounded before it is sent", async () => {
+test("YAML area and radius that match the server's active place make no change request", async () => {
   const server = createServer();
-  const spy = geolocationSpy((ok) => ok({ coords: { latitude: 51.507222, longitude: -0.127585, accuracy: 20 } }));
-  const card = await makeControlled({}, server, server.hass({}));
-  openFilters(card.shadowRoot);
-  await wait(30);
-  assert.equal(spy.calls, 0);
-  click(byClass(card.shadowRoot, "use-mine")[0]);
-  assert.equal(spy.calls, 1);
-  assert.equal(server.count("set_location"), 0); // choosing a location for the card is not yet a change to the server
-  click(byClass(card.shadowRoot, "apply-area")[0]);
-  await wait(40);
-  const spec = server.calls.find(([n]) => n === "set_location")[1].spec;
-  assert.deepEqual([spec.latitude, spec.longitude], [51.51, -0.13]);
-  assert.equal(roundCoordinate(51.507222), 51.51);
-  card.disconnectedCallback();
-  geolocationSpy((ok, fail) => fail({ code: 1 }));
-  const denied = await makeControlled({ title: "denied" }, server, server.hass({}));
-  openFilters(denied.shadowRoot);
-  click(byClass(denied.shadowRoot, "use-mine")[0]);
-  assert.match(text(byClass(denied.shadowRoot, "area-message")[0]), /permission was denied/);
-  assert.equal(byClass(denied.shadowRoot, "apply-area").length, 0); // nothing to apply, nothing substituted
-  denied.disconnectedCallback();
+  const card = await makeControlled({ area: "San Diego, CA", radius_miles: 25 }, server);
+  assert.equal(server.count("location"), 1);
+  assert.equal(server.count("set_location"), 0);
+  assert.equal(noticeText(card), "");
+  card.hass = server.hass(); card.hass = server.hass(); // Home Assistant state updates never repeat the check
+  await wait(20);
+  assert.equal(server.count("location"), 1);
 });
 
-test("location control: fetching the new results now, and its failure", async () => {
+test("a different area is applied once, the old events stay, and the new feed is fetched when discovery succeeds", async () => {
   const server = createServer();
-  server.change = { state: "succeeded", requested: { name: "Austin" } };
-  const card = await makeControlled({}, server);
-  openFilters(card.shadowRoot);
-  await wait(30);
-  click(byClass(card.shadowRoot, "sync-now")[0]);
-  await wait(30);
-  assert.equal(server.count("sync_now"), 1);
-  assert.match(controlText(card), /Copied the server's latest results/);
-  server.syncFails = true;
-  click(byClass(card.shadowRoot, "sync-now")[0]);
-  await wait(30);
-  assert.match(controlText(card), /sync failed/);
-  card.disconnectedCallback();
+  const card = await makeControlled({ area: "Austin, TX", radius_miles: 30 }, server);
+  assert.deepEqual(server.setSpec(), { query: "Austin, TX", country: "US", radius_miles: 30, name: "Austin, TX" });
+  assert.equal(server.count("set_location"), 1);
+  assert.match(noticeText(card), /Discovery for Austin, TX is waiting to start; the current events stay until it succeeds/);
+  assert.equal(byClass(card.shadowRoot, "event").length, 3); // still the previous place's events
+  server.change = { ...server.change, state: "running" };
+  await watchOnce(card, server.setSpec());
+  assert.match(noticeText(card), /is running/);
+  const loads = card.feedLoads();
+  server.change = { ...server.change, state: "succeeded" };
+  await watchOnce(card, server.setSpec());
+  assert.equal(server.count("sync_now"), 1); // the existing sync script copies the new feed to Home Assistant now
+  assert.equal(card.feedLoads(), loads + 1); // and the card reloads it
+  assert.equal(noticeText(card), "");
+  assert.equal(server.count("set_location"), 1); // never repeated
 });
 
-test("location control uses only Home Assistant scripts: no network, no credential, no stored secret", async () => {
+test("a different radius counts as a different place", async () => {
   const server = createServer();
-  let networkCalls = 0;
-  const card = await makeControlled({ script_prefix: "my_events" }, server);
-  globalThis.fetch = async () => { networkCalls++; throw new Error("no"); };
-  openFilters(card.shadowRoot);
-  await wait(30);
-  click(byClass(card.shadowRoot, "apply-area")[0]);
-  await wait(30);
+  await makeControlled({ area: "San Diego, CA", radius_miles: 40 }, server);
+  assert.equal(server.setSpec().radius_miles, 40);
+});
+
+test("coordinates in YAML are compared by position; ZIP codes use the country", async () => {
+  const server = createServer();
+  server.active = { name: "Somewhere", latitude: 30.2672, longitude: -97.7431, radius_miles: 25 };
+  await makeControlled({ area: "30.2672, -97.7431" }, server);
+  assert.equal(server.count("set_location"), 0);
+  const other = createServer();
+  await makeControlled({ area: "78701", title: "zip" }, other);
+  assert.deepEqual(other.setSpec(), { zip: "78701", country: "US", radius_miles: 25, name: "78701" });
+});
+
+test("without an area the Home Assistant home location is used, rounded, with its time zone", async () => {
+  const server = createServer();
+  await makeControlled({}, server);
+  assert.deepEqual(server.setSpec(), { latitude: 30.2672, longitude: -97.7431, radius_miles: 25, name: "Home", timezone: "America/Chicago" });
+  const matching = createServer();
+  matching.active = { name: "Home", latitude: 30.2672, longitude: -97.7431, radius_miles: 25 };
+  await makeControlled({ title: "home match" }, matching);
+  assert.equal(matching.count("set_location"), 0);
+});
+
+test("a missing Home Assistant home location is a clear error and nothing is sent", async () => {
+  const server = createServer();
+  const card = await makeControlled({}, server, server.hass({ latitude: 0, longitude: 0 }));
+  assert.equal(server.calls.length, 0);
+  assert.match(noticeText(card), /Location could not be applied: No area is set in the card and Home Assistant has no home location/);
+});
+
+test("a rejected or failed change shows why and keeps the previous events labeled as they were", async () => {
+  const server = createServer();
+  const card = await makeControlled({ area: "Nowhereville" }, server);
+  assert.match(noticeText(card), /Location could not be applied: could not resolve location 'Nowhereville'/);
+  assert.equal(byClass(card.shadowRoot, "event").length, 3);
+  const limited = createServer();
+  limited.rejectSet = { status: 429, message: "the location was changed a moment ago" };
+  assert.match(noticeText(await makeControlled({ area: "Austin, TX", title: "limited" }, limited)), /changed a moment ago/);
+  const failing = createServer();
+  const failed = await makeControlled({ area: "Austin, TX", title: "failing" }, failing);
+  failing.change = { state: "failed", requested: failing.setSpec(), error: "no enabled source applies to Austin" };
+  await watchOnce(failed, failing.setSpec());
+  assert.match(noticeText(failed), /Location could not be applied: no enabled source applies to Austin \(the events shown are still for San Diego, CA\)/);
+  assert.equal(failing.count("sync_now"), 0);
+  assert.equal(byClass(failed.shadowRoot, "event").length, 3);
+});
+
+test("a change already in progress for the same place is waited for, not repeated", async () => {
+  const server = createServer();
+  server.change = { state: "running", requested: { query: "Austin, TX", radius_miles: 25, name: "Austin, TX" } };
+  const card = await makeControlled({ area: "Austin, TX" }, server);
+  assert.equal(server.count("set_location"), 0);
+  assert.match(noticeText(card), /is running/);
+});
+
+test("cards that want different places on one page are a conflict and none of them changes the location", async () => {
+  const server = createServer();
+  const first = await makeControlled({ area: "Austin, TX", title: "A" }, server);
+  const second = await makeControlled({ area: "Boston, MA", title: "B" }, server, undefined, true);
+  assert.equal(server.count("set_location"), 1); // only the first card asked; the second saw the conflict and did not
+  for (const card of [first, second]) assert.match(noticeText(card), /Another Area Events card on this page wants a different place/);
+  const same = createServer();
+  const a = await makeControlled({ area: "San Diego, CA", title: "C" }, same);
+  const b = await makeControlled({ area: "san diego, ca", title: "D" }, same, undefined, true);
+  assert.equal(same.count("set_location"), 0);
+  assert.equal(noticeText(a) + noticeText(b), "");
+});
+
+test("only Home Assistant scripts are used: no network for control, no credential, nothing stored", async () => {
+  const server = createServer();
+  await makeControlled({ area: "Austin, TX", script_prefix: "my_events" }, server);
   const services = server.wsCalls.filter((m) => m.type === "call_service");
   assert.ok(services.length > 0 && services.every((m) => m.domain === "script" && /^my_events_(location|set_location|sync_now)$/.test(m.service)));
-  assert.equal(networkCalls, 0);
   const everything = JSON.stringify(server.wsCalls) + JSON.stringify(Object.fromEntries(window.localStorage.map));
   assert.doesNotMatch(everything, /Bearer|authorization|api[_-]?key|https?:\/\/192/i);
-  for (const bad of ["bad prefix; rm", "../x", "UPPER"]) assert.throws(() => new CardClass().setConfig({ feed: "/f.json", script_prefix: bad }), /script_prefix/);
-  card.disconnectedCallback();
 });
 
-test("script responses and typed places are parsed strictly", () => {
-  assert.deepEqual(extractServiceResponse({ context: {}, response: { status: 200, content: '{"a": 1}' } }), { status: 200, content: { a: 1 } });
-  assert.deepEqual(extractServiceResponse({ response: { "script.area_events_location": { status: 200, content: { b: 2 } } } }), { status: 200, content: { b: 2 } });
-  assert.deepEqual(extractServiceResponse({ status: 404, content: "plain text" }), { status: 404, content: "plain text" });
-  for (const bad of [undefined, null, {}, { response: null }, { response: { nope: 1 } }, "text"]) assert.throws(() => extractServiceResponse(bad), /returned no response/);
+test("configuration is validated", () => {
+  for (const bad of [{ area: 5 }, { area: "  " }, { area: { latitude: 1, longitude: 2 } }, { radius_miles: 0 }, { radius_miles: 300 }, { radius_miles: "far" }, { script_prefix: "bad prefix; rm" }]) {
+    assert.throws(() => new CardClass().setConfig({ feed: "/f.json", ...bad }), /area|radius_miles|script_prefix/, JSON.stringify(bad));
+  }
+  const valid = new CardClass();
+  valid.setConfig({ feed: "/f.json", area: "San Diego, CA", radius_miles: 25 });
+  valid.disconnectedCallback();
+});
+
+test("place and response parsing", () => {
   assert.deepEqual(parsePlace("Austin, TX", "US", 30), { spec: { query: "Austin, TX", country: "US", radius_miles: 30 } });
   assert.deepEqual(parsePlace("78701", "US", 25), { spec: { zip: "78701", country: "US", radius_miles: 25 } });
   assert.deepEqual(parsePlace("30.27, -97.74", "US", 10), { spec: { latitude: 30.27, longitude: -97.74, radius_miles: 10 } });
   assert.match(parsePlace("78701", undefined, 25).error, /needs a country/);
   assert.match(parsePlace("95, 10", "US", 25).error, /not valid/);
-  assert.match(parsePlace("   ", "US", 25).error, /Enter a city/);
-  assert.equal(parsePlace("Springfield", undefined, 25).spec.country, undefined);
+  assert.equal(haHomeArea({ config: { latitude: 0, longitude: 0 } }), undefined);
+  assert.deepEqual(extractServiceResponse({ response: { status: 200, content: '{"a": 1}' } }), { status: 200, content: { a: 1 } });
+  assert.deepEqual(extractServiceResponse({ response: { "script.x": { status: 404, content: "t" } } }), { status: 404, content: "t" });
+  assert.throws(() => extractServiceResponse({ response: null }), /returned no response/);
 });

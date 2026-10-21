@@ -15,9 +15,9 @@ Registers as `custom:area-events-card`.
 | `events` | Inline list of events (takes precedence over `entity`). |
 | `feed`   | URL of a JSON feed (`/local/area-events-card/events.json`). |
 | `id`     | Optional short name (letters, digits, `-`, `_`) that keeps this card's saved filters separate from other cards with identical settings on the same dashboard. |
-| `area`   | Optional `{name, latitude, longitude, radius_miles, timezone}` for this card (see Choosing the area). |
-| `location_control` | If `true`, the Area panel can switch the discovery service's ONE active location through Home Assistant scripts (see [docs/location-control.md](docs/location-control.md)). |
-| `script_prefix`, `country`, `radius_miles` | With `location_control`: script name prefix (default `area_events`), country for ZIP codes, default radius. |
+| `area`   | With `location_control`: the place to discover events for, as a city, ZIP code (needs `country`) or `latitude, longitude`. Omit it to use the Home Assistant home location. |
+| `location_control` | If `true`, the card applies `area` and `radius_miles` to the discovery service's ONE active location through Home Assistant scripts (see [docs/location-control.md](docs/location-control.md)). |
+| `script_prefix`, `country`, `radius_miles` | With `location_control`: script name prefix (default `area_events`), country for ZIP codes, radius (default 25). |
 | `demo`   | If `true`, shows a "demonstration data" banner. |
 
 Event fields: `title`, `start` (ISO 8601), `location`, `category`, `image` (URL, optional), `verified` (boolean).
@@ -87,18 +87,11 @@ The sticky header shows the card title, **Updated <date time> (<age>)** taken fr
 
 Use **New category** to add your own with comma-separated keywords (with none, the category name itself is the keyword); custom categories can be edited and deleted. Choices are saved per card: in your Home Assistant user data (so they follow you across devices, as the NVR Card does) with the browser's local storage as a cache and fallback. The saved key combines the dashboard path with the card's `id`, or else a hash of its title, feed and entity. Give cards that are otherwise identical on one dashboard different `id` values, or they will share filters.
 
-### Choosing the area (Home Assistant home / browser location)
+### Choosing the area (YAML)
 
-Open **Filters** to see the **Area** panel. The card decides which area applies in this order:
+The place is set in the card configuration, not in the card: `area` (city, ZIP code with `country`, or `latitude, longitude`) and `radius_miles`. Without `area`, the **Home Assistant home location** (`hass.config`) is used; a missing or zero home location is shown as an error. There are no location controls in the card and the browser location is never requested.
 
-1. an area **you chose in the card** ("Use Home Assistant home" or "Use my location"), saved per card (HA user data with a local cache, isolated by dashboard and card `id`, like the filters);
-2. an `area` in the card configuration;
-3. the **Home Assistant home location** (`hass.config`: latitude, longitude, time zone), read live. It is never hardcoded or copied into settings, and it is the home you configured in Home Assistant, not where you are now. A missing, zero or out-of-range home location counts as unavailable;
-4. otherwise the panel says no location is available and offers the choices above.
-
-**Browser location** is requested only when you click "Use my location", never on page load, and only if the browser supports it. Denial, timeout, an unusable position or an insecure (non-https, non-localhost) page produce a message and save nothing; no coordinates are substituted.
-
-**Changing what the server discovers.** By default the area chosen in the card is for the card only, and the panel says so; the service searches the `location` in `discovery.config.json` (San Diego, until changed). With `location_control: true` the panel can also ask the service to switch its single active location, for example San Diego to Austin and back. The service validates the request, discovers the new place in a separate staging area while the old feed stays published, publishes only a complete successful result, and reports any failure without touching the old events. The card never contacts the service and holds no credential: it runs Home Assistant scripts that call the service's authenticated API. Setup, security, limits, rollback and what still needs a real Home Assistant to verify: [docs/location-control.md](docs/location-control.md).
+**Changing what the server discovers.** Without `location_control` the card only displays the feed; the service searches the `location` in `discovery.config.json` (San Diego, until changed). With `location_control: true` the card compares its `area` with the service's active place once per page load and asks for a switch only if they differ. If two cards on one page want different places, neither switches it and both show an error. The service validates the request, discovers the new place in a separate staging area while the old feed stays published, publishes only a complete successful result, and reports any failure without touching the old events. The card never contacts the service and holds no credential: it runs Home Assistant scripts that call the service's authenticated API. Setup, security, limits, rollback and what still needs a real Home Assistant to verify: [docs/location-control.md](docs/location-control.md).
 
 ## Event discovery (Python, standard library only)
 

@@ -34,10 +34,11 @@ Changes are limited to one at a time, one accepted change per 5 minutes and 20 u
    type: custom:area-events-card
    feed: /local/area-events-card/events.json
    location_control: true
+   area: San Diego, CA   # city, ZIP code or "latitude, longitude"; omit for the Home Assistant home location
+   radius_miles: 25      # optional, default 25
    country: US           # optional: used for ZIP codes and to bias city names (defaults to Home Assistant's country)
-   radius_miles: 25      # optional default radius for the Home Assistant home / browser location
    ```
-   Open **Filters > Area**: choose the Home Assistant home location or your browser location (only on click; coordinates are rounded to about 1 km) and press **Use this area for discovery**, or type a city, ZIP code or `latitude, longitude`, a radius and a name and press **Switch discovery to this place**. The panel shows what the server is discovering, the progress of a running change, and any failure.
+   The card compares `area` and `radius_miles` with the server's active place once per page load and asks for a switch only if they differ; it shows progress, and any failure, in a notice above the events. Without `area` the Home Assistant home location is used.
 
 Run `script.area_events_location` in Developer tools at any time to see the same state. To return to the configured place, delete `active-location.json` from the data volume (or change to the configured place again).
 
@@ -60,8 +61,7 @@ Run `script.area_events_location` in Developer tools at any time to see the same
 | "no enabled source applies to ..." | No source in `discovery.config.json` covers that place; add sources for it. |
 | "could not resolve location" | Use a more specific name, a ZIP code with a country, or coordinates. |
 | 409 / 429 | A change is already running, or the last accepted change was under 5 minutes ago; the message says when to retry. |
-| Change succeeded but the card still shows old events | The Home Assistant copy follows at the next 30-minute sync; press "Fetch the new results now". |
-| Browser location refused | Browsers only offer location on https pages or localhost; use the Home Assistant home location or type the place. |
+| Change succeeded but the card still shows old events | The Home Assistant copy follows at the next 30-minute sync; reload the page (the card runs your sync script itself when discovery succeeds). |
 
 Logs: `docker compose logs discovery` and `/data/refresh.log`.
 
@@ -73,4 +73,4 @@ Logs: `docker compose logs discovery` and `/data/refresh.log`.
 
 ## What still needs a real Home Assistant to verify
 
-The service, API, security controls, switching and failure handling are tested locally, and the card against a faithful stand-in for the scripts. These depend on the installed Home Assistant and could not be tested here: that a script's `stop` + `response_variable` reaches the card through WebSocket `call_service` with `return_response` in the shape the card expects (it accepts the response directly or wrapped); that `rest_command` returns the status and body for non-2xx answers (so server messages reach the card); that a non-administrator can run the scripts; and browser geolocation on your dashboard URL.
+The service, API, security controls, switching and failure handling are tested locally, and the card against a faithful stand-in for the scripts. These depend on the installed Home Assistant and could not be tested here: that a script's `stop` + `response_variable` reaches the card through WebSocket `call_service` with `return_response` in the shape the card expects (it accepts the response directly or wrapped); that `rest_command` returns the status and body for non-2xx answers (so server messages reach the card); that a non-administrator can run the scripts; 
