@@ -26,10 +26,10 @@ globalThis.document = {
   createElement: (t) => { if (t === "img") created.img++; return new El(t); },
   createTextNode: (text) => ({ text }),
 };
-globalThis.customElements = { get: () => undefined, define: (_n, c) => { CardClass = c; } };
+globalThis.customElements = { get: () => undefined, define: (name, c) => { if (name === "area-events-card") CardClass = c; } };
 globalThis.window = { location: { pathname: "/lovelace/events" }, localStorage: new Storage() };
 await import("../src/area-events-card.js");
-const { categoriesFor, normalizePrefs, prefsKey } = CardClass._internals;
+const { categoriesFor, normalizePrefs, prefsKey, readSettings, editorToConfig, configToEditor, EDITOR_SCHEMA } = CardClass._internals;
 
 const day = 24 * 3600 * 1000;
 const iso = (offsetMs) => new Date(Date.now() + offsetMs).toISOString();
@@ -60,22 +60,59 @@ const chip = (root, name) => byClass(root, "chip").find((c) => text(c).includes(
 const visibleTitles = (root) => byClass(root, "event").filter((e) => !e.hidden).map((e) => text(byClass(e, "title")[0]));
 const openFilters = (root) => click(byClass(root, "filter-toggle")[0]);
 
-const okFetch = (feed) => async () => ({ ok: true, json: async () => feed });
-async function make(config, { feed = makeFeed(), fetchImpl, hass } = {}) {
-  globalThis.fetch = fetchImpl || okFetch(feed);
+/** What the integration's area_events/events command answers for a feed. */
+const answer = (feed, extra = {}) => ({
+  state: "ready", connected: true, refreshing: false, message: null, report: [],
+  generated_at: feed.generated_at, location: feed.location || { display_name: "San Diego, CA" }, sources: feed.sources, events: feed.events, ...extra,
+});
+
+/** A Home Assistant stand-in: answers area_events/events, and the user-data commands the filters use. */
+function fakeHass({ feed = makeFeed(), reply, onWS } = {}) {
+  const hass = {
+    states: {}, config: {}, calls: [], eventsCalls: () => hass.calls.filter((m) => m.type === "area_events/events"),
+    callWS: async (message) => {
+      hass.calls.push(message);
+      if (message.type === "area_events/events") {
+        if (hass.fail) throw hass.fail;
+        if (reply) return reply(message);
+        return message.since && message.since === feed.generated_at ? answer(feed, { events: undefined, unchanged: true }) : answer(feed);
+      }
+      if (onWS) {
+        const result = await onWS(message);
+        if (result !== undefined) return result;
+      }
+      return message.type === "frontend/get_user_data" ? { value: null } : undefined;
+    },
+  };
+  return hass;
+}
+
+async function make(config, { feed = makeFeed(), hass, reply } = {}) {
+  globalThis.fetch = async () => { throw new Error("the card must not use fetch"); };
+  if (hass && !hass.eventsCalls) { // a custom hass from a persistence test: add the events command to it
+    const inner = hass.callWS;
+    hass.callWS = async (m) => (m.type === "area_events/events" ? answer(feed) : inner(m));
+  }
+  hass = hass || fakeHass({ feed, reply });
   const card = new CardClass();
   card.setConfig(config);
-  if (hass) card.hass = hass;
+  card.hass = hass;
   await wait();
   card.disconnectedCallback();
+  card.hassStub = hass;
   return card;
+}
+/** Poll once more, as the card's timer would, without leaving a timer behind. */
+async function pollAgain(card) {
+  await card._loadFeed(card._feedRun);
+  card.disconnectedCallback();
 }
 test.beforeEach(() => { window.localStorage = new Storage(); created.img = 0; });
 
-// --- existing behavior ------------------------------------------------------------
+// --- events from the integration -----------------------------------------------------------
 
-test("feed renders upcoming events with honest verification labels and source links", async () => {
-  const { shadowRoot: root } = await make({ feed: "/local/area-events-card/events.json" });
+test("events render upcoming events with honest verification labels and source links", async () => {
+  const { shadowRoot: root } = await make({});
   assert.equal(byClass(root, "event").length, 3); // the past event is hidden
   const labels = byClass(root, "verify").map((v) => text(v).replace(/\|/g, "").replace(/\s+/g, " ").trim());
   assert.deepEqual(labels, ["Verified", "Source corroborated", "Unverified"]);
@@ -83,18 +120,77 @@ test("feed renders upcoming events with honest verification labels and source li
   assert.ok(byClass(root, "source").every((a) => a.href.startsWith("https://www.kpbs.org/")));
 });
 
-test("feed fetch bypasses the cache", async () => {
-  let seen;
-  await make({ feed: "/f.json" }, { fetchImpl: async (url, opts) => { seen = [url, opts]; return okFetch(makeFeed())(); } });
-  assert.match(seen[0], /^\/f\.json\?ts=\d+$/);
-  assert.equal(seen[1].cache, "no-store");
+test("the card asks only Home Assistant, with its profile; later polls send `since`", async () => {
+  const card = await make({ area: "Austin, TX", radius_miles: 30, sources: ["https://calendar.utexas.edu"] });
+  const [first] = card.hassStub.eventsCalls();
+  assert.deepEqual(first, { type: "area_events/events", radius_miles: 30, area: "Austin, TX", sources: ["https://calendar.utexas.edu"] });
+  await pollAgain(card);
+  assert.equal(card.hassStub.eventsCalls()[1].since, card._feed.generatedAt);
+  assert.ok(card.hassStub.calls.every((m) => /^(area_events\/events|frontend\/)/.test(m.type)), "no other Home Assistant commands");
+  assert.equal(byClass(card.shadowRoot, "event").length, 3); // the unchanged answer kept the events
 });
 
-test("feed failure shows an error, never demo events", async () => {
-  const { shadowRoot: root } = await make({ feed: "/f.json" }, { fetchImpl: async () => { throw new Error("Failed to fetch"); } });
+test("without an area the card asks for the Home Assistant home location", async () => {
+  const card = await make({});
+  assert.deepEqual(card.hassStub.eventsCalls()[0], { type: "area_events/events", radius_miles: 25 });
+  const pending = await make({}, { reply: () => ({ state: "pending", connected: true, report: [], sources: {} }) });
+  assert.match(text(byClass(pending.shadowRoot, "notice")[0]), /Finding events near your Home Assistant home location/);
+});
+
+test("a failure shows an error, never demo events", async () => {
+  const hass = fakeHass();
+  hass.fail = { code: "not_configured", message: "The Area Events integration is not set up" };
+  const { shadowRoot: root } = await make({}, { hass });
   assert.equal(byClass(root, "event").length, 0);
-  assert.match(text(root), /Could not load events feed: Failed to fetch/);
-  assert.match(text(byClass(root, "sticky-header")[0]), /Feed unavailable/);
+  assert.match(text(root), /Events are not available: The Area Events integration is not set up/);
+  assert.match(text(byClass(root, "sticky-header")[0]), /Events unavailable/);
+});
+
+test("discovery states are told apart: finding, not reachable, nothing found, unsupported sources", async () => {
+  const pending = await make({ area: "Austin, TX" }, { reply: () => ({ state: "discovering", connected: true, report: [], sources: {} }) });
+  assert.match(text(byClass(pending.shadowRoot, "notice")[0]), /Finding events near Austin, TX/);
+
+  const down = await make({}, { reply: () => ({ state: "unavailable", connected: false, message: "connection refused", report: [], sources: {} }) });
+  assert.match(text(byClass(down.shadowRoot, "notice")[0]), /app is not reachable \(connection refused\)/);
+
+  const failed = await make({ area: "Nowhere" }, { reply: () => ({ state: "error", connected: true, message: "could not resolve location 'Nowhere'", report: [], sources: {} }) });
+  assert.match(text(byClass(failed.shadowRoot, "notice")[0]), /could not be found for Nowhere: could not resolve location/);
+
+  const report = [{ url: "https://blog.example", status: "unsupported", reason: "no adapter reads this website" }, { url: "https://calendar.utexas.edu", status: "supported" }];
+  const partial = await make({ sources: ["https://blog.example"] }, { reply: () => answer(makeFeed(), { report }) });
+  const notice = text(byClass(partial.shadowRoot, "notice")[0]);
+  assert.match(notice, /Source not supported: https:\/\/blog\.example \(no adapter reads this website\)/);
+  assert.doesNotMatch(notice, /utexas/);
+  assert.equal(byClass(partial.shadowRoot, "event").length, 3);
+});
+
+test("a refresh failure keeps the earlier events and says so", async () => {
+  const card = await make({});
+  card.hassStub.fail = { code: "unknown_error", message: "offline" };
+  await pollAgain(card);
+  assert.match(text(byClass(card.shadowRoot, "sticky-header")[0]), /Update failed/);
+  assert.equal(byClass(card.shadowRoot, "event").length, 3);
+  assert.match(text(byClass(card.shadowRoot, "notice")[0]), /Showing earlier data/);
+});
+
+test("polling is quick while discovering and relaxed once ready", async () => {
+  const delays = [];
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...rest) => { delays.push(ms); return realSetTimeout(fn, 0 && ms, ...rest); };
+  try {
+    const hass = fakeHass({ reply: () => ({ state: "discovering", connected: true, report: [], sources: {} }) });
+    const card = new CardClass();
+    card.setConfig({});
+    card.hass = hass;
+    await wait();
+    hass.fail = { code: "invalid_profile", message: "bad" };
+    await wait();
+    card.disconnectedCallback();
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+  assert.ok(delays.includes(10000), "10 s while discovering");
+  assert.ok(delays.includes(300000), "5 min after a permanent error");
 });
 
 test("inline events keep working and Verified only when verified is true", async () => {
@@ -105,16 +201,95 @@ test("inline events keep working and Verified only when verified is true", async
   assert.match(out, /Unverified/);
 });
 
-test("entity attribute events still render, with the legacy single category field", async () => {
-  const hass = { states: { "sensor.e": { attributes: { events: [{ title: "Concert", category: "Music", verified: false }] } } } };
-  const { shadowRoot: root } = await make({ entity: "sensor.e" }, { hass });
-  assert.equal(byClass(root, "event").length, 1);
-  assert.match(text(root), /Music/);
+test("inline events never ask the integration", async () => {
+  const card = await make({ events: [{ title: "A" }] });
+  assert.equal(card.hassStub.eventsCalls().length, 0);
 });
 
 test("build identifier stays visible", async () => {
-  const { shadowRoot: root } = await make({ feed: "/f.json" });
+  const { shadowRoot: root } = await make({});
   assert.match(text(byClass(root, "footer")[0]), /__AREA_EVENTS_CARD_BUILD__/);
+});
+
+// --- configuration owned by the card ---------------------------------------------------------
+
+const titles = (card) => byClass(card.shadowRoot, "event").map((e) => text(byClass(e, "title")[0]));
+
+test("the configuration is validated with clear messages", () => {
+  const bad = [
+    [{ feed: "/f.json" }, /no longer supported/], [{ entity: "sensor.e" }, /no longer supported/],
+    [{ area: 5 }, /'area'/], [{ area: " " }, /'area'/], [{ radius_miles: 0 }, /radius_miles/], [{ radius_miles: 300 }, /radius_miles/],
+    [{ sources: ["ftp://x"] }, /sources/], [{ sources: "nonsense" }, /sources/], [{ categories: ["nonsense"] }, /Unknown category/],
+    [{ interests: [5] }, /interest/], [{ interests: ["Music: jazz"] }, /duplicates/], [{ sort: "random" }, /sort/],
+    [{ days: 0 }, /days/], [{ max_events: 1.5 }, /max_events/], [{ columns: 9 }, /columns/], [{ show_images: "yes" }, /show_images/],
+  ];
+  for (const [config, message] of bad) assert.throws(() => new CardClass().setConfig(config), message, JSON.stringify(config));
+  const settings = readSettings({ area: " Austin, TX ", radius_miles: "40", sources: "https://a.example\nhttps://b.example", categories: ["Music", "food-drink"],
+    interests: ["Board games: board game, tabletop"], exclude: "Politics\n Gala", days: 14, max_events: 12, sort: "verified", columns: 2, show_images: false });
+  assert.equal(settings.area, "Austin, TX");
+  assert.equal(settings.radius, 40);
+  assert.deepEqual(settings.sources, ["https://a.example", "https://b.example"]);
+  assert.deepEqual([...settings.categories], ["music", "food-drink"]);
+  assert.deepEqual(settings.interests.map((c) => [c.name, c.keywords]), [["Board games", ["board game", "tabletop"]]]);
+  assert.deepEqual(settings.exclude, ["politics", "gala"]);
+});
+
+test("exclude, date range, maximum and sorting apply to the shown events", async () => {
+  const feed = makeFeed({ events: [event("Zeta Concert", 1, { categories: ["Music"] }), event("Alpha Politics Rally", 2), event("Mid Market", 4, { verified: true }), event("Far Away Fair", 30)] });
+  assert.deepEqual(titles(await make({}, { feed })), ["Zeta Concert", "Alpha Politics Rally", "Mid Market", "Far Away Fair"]);
+  assert.deepEqual(titles(await make({ days: 7 }, { feed })), ["Zeta Concert", "Alpha Politics Rally", "Mid Market"]);
+  assert.deepEqual(titles(await make({ exclude: ["politics"] }, { feed })), ["Zeta Concert", "Mid Market", "Far Away Fair"]);
+  assert.deepEqual(titles(await make({ max_events: 2 }, { feed })), ["Zeta Concert", "Alpha Politics Rally"]);
+  assert.deepEqual(titles(await make({ sort: "title" }, { feed })), ["Alpha Politics Rally", "Far Away Fair", "Mid Market", "Zeta Concert"]);
+  assert.deepEqual(titles(await make({ sort: "verified", max_events: 2 }, { feed })), ["Mid Market", "Zeta Concert"]);
+});
+
+test("categories limit the events and the chips; interests add topics that work as filters", async () => {
+  const feed = makeFeed({ events: [event("Jazz Night", 1), event("Board Game Cafe", 2, { description: "tabletop evening" }), event("Quarterly meeting", 3)] });
+  assert.deepEqual(titles(await make({ categories: ["music"] }, { feed })), ["Jazz Night"]);
+  const both = await make({ categories: ["music"], interests: ["Board games: tabletop"] }, { feed });
+  assert.deepEqual(titles(both), ["Jazz Night", "Board Game Cafe"]);
+  openFilters(both.shadowRoot);
+  const names = byClass(both.shadowRoot, "chip").map((c) => text(c).replace(/[\s|\d]+$/g, "").replace(/^✓ /, "").trim());
+  assert.deepEqual(names, ["All", "Music", "Board games"]);
+  click(chip(both.shadowRoot, "Board games"));
+  assert.deepEqual(visibleTitles(both.shadowRoot), ["Board Game Cafe"]);
+  assert.deepEqual(stored(both).selected.length, 1); // a YAML interest can be chosen and is remembered
+});
+
+test("layout settings: images, filters and columns", async () => {
+  const feed = makeFeed({ events: [event("With image", 1, { image: "https://img.example/a.jpg" })] });
+  assert.equal((await make({}, { feed })).shadowRoot.children.length > 0, true);
+  const before = created.img;
+  await make({}, { feed });
+  assert.equal(created.img - before, 1);
+  const noImages = created.img;
+  await make({ show_images: false }, { feed });
+  assert.equal(created.img, noImages);
+  assert.equal(byClass((await make({ show_filters: false }, { feed })).shadowRoot, "filter-bar").length, 0);
+  assert.equal(byClass((await make({}, { feed })).shadowRoot, "filter-bar").length, 1);
+  const styled = await make({ columns: 2 }, { feed });
+  assert.match(styled.shadowRoot.children[0].textContent, /\(100% - 8px\) \/ 2/);
+});
+
+test("the visual editor round-trips the configuration", () => {
+  const config = { type: "custom:area-events-card", title: "Events", area: "Austin, TX", radius_miles: 30, sources: ["https://a.example", "https://b.example"],
+    interests: ["Board games: tabletop"], exclude: ["politics"], categories: ["music"], days: 7, max_events: 10, sort: "title", show_images: false };
+  const form = configToEditor(config);
+  assert.equal(form.sources, "https://a.example\nhttps://b.example");
+  assert.equal(form.interests, "Board games: tabletop");
+  assert.deepEqual(editorToConfig(config, form), config);
+  const edited = editorToConfig(config, { ...form, area: "", sources: "", exclude: "a\n\n b ", days: undefined });
+  assert.equal("area" in edited, false);
+  assert.equal("sources" in edited, false);
+  assert.equal("days" in edited, false);
+  assert.deepEqual(edited.exclude, ["a", "b"]);
+  assert.equal(edited.type, "custom:area-events-card");
+  readSettings(edited); // what the editor produces is always a valid configuration
+  const names = EDITOR_SCHEMA.flatMap((item) => item.schema ? item.schema.flatMap((inner) => inner.name) : item.name);
+  for (const key of ["title", "area", "radius_miles", "sources", "categories", "interests", "exclude", "days", "max_events", "sort", "columns", "show_images", "show_filters"]) {
+    assert.ok(names.includes(key), key);
+  }
 });
 
 // --- category matching ----------------------------------------------------------------
@@ -136,13 +311,13 @@ test("keywords match whole words only", () => {
 // --- filtering ------------------------------------------------------------------------
 
 test("default is Show All and unmatched events are never hidden", async () => {
-  const { shadowRoot: root } = await make({ feed: "/f.json" });
+  const { shadowRoot: root } = await make({});
   assert.deepEqual(visibleTitles(root), ["Confirmed Jazz Night", "Corroborated Farmers Market", "Mystery Gathering"]);
   assert.match(text(byClass(root, "filter-summary")[0]), /Showing all categories/);
 });
 
 test("selecting categories filters client side; multiple selection; Other; Show All; no new images or tiles", async () => {
-  const card = await make({ feed: "/f.json" });
+  const card = await make({});
   const root = card.shadowRoot;
   const tiles = byClass(root, "event");
   const images = created.img;
@@ -170,7 +345,7 @@ test("selecting categories filters client side; multiple selection; Other; Show 
 });
 
 test("Show all comes first, before Filters; the header timestamp has no icon", async () => {
-  const card = await make({ feed: "/f.json" });
+  const card = await make({});
   const root = card.shadowRoot;
   const bar = byClass(root, "filter-bar")[0];
   assert.deepEqual(bar.children.slice(0, 2).map((c) => c.className), ["show-all", "filter-toggle"]);
@@ -185,21 +360,21 @@ test("Show all comes first, before Filters; the header timestamp has no icon", a
 });
 
 test("a selection matching nothing shows an explanatory message", async () => {
-  const card = await make({ feed: "/f.json" });
+  const card = await make({});
   openFilters(card.shadowRoot);
   click(chip(card.shadowRoot, "Comedy"));
   assert.equal(visibleTitles(card.shadowRoot).length, 0);
   assert.equal(byClass(card.shadowRoot, "no-match")[0].hidden, false);
 });
 
-test("filtering makes no network requests", async () => {
-  let calls = 0;
-  const card = await make({ feed: "/f.json" }, { fetchImpl: async () => { calls++; return okFetch(makeFeed())(); } });
-  const before = calls;
+test("filtering makes no requests", async () => {
+  const card = await make({});
+  const before = card.hassStub.calls.length;
   openFilters(card.shadowRoot);
   click(chip(card.shadowRoot, "Music"));
   click(chip(card.shadowRoot, "Markets"));
-  assert.equal(calls, before);
+  assert.equal(card.hassStub.calls.filter((m) => m.type === "area_events/events").length, 1);
+  assert.ok(card.hassStub.calls.length >= before);
 });
 
 // --- custom categories and persistence -----------------------------------------------
@@ -213,7 +388,7 @@ function createCustom(root, name, keywords) {
 const stored = (card) => JSON.parse(window.localStorage.getItem(card._prefsKey));
 
 test("custom categories: create with keywords, filter by them, rename, delete; persisted", async () => {
-  const card = await make({ feed: "/f.json" });
+  const card = await make({});
   const root = card.shadowRoot;
   openFilters(root);
   createCustom(root, "Weekend", "mystery, gathering");
@@ -240,7 +415,7 @@ test("custom categories: create with keywords, filter by them, rename, delete; p
 });
 
 test("a custom category with no keywords matches its own name; duplicate and empty names are refused", async () => {
-  const card = await make({ feed: "/f.json" });
+  const card = await make({});
   const root = card.shadowRoot;
   openFilters(root);
   createCustom(root, "Gathering", "");
@@ -255,42 +430,42 @@ test("a custom category with no keywords matches its own name; duplicate and emp
 });
 
 test("saved preferences restore in a new card instance", async () => {
-  const first = await make({ feed: "/f.json", title: "Events" });
+  const first = await make({ title: "Events" });
   openFilters(first.shadowRoot);
   createCustom(first.shadowRoot, "Weekend", "mystery");
   click(chip(first.shadowRoot, "Weekend"));
   click(chip(first.shadowRoot, "Music"));
 
-  const second = await make({ feed: "/f.json", title: "Events" });
+  const second = await make({ title: "Events" });
   assert.deepEqual(visibleTitles(second.shadowRoot), ["Confirmed Jazz Night", "Mystery Gathering"]);
   assert.match(text(byClass(second.shadowRoot, "filter-summary")[0]), /Music, Weekend/);
 });
 
 test("preferences are isolated per card instance and per dashboard path", async () => {
-  const a = await make({ feed: "/f.json", title: "A" });
-  const b = await make({ feed: "/f.json", title: "B" });
-  const c = await make({ feed: "/f.json", title: "A", id: "left" });
-  const d = await make({ feed: "/f.json", title: "A", id: "right" });
+  const a = await make({ title: "A" });
+  const b = await make({ title: "B" });
+  const c = await make({ title: "A", id: "left" });
+  const d = await make({ title: "A", id: "right" });
   assert.equal(new Set([a, b, c, d].map((card) => card._prefsKey)).size, 4);
 
   openFilters(a.shadowRoot);
   click(chip(a.shadowRoot, "Music"));
-  const a2 = await make({ feed: "/f.json", title: "A" });
-  const b2 = await make({ feed: "/f.json", title: "B" });
+  const a2 = await make({ title: "A" });
+  const b2 = await make({ title: "B" });
   assert.equal(visibleTitles(a2.shadowRoot).length, 1);
   assert.equal(visibleTitles(b2.shadowRoot).length, 3);
 
-  const before = prefsKey({ feed: "/f.json", title: "A" });
+  const before = prefsKey({ title: "A" });
   window.location.pathname = "/other-dashboard/view";
-  assert.notEqual(prefsKey({ feed: "/f.json", title: "A" }), before);
+  assert.notEqual(prefsKey({ title: "A" }), before);
   window.location.pathname = "/lovelace/events";
 });
 
 test("corrupt or hostile stored preferences are ignored", async () => {
-  const key = prefsKey({ feed: "/f.json" });
+  const key = prefsKey({});
   for (const bad of ["{oops", "[]", "null", JSON.stringify({ selected: "music" })]) {
     window.localStorage.setItem(key, bad);
-    const card = await make({ feed: "/f.json" });
+    const card = await make({});
     assert.equal(visibleTitles(card.shadowRoot).length, 3);
   }
   assert.deepEqual(normalizePrefs({ selected: ["music", "nope", "music"], custom: [{ id: "bad id", name: "x" }, { id: "c_abc", name: " Ok ", keywords: [" A ", 5] }] }),
@@ -300,15 +475,15 @@ test("corrupt or hostile stored preferences are ignored", async () => {
 test("preferences sync to Home Assistant user data and load from it", async () => {
   const calls = [];
   const remote = new Map();
-  const hass = {
-    states: {},
-    callWS: async (msg) => {
+  const hass = fakeHass({
+    onWS: (msg) => {
       calls.push(msg);
       if (msg.type === "frontend/get_user_data") return { value: remote.get(msg.key) ?? null };
       remote.set(msg.key, msg.value);
+      return null;
     },
-  };
-  const card = await make({ feed: "/f.json" }, { hass });
+  });
+  const card = await make({}, { hass });
   openFilters(card.shadowRoot);
   click(chip(card.shadowRoot, "Music"));
   await wait(400);
@@ -318,23 +493,23 @@ test("preferences sync to Home Assistant user data and load from it", async () =
 
   // another browser (empty localStorage) gets the saved choice from the HA user data
   window.localStorage = new Storage();
-  const other = await make({ feed: "/f.json" }, { hass });
+  const other = await make({}, { hass });
   assert.deepEqual(visibleTitles(other.shadowRoot), ["Confirmed Jazz Night"]);
 
   // HA unreachable: local storage still works
   window.localStorage = new Storage();
-  const offline = await make({ feed: "/f.json" }, { hass: { states: {}, callWS: async () => { throw new Error("down"); } } });
+  const offline = await make({}, { hass: fakeHass({ onWS: () => { throw new Error("down"); } }) });
   openFilters(offline.shadowRoot);
   click(chip(offline.shadowRoot, "Markets"));
   assert.deepEqual(stored(offline).selected, ["markets"]);
 });
 
 test("existing local preferences migrate to HA user data when none exist there", async () => {
-  const key = prefsKey({ feed: "/f.json" });
+  const key = prefsKey({});
   window.localStorage.setItem(key, JSON.stringify({ v: 1, selected: ["music"], custom: [] }));
   const saved = [];
-  const hass = { states: {}, callWS: async (m) => { if (m.type === "frontend/set_user_data") saved.push(m); return m.type === "frontend/get_user_data" ? null : undefined; } };
-  await make({ feed: "/f.json" }, { hass });
+  const hass = fakeHass({ onWS: (m) => { if (m.type === "frontend/set_user_data") saved.push(m); return m.type === "frontend/get_user_data" ? { value: null } : null; } });
+  await make({}, { hass });
   await wait(20);
   assert.equal(saved.length, 1);
   assert.deepEqual(saved[0].value.selected, ["music"]);
@@ -342,13 +517,14 @@ test("existing local preferences migrate to HA user data when none exist there",
 
 // --- header ---------------------------------------------------------------------------
 
-test("header shows title, the feed's own update time, counts and source count", async () => {
+test("header shows title, the app's own update time, the place, counts and source count", async () => {
   const generated = iso(-35 * 60 * 1000);
-  const card = await make({ feed: "/f.json", title: "San Diego Events" }, { feed: makeFeed({ generated_at: generated }) });
+  const card = await make({ title: "San Diego Events", radius_miles: 25 }, { feed: makeFeed({ generated_at: generated }) });
   const header = text(byClass(card.shadowRoot, "sticky-header")[0]);
   assert.match(header, /San Diego Events/);
   assert.match(header, /Updated .*\(35 min ago\)/);
   assert.ok(header.includes(card._formatDate(generated)));
+  assert.match(header, /San Diego, CA · 25 mi/);
   assert.match(header, /3 events/);
   assert.match(header, /2 sources/);
   assert.doesNotMatch(header, /Stale|failed|next|Next/);
@@ -356,35 +532,26 @@ test("header shows title, the feed's own update time, counts and source count", 
 
 test("header time comes from generated_at, never the page-load time", async () => {
   const old = new Date("2026-01-02T03:04:00-08:00").toISOString();
-  const card = await make({ feed: "/f.json" }, { feed: makeFeed({ generated_at: old, events: [event("Future", 5)] }) });
+  const card = await make({}, { feed: makeFeed({ generated_at: old, events: [event("Future", 5)] }) });
   const header = text(byClass(card.shadowRoot, "sticky-header")[0]);
   assert.ok(header.includes(card._formatDate(old)));
   assert.match(header, /Stale/);
   assert.match(header, /d ago/);
 });
 
-test("header marks stale feeds, failing sources and refresh errors", async () => {
-  const stale = await make({ feed: "/f.json" }, { feed: makeFeed({ generated_at: iso(-4 * 3600 * 1000), sources: { a: { ok: true }, b: { ok: false } } }) });
+test("header marks stale data and failing sources", async () => {
+  const stale = await make({}, { feed: makeFeed({ generated_at: iso(-4 * 3600 * 1000), sources: { a: { ok: true }, b: { ok: false } } }) });
   const header = text(byClass(stale.shadowRoot, "sticky-header")[0]);
   assert.match(header, /Stale/);
   assert.match(header, /1 of 2 sources ok/);
   assert.match(header, /1 source failing/);
-
-  // a later refresh failure keeps the old data but flags it
-  const card = await make({ feed: "/f.json" });
-  globalThis.fetch = async () => { throw new Error("offline"); };
-  await card._loadFeed();
-  assert.match(text(byClass(card.shadowRoot, "sticky-header")[0]), /Update failed/);
-  assert.equal(byClass(card.shadowRoot, "event").length, 3);
-  assert.match(text(card.shadowRoot), /Showing stale data/);
 });
 
-test("an identical refreshed feed does not rebuild tiles or images", async () => {
-  const feed = makeFeed();
-  const card = await make({ feed: "/f.json" }, { feed });
+test("an unchanged answer does not rebuild tiles or images", async () => {
+  const card = await make({});
   const tiles = byClass(card.shadowRoot, "event");
   const images = created.img;
-  await card._loadFeed();
+  await pollAgain(card);
   assert.deepEqual(byClass(card.shadowRoot, "event"), tiles);
   assert.equal(created.img, images);
 });
@@ -395,275 +562,4 @@ test("inline events show a header without a fabricated update time", async () =>
   assert.match(header, /Demo/);
   assert.match(header, /1 event$/);
   assert.doesNotMatch(header, /Updated/);
-});
-
-
-// --- location from YAML: area + radius_miles, applied through the Home Assistant scripts --------------------------
-
-const { haHomeArea, parsePlace, extractServiceResponse } = CardClass._internals;
-const HOME = { latitude: 30.267153, longitude: -97.743061, time_zone: "America/Chicago", location_name: "Home" };
-
-/** A stand-in for Home Assistant plus the discovery server's /api/v1/location, reached only through scripts. */
-function createServer() {
-  const server = { calls: [], wsCalls: [], change: { state: "idle" }, rejectSet: undefined, syncFails: false,
-    active: { name: "San Diego, CA", latitude: 32.7157, longitude: -117.1611, radius_miles: 25 }, feedLocation: "San Diego, CA", haFeed: "San Diego, CA" };
-  const handlers = {
-    location: () => ({ status: 200, content: { active: { source: "configuration", location: server.active }, feed: { location: server.feedLocation }, change: server.change } }),
-    set_location: ({ spec }) => {
-      if (server.rejectSet) return { status: server.rejectSet.status, content: { error: { message: server.rejectSet.message } } };
-      if (spec.query === "Nowhereville") return { status: 422, content: { error: { message: "could not resolve location 'Nowhereville'" } } };
-      if (server.change.state === "queued" || server.change.state === "running") return { status: 409, content: { error: { message: "a location change is already in progress" } } };
-      server.change = { state: "queued", requested: spec };
-      return { status: 202, content: { change: server.change } };
-    },
-    sync_now: () => { if (server.syncFails) return { status: 500, content: "sync failed" }; if (!server.syncStale) server.haFeed = server.feedLocation; return { status: 200, content: "published" }; },
-  };
-  server.hass = (config = HOME) => ({
-    states: {}, config: { country: "US", ...config },
-    callWS: async (message) => {
-      server.wsCalls.push(message);
-      if (message.type !== "call_service") return message.type === "frontend/get_user_data" ? { value: null } : undefined;
-      assert.equal(message.domain, "script");
-      assert.equal(message.return_response, true);
-      const name = message.service.replace(/^area_events_/, "");
-      server.calls.push([name, message.service_data]);
-      return { context: {}, response: handlers[name](message.service_data) };
-    },
-  });
-  server.count = (name) => server.calls.filter(([n]) => n === name).length;
-  server.setSpec = () => server.calls.find(([n]) => n === "set_location")[1].spec;
-  return server;
-}
-
-const open = [];
-async function makeControlled(config, server, hass, samePage = false) {
-  if (!samePage) delete globalThis.__areaEventsWantedPlaces; // each card is on its own page unless a test says otherwise
-  let feedLoads = 0;
-  globalThis.fetch = async () => { feedLoads++; return { ok: true, json: async () => makeFeed({ location: { display_name: server.haFeed } }) }; };
-  const card = new CardClass();
-  open.push(card);
-  card.setConfig({ feed: "/f.json", location_control: true, ...config });
-  card.hass = hass || server.hass();
-  await wait(40);
-  card.feedLoads = () => feedLoads;
-  return card;
-}
-test.afterEach(() => { open.splice(0).forEach((c) => c.disconnectedCallback()); delete globalThis.__areaEventsWantedPlaces; });
-const noticeText = (card) => (byClass(card.shadowRoot, "notice")[0].hidden ? "" : text(byClass(card.shadowRoot, "notice")[0]));
-const watchOnce = (card, spec) => card._controlWatch(card._control.run, spec);
-
-test("feed-only cards are unchanged: no script calls and no geographic controls", async () => {
-  const server = createServer();
-  const card = await make({ feed: "/f.json" }, { hass: server.hass() });
-  openFilters(card.shadowRoot);
-  assert.equal(server.calls.length, 0);
-  assert.equal(byClass(card.shadowRoot, "event").length, 3);
-  assert.equal(noticeText(card), "");
-});
-
-test("no interactive geographic controls remain, and the browser location is never requested", async () => {
-  const server = createServer();
-  let asked = 0;
-  Object.defineProperty(globalThis, "navigator", { value: { geolocation: { getCurrentPosition: () => { asked++; } } }, configurable: true, writable: true });
-  const card = await makeControlled({ area: "San Diego, CA" }, server);
-  openFilters(card.shadowRoot);
-  for (const cls of ["area", "use-home", "use-mine", "clear-area", "search-area", "apply-area", "place-input", "saved-area", "sync-now"]) {
-    assert.equal(byClass(card.shadowRoot, cls).length, 0, cls);
-  }
-  assert.equal(asked, 0);
-  assert.equal(byClass(card.shadowRoot, "chip").length > 0, true); // the category filters are still there
-});
-
-test("YAML area and radius that match the server's active place make no change request", async () => {
-  const server = createServer();
-  const card = await makeControlled({ area: "San Diego, CA", radius_miles: 25 }, server);
-  assert.equal(server.count("location"), 1);
-  assert.equal(server.count("set_location"), 0);
-  assert.equal(noticeText(card), "");
-  card.hass = server.hass(); card.hass = server.hass(); // Home Assistant state updates never repeat the check
-  await wait(20);
-  assert.equal(server.count("location"), 1);
-});
-
-test("a different area is applied once, the old events stay, and the new feed is fetched when discovery succeeds", async () => {
-  const server = createServer();
-  const card = await makeControlled({ area: "Austin, TX", radius_miles: 30 }, server);
-  assert.deepEqual(server.setSpec(), { query: "Austin, TX", country: "US", radius_miles: 30, name: "Austin, TX" });
-  assert.equal(server.count("set_location"), 1);
-  assert.match(noticeText(card), /Discovery for Austin, TX is waiting to start; the current events stay until it succeeds/);
-  assert.equal(byClass(card.shadowRoot, "event").length, 3); // still the previous place's events
-  server.change = { ...server.change, state: "running" };
-  await watchOnce(card, server.setSpec());
-  assert.match(noticeText(card), /is running/);
-  const loads = card.feedLoads();
-  server.active = { name: "Austin, TX", latitude: 30.2649, longitude: -97.7474, radius_miles: 30 };
-  server.feedLocation = "Austin, TX";
-  server.change = { ...server.change, state: "succeeded" };
-  await watchOnce(card, server.setSpec());
-  assert.equal(server.count("sync_now"), 1); // the existing sync script copies the new feed to Home Assistant now
-  assert.equal(card.feedLoads(), loads + 1); // and the card reloads it
-  assert.equal(noticeText(card), "");
-  assert.equal(server.count("set_location"), 1); // never repeated
-});
-
-test("a card reloaded after the server already switched fetches the stale Home Assistant feed", async () => {
-  // Editing the YAML reloads the card, so none was watching when discovery finished: the server serves Austin
-  // while Home Assistant's copy (what the card loads) is still San Diego.
-  const server = createServer();
-  server.active = { name: "Austin, TX", latitude: 30.2649, longitude: -97.7474, radius_miles: 25 };
-  server.feedLocation = "Austin, TX";
-  server.change = { state: "succeeded", requested: { ...server.active } };
-  const card = await makeControlled({ area: "Austin, TX" }, server);
-  assert.equal(server.haFeed, "Austin, TX");
-  assert.equal(server.count("set_location"), 0);
-  assert.equal(server.count("sync_now"), 1);
-  assert.equal(card.feedLoads(), 2); // initial load, then the reload after the sync
-  const synced = createServer(); // and when Home Assistant already has the same feed nothing is synced
-  await makeControlled({ area: "San Diego, CA" }, synced);
-  assert.equal(synced.count("sync_now"), 0);
-});
-
-test("a set_location call that returns no response (script already running) is watched, not an error", async () => {
-  const server = createServer();
-  const hass = server.hass();
-  const callWS = hass.callWS;
-  hass.callWS = async (message) => {
-    if (message.service === "area_events_set_location") { server.change = { state: "queued", requested: message.service_data.spec }; return { context: {}, response: null }; }
-    return callWS(message);
-  };
-  const card = await makeControlled({ area: "Austin, TX" }, server, hass);
-  assert.doesNotMatch(noticeText(card), /returned no response|could not be applied/);
-  assert.match(noticeText(card), /Discovery for Austin, TX is waiting to start/);
-});
-
-test("identical cards (dashboard card and editor preview) make one set_location request", async () => {
-  const server = createServer();
-  const [a, b] = await Promise.all([
-    makeControlled({ area: "Austin, TX", title: "A" }, server, undefined, true),
-    makeControlled({ area: "Austin, TX", title: "B" }, server, undefined, true),
-  ]);
-  assert.equal(server.count("set_location"), 1);
-  for (const card of [a, b]) assert.match(noticeText(card), /Discovery for Austin, TX is waiting to start/);
-});
-
-test("an empty script response is not taken as proof of a change", async () => {
-  const server = createServer();
-  const hass = server.hass();
-  const callWS = hass.callWS;
-  hass.callWS = async (message) => (message.service === "area_events_set_location" ? { context: {}, response: null } : callWS(message));
-  const card = await makeControlled({ area: "Austin, TX" }, server, hass); // the server shows no change under way
-  assert.match(noticeText(card), /returned no response and the server is not switching to this place/);
-});
-
-test("success needs the feed Home Assistant serves to match the server's", async () => {
-  const server = createServer();
-  const card = await makeControlled({ area: "Austin, TX" }, server);
-  server.active = { name: "Austin, TX", latitude: 30.2649, longitude: -97.7474, radius_miles: 25 };
-  server.feedLocation = "Austin, TX";
-  server.change = { state: "succeeded", requested: { ...server.active } };
-  server.syncStale = true; // the sync script succeeds but the HA copy still differs from what the server serves
-  await watchOnce(card, server.setSpec());
-  assert.equal(server.count("sync_now"), 1);
-  assert.match(noticeText(card), /Home Assistant is still serving a different feed/);
-});
-
-test("a different radius counts as a different place", async () => {
-  const server = createServer();
-  await makeControlled({ area: "San Diego, CA", radius_miles: 40 }, server);
-  assert.equal(server.setSpec().radius_miles, 40);
-});
-
-test("coordinates in YAML are compared by position; ZIP codes use the country", async () => {
-  const server = createServer();
-  server.active = { name: "Somewhere", latitude: 30.2672, longitude: -97.7431, radius_miles: 25 };
-  await makeControlled({ area: "30.2672, -97.7431" }, server);
-  assert.equal(server.count("set_location"), 0);
-  const other = createServer();
-  await makeControlled({ area: "78701", title: "zip" }, other);
-  assert.deepEqual(other.setSpec(), { zip: "78701", country: "US", radius_miles: 25, name: "78701" });
-});
-
-test("without an area the Home Assistant home location is used, rounded, with its time zone", async () => {
-  const server = createServer();
-  await makeControlled({}, server);
-  assert.deepEqual(server.setSpec(), { latitude: 30.2672, longitude: -97.7431, radius_miles: 25, name: "Home", timezone: "America/Chicago" });
-  const matching = createServer();
-  matching.active = { name: "Home", latitude: 30.2672, longitude: -97.7431, radius_miles: 25 };
-  await makeControlled({ title: "home match" }, matching);
-  assert.equal(matching.count("set_location"), 0);
-});
-
-test("a missing Home Assistant home location is a clear error and nothing is sent", async () => {
-  const server = createServer();
-  const card = await makeControlled({}, server, server.hass({ latitude: 0, longitude: 0 }));
-  assert.equal(server.calls.length, 0);
-  assert.match(noticeText(card), /Location could not be applied: No area is set in the card and Home Assistant has no home location/);
-});
-
-test("a rejected or failed change shows why and keeps the previous events labeled as they were", async () => {
-  const server = createServer();
-  const card = await makeControlled({ area: "Nowhereville" }, server);
-  assert.match(noticeText(card), /Location could not be applied: could not resolve location 'Nowhereville'/);
-  assert.equal(byClass(card.shadowRoot, "event").length, 3);
-  const limited = createServer();
-  limited.rejectSet = { status: 429, message: "the location was changed a moment ago" };
-  assert.match(noticeText(await makeControlled({ area: "Austin, TX", title: "limited" }, limited)), /changed a moment ago/);
-  const failing = createServer();
-  const failed = await makeControlled({ area: "Austin, TX", title: "failing" }, failing);
-  failing.change = { state: "failed", requested: failing.setSpec(), error: "no enabled source applies to Austin" };
-  await watchOnce(failed, failing.setSpec());
-  assert.match(noticeText(failed), /Location could not be applied: no enabled source applies to Austin \(the events shown are still for San Diego, CA\)/);
-  assert.equal(failing.count("sync_now"), 0);
-  assert.equal(byClass(failed.shadowRoot, "event").length, 3);
-});
-
-test("a change already in progress for the same place is waited for, not repeated", async () => {
-  const server = createServer();
-  server.change = { state: "running", requested: { query: "Austin, TX", radius_miles: 25, name: "Austin, TX" } };
-  const card = await makeControlled({ area: "Austin, TX" }, server);
-  assert.equal(server.count("set_location"), 0);
-  assert.match(noticeText(card), /is running/);
-});
-
-test("cards that want different places on one page are a conflict and none of them changes the location", async () => {
-  const server = createServer();
-  const first = await makeControlled({ area: "Austin, TX", title: "A" }, server);
-  const second = await makeControlled({ area: "Boston, MA", title: "B" }, server, undefined, true);
-  assert.equal(server.count("set_location"), 1); // only the first card asked; the second saw the conflict and did not
-  for (const card of [first, second]) assert.match(noticeText(card), /Another Area Events card on this page wants a different place/);
-  const same = createServer();
-  const a = await makeControlled({ area: "San Diego, CA", title: "C" }, same);
-  const b = await makeControlled({ area: "san diego, ca", title: "D" }, same, undefined, true);
-  assert.equal(same.count("set_location"), 0);
-  assert.equal(noticeText(a) + noticeText(b), "");
-});
-
-test("only Home Assistant scripts are used: no network for control, no credential, nothing stored", async () => {
-  const server = createServer();
-  await makeControlled({ area: "Austin, TX", script_prefix: "my_events" }, server);
-  const services = server.wsCalls.filter((m) => m.type === "call_service");
-  assert.ok(services.length > 0 && services.every((m) => m.domain === "script" && /^my_events_(location|set_location|sync_now)$/.test(m.service)));
-  const everything = JSON.stringify(server.wsCalls) + JSON.stringify(Object.fromEntries(window.localStorage.map));
-  assert.doesNotMatch(everything, /Bearer|authorization|api[_-]?key|https?:\/\/192/i);
-});
-
-test("configuration is validated", () => {
-  for (const bad of [{ area: 5 }, { area: "  " }, { area: { latitude: 1, longitude: 2 } }, { radius_miles: 0 }, { radius_miles: 300 }, { radius_miles: "far" }, { script_prefix: "bad prefix; rm" }]) {
-    assert.throws(() => new CardClass().setConfig({ feed: "/f.json", ...bad }), /area|radius_miles|script_prefix/, JSON.stringify(bad));
-  }
-  const valid = new CardClass();
-  valid.setConfig({ feed: "/f.json", area: "San Diego, CA", radius_miles: 25 });
-  valid.disconnectedCallback();
-});
-
-test("place and response parsing", () => {
-  assert.deepEqual(parsePlace("Austin, TX", "US", 30), { spec: { query: "Austin, TX", country: "US", radius_miles: 30 } });
-  assert.deepEqual(parsePlace("78701", "US", 25), { spec: { zip: "78701", country: "US", radius_miles: 25 } });
-  assert.deepEqual(parsePlace("30.27, -97.74", "US", 10), { spec: { latitude: 30.27, longitude: -97.74, radius_miles: 10 } });
-  assert.match(parsePlace("78701", undefined, 25).error, /needs a country/);
-  assert.match(parsePlace("95, 10", "US", 25).error, /not valid/);
-  assert.equal(haHomeArea({ config: { latitude: 0, longitude: 0 } }), undefined);
-  assert.deepEqual(extractServiceResponse({ response: { status: 200, content: '{"a": 1}' } }), { status: 200, content: { a: 1 } });
-  assert.deepEqual(extractServiceResponse({ response: { "script.x": { status: 404, content: "t" } } }), { status: 404, content: "t" });
-  assert.throws(() => extractServiceResponse({ response: null }), /returned no response/);
 });

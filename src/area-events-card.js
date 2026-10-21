@@ -1,10 +1,12 @@
 /**
  * Area Events Card - Home Assistant custom Lovelace card.
  *
- * Reads events from `config.feed` (a JSON URL), `config.events` or from the
- * `events` attribute of `config.entity`. Contains no sample data; see
- * examples/demo-card.yaml. Category filters are applied in the browser and
- * saved per card instance (see "Preferences" below).
+ * Shows the events the Area Events integration discovers for this card's `area` and `radius_miles` (or, without
+ * an area, for the Home Assistant home location). The card talks only to Home Assistant, over the signed-in
+ * user's own WebSocket session (`area_events/events`); it holds no secret and contacts no other server.
+ * `events` (an inline list) shows fixed events instead, for demonstrations; see examples/demo-card.yaml.
+ * Everything about what is shown (categories, interests, exclusions, date range, sorting, layout) is YAML or the
+ * visual editor; the filter chips are the viewer's own choices, saved per card instance (see "Preferences").
  */
 
 const AREA_EVENTS_CARD_BUILD = "__AREA_EVENTS_CARD_BUILD__";
@@ -165,10 +167,16 @@ const STYLES = `
   }
 `;
 
-const FEED_REFRESH_MS = 30 * 60 * 1000;
-const FEED_STALE_MS = 3 * 60 * 60 * 1000; // the backend refreshes hourly
+const POLL_READY_MS = 5 * 60 * 1000;
+const POLL_BUSY_MS = 10 * 1000;
+const POLL_RETRY_MS = 30 * 1000;
+const FEED_STALE_MS = 3 * 60 * 60 * 1000; // the app refreshes hourly by default
 const SAVE_DEBOUNCE_MS = 300;
 const AGE_TICK_MS = 60 * 1000;
+const EDITOR_DEBOUNCE_MS = 700;
+const WS_EVENTS = "area_events/events";
+// Errors the user must fix; polling faster would not help.
+const PERMANENT_ERRORS = new Set(["invalid_profile", "rejected", "not_configured", "unauthorized"]);
 
 /*
  * Categories. Defaults are fixed; users add custom ones. An event matches a
@@ -231,8 +239,8 @@ function categoriesFor(event, customCategories = []) {
   return matched;
 }
 
-/** Validate saved preferences; returns a clean object or null if unusable. */
-function normalizePrefs(raw) {
+/** Validate saved preferences; returns a clean object or null if unusable. `extraIds` are the YAML interests. */
+function normalizePrefs(raw, extraIds = []) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const custom = [];
   for (const item of Array.isArray(raw.custom) ? raw.custom : []) {
@@ -242,106 +250,118 @@ function normalizePrefs(raw) {
     const keywords = Array.isArray(item.keywords) ? item.keywords.filter((k) => typeof k === "string").map((k) => k.trim().toLowerCase().slice(0, 40)).filter(Boolean).slice(0, MAX_KEYWORDS) : [];
     custom.push({ id, name, keywords });
   }
-  const known = new Set([...DEFAULT_CATEGORIES, ...custom].map((c) => c.id));
+  const known = new Set([...DEFAULT_CATEGORIES, ...custom].map((c) => c.id).concat(extraIds));
   const selected = (Array.isArray(raw.selected) ? raw.selected : []).filter((id) => typeof id === "string" && known.has(id));
   return { v: 1, selected: [...new Set(selected)], custom };
 }
 
 /*
- * Location from YAML. With `location_control: true` the card makes sure the discovery server is working on the
- * place named in its configuration:
+ * Configuration. Everything is optional:
  *
- *   area: San Diego, CA        a city, a ZIP code, or "latitude, longitude" (omit it to use the Home Assistant home)
- *   radius_miles: 25
- *
- * It asks the server which place is active and only if that differs does it switch, once per page load, through
- * the Home Assistant scripts script.area_events_location / _set_location / _sync_now (the signed-in user's own
- * session; the server's key stays in secrets.yaml, so the card holds no credential and never contacts the server).
- * The feed keeps showing the previous place until the server has finished discovery for the new one. Cards on one
- * page that want different places are a conflict: only one place can be active, so none of them switches it.
+ *   title, id                  header text; `id` keeps saved filters apart for identical cards on one dashboard
+ *   area, radius_miles         the place (a city, a ZIP code or "latitude, longitude") and the search radius;
+ *                              without `area` the Home Assistant home location is used
+ *   sources                    website addresses to read events from; only some websites have an adapter and the
+ *                              card reports the ones that do not
+ *   categories                 limit events to these built-in categories (ids or names); omit for all
+ *   interests                  extra topics: "Name: keyword, keyword" (or {name, keywords})
+ *   exclude                    topics to hide (any event mentioning one is dropped)
+ *   days, max_events, sort     only events starting within this many days; at most this many; date | title | verified
+ *   columns, show_images, show_filters   layout
  */
-const TIMEZONE_NAME = /^(UTC|[A-Za-z]+(\/[A-Za-z0-9_+-]+)+)$/;
-const CONTROL_POLL_MS = 15000;
-const CONTROL_MAX_WAIT_MS = 20 * 60 * 1000;
+const SORTS = ["date", "title", "verified"];
+const MAX_INTERESTS = 20;
+const MAX_EXCLUDE = 30;
+const MAX_SOURCES = 10;
 
-function validCoordinates(latitude, longitude) {
-  return Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180 &&
-    !(latitude === 0 && longitude === 0);
+function listOf(value, what) {
+  if (value === undefined || value === null || value === "") return [];
+  const items = Array.isArray(value) ? value : String(value).split("\n");
+  if (!items.every((item) => typeof item === "string")) throw new Error(`'${what}' must be a list of text.`);
+  return items.map((item) => item.trim()).filter(Boolean);
 }
 
-/** Home Assistant's configured home location, or undefined when it is missing or invalid. */
-function haHomeArea(hass) {
-  const config = hass && hass.config;
-  if (!config || typeof config.latitude !== "number" || typeof config.longitude !== "number") return undefined;
-  if (!validCoordinates(config.latitude, config.longitude)) return undefined;
-  return {
-    source: "home_assistant", latitude: config.latitude, longitude: config.longitude,
-    name: (typeof config.location_name === "string" && config.location_name.trim()) || "Home Assistant home",
-    timezone: typeof config.time_zone === "string" && TIMEZONE_NAME.test(config.time_zone) ? config.time_zone : undefined,
-  };
+function numberIn(config, key, low, high, whole) {
+  const value = config[key];
+  if (value === undefined || value === null || value === "") return undefined;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < low || number > high || (whole && !Number.isInteger(number))) {
+    throw new Error(`'${key}' must be ${whole ? "a whole number" : "a number"} from ${low} to ${high}.`);
+  }
+  return number;
 }
 
-/** City, ZIP or "latitude, longitude" from the configuration -> a server request (or an error message). */
-function parsePlace(text, country, radius) {
-  const value = String(text || "").trim();
-  if (!value) return { error: "Enter a city, a ZIP code, or latitude and longitude." };
-  const pair = value.match(/^(-?\d{1,3}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)$/);
-  if (pair) {
-    const latitude = Number(pair[1]);
-    const longitude = Number(pair[2]);
-    if (!validCoordinates(latitude, longitude)) return { error: "Those coordinates are not valid." };
-    return { spec: { latitude, longitude, radius_miles: radius } };
-  }
-  if (/\d/.test(value) && !value.includes(",") && /^[A-Za-z0-9][A-Za-z0-9 -]{2,10}$/.test(value)) {
-    if (!country) return { error: "A ZIP code needs a country (add country: US to the card or type a city)." };
-    return { spec: { zip: value, country, radius_miles: radius } };
-  }
-  return { spec: { query: value.slice(0, 100), ...(country ? { country } : {}), radius_miles: radius } };
+function flag(config, key, fallback) {
+  if (config[key] === undefined) return fallback;
+  if (typeof config[key] !== "boolean") throw new Error(`'${key}' must be true or false.`);
+  return config[key];
 }
 
-/** What a script call returned: {status, content}. Accepts the response directly or wrapped by a service/script key. */
-function extractServiceResponse(result) {
-  let response = result && typeof result === "object" && "response" in result ? result.response : result;
-  const looksRight = (value) => value && typeof value === "object" && typeof value.status === "number";
-  if (!looksRight(response) && response && typeof response === "object") {
-    const nested = Object.values(response).find(looksRight);
-    if (nested) response = nested;
-  }
-  if (!looksRight(response)) throw Object.assign(new Error("The Home Assistant script returned no response."), { noResponse: true });
-  let content = response.content;
-  if (typeof content === "string") {
-    try {
-      content = JSON.parse(content);
-    } catch {
-      // keep the text
+function parseInterests(value) {
+  const interests = [];
+  const items = Array.isArray(value) ? value : listOf(value, "interests");
+  for (const item of items) {
+    let name;
+    let keywords;
+    if (typeof item === "string") {
+      const [head, ...rest] = item.split(":");
+      name = head.trim();
+      keywords = splitKeywords(rest.join(":"));
+    } else if (item && typeof item === "object" && typeof item.name === "string") {
+      name = item.name.trim();
+      keywords = Array.isArray(item.keywords) ? item.keywords.filter((k) => typeof k === "string").map((k) => k.trim().toLowerCase()).filter(Boolean).slice(0, MAX_KEYWORDS) : splitKeywords(item.keywords);
+    } else {
+      throw new Error("Each interest must be text like 'Board games: board game, tabletop' or an object with 'name' and 'keywords'.");
     }
+    name = name.slice(0, 40);
+    if (!name) throw new Error("An interest needs a name.");
+    const taken = [...DEFAULT_CATEGORIES, ...interests].some((c) => normalizeText(c.name) === normalizeText(name));
+    if (taken) throw new Error(`The interest '${name}' duplicates another category.`);
+    interests.push({ id: `c_y${hashString(name.toLowerCase())}`.slice(0, 20), name, keywords });
   }
-  return { status: response.status, content };
+  if (interests.length > MAX_INTERESTS) throw new Error(`At most ${MAX_INTERESTS} interests are allowed.`);
+  return interests;
 }
 
-function apiMessage(content, status) {
-  return (content && content.error && content.error.message) || (typeof content === "string" && content.slice(0, 200)) || `The server answered ${status}.`;
-}
-
-/** Cards on one page that want different places (card -> key); only one place can be active at a time. */
-function wantedPlaces() {
-  return (globalThis.__areaEventsWantedPlaces = globalThis.__areaEventsWantedPlaces || new Map());
-}
-
-/** Requests being made by cards on this page (place key -> promise settled when that card's request is in), so identical cards make one. */
-function applyingPlaces() {
-  return (globalThis.__areaEventsApplying = globalThis.__areaEventsApplying || new Map());
-}
-
-/** Is the feed a card shows the one the server serves? By position when both have one, else by label. */
-function sameFeedPlace(shown, served) {
-  if (!shown || !served) return true; // nothing to compare against
-  const near = (a, b) => Math.abs(Number(a) - Number(b)) < 0.002;
-  if ([shown.latitude, shown.longitude, served.latitude, served.longitude].every((v) => v !== undefined && v !== null && !Number.isNaN(Number(v)))) {
-    return near(shown.latitude, served.latitude) && near(shown.longitude, served.longitude);
+/** Validate a card configuration and return the settings the card works with; throws a message for the dashboard editor. */
+function readSettings(config) {
+  if (!config || typeof config !== "object") throw new Error("The card needs a configuration.");
+  if (config.feed !== undefined || config.entity !== undefined) {
+    throw new Error("'feed' and 'entity' are no longer supported. Remove them and set 'area' (or leave it out to use the Home Assistant home location); events now come from the Area Events integration.");
   }
-  const label = (place) => String(place.display_name || place.name || place.location || "").trim().toLowerCase();
-  return !label(shown) || !label(served) || label(shown) === label(served);
+  if (config.area !== undefined && (typeof config.area !== "string" || !config.area.trim())) {
+    throw new Error("'area' must be text such as 'San Diego, CA' (a city, a ZIP code or 'latitude, longitude').");
+  }
+  const sources = listOf(config.sources, "sources");
+  if (sources.length > MAX_SOURCES || !sources.every((url) => /^https?:\/\/[^\s/]+/i.test(url))) {
+    throw new Error(`'sources' must be at most ${MAX_SOURCES} website addresses starting with http:// or https://.`);
+  }
+  const interests = parseInterests(config.interests);
+  const wanted = listOf(config.categories, "categories");
+  const known = DEFAULT_CATEGORIES.filter((c) => c.id !== OTHER_ID);
+  const categories = new Set();
+  for (const token of wanted) {
+    const match = known.find((c) => c.id === token.toLowerCase() || normalizeText(c.name) === normalizeText(token)) ||
+      (normalizeText(token) === normalizeText("Other") ? DEFAULT_CATEGORIES.at(-1) : undefined);
+    if (!match) throw new Error(`Unknown category '${token}'. Use: ${known.map((c) => c.id).join(", ")}, other.`);
+    categories.add(match.id);
+  }
+  const exclude = listOf(config.exclude, "exclude").map((t) => t.toLowerCase()).slice(0, MAX_EXCLUDE);
+  if (config.sort !== undefined && !SORTS.includes(config.sort)) throw new Error(`'sort' must be one of: ${SORTS.join(", ")}.`);
+  return {
+    area: config.area === undefined ? undefined : config.area.trim(),
+    radius: numberIn(config, "radius_miles", 1, 250) ?? 25,
+    sources,
+    categories: categories.size ? categories : undefined,
+    interests,
+    exclude,
+    days: numberIn(config, "days", 1, 365),
+    max: numberIn(config, "max_events", 1, 200, true),
+    sort: config.sort || "date",
+    columns: numberIn(config, "columns", 1, 4, true),
+    showImages: flag(config, "show_images", true),
+    showFilters: flag(config, "show_filters", true),
+  };
 }
 
 function hashString(text) {
@@ -356,20 +376,20 @@ function hashString(text) {
  * frontend/set_user_data, so choices follow the user across devices) with
  * localStorage as an immediate cache and fallback. The key combines the
  * dashboard path with the card's `id` option, or, when there is none, a hash
- * of its title/feed/entity so different cards do not collide. Two cards with
+ * of its title/area/radius/sources so different cards do not collide. Two cards with
  * identical configuration on one dashboard need distinct `id` values.
  */
 function prefsKey(config) {
   const path = (typeof window !== "undefined" && window.location && window.location.pathname) || "/";
   const explicit = typeof config.id === "string" ? config.id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40) : "";
-  const instance = explicit || `h${hashString(JSON.stringify([config.title || "", config.feed || "", config.entity || "", Array.isArray(config.events) ? "inline" : ""]))}`;
+  const instance = explicit || `h${hashString(JSON.stringify([config.title || "", config.area || "", config.radius_miles || "", config.sources || "", Array.isArray(config.events) ? "inline" : ""]))}`;
   return `area-events-card:prefs:v1:${encodeURIComponent(path)}:${instance}`;
 }
 
-function readLocal(key) {
+function readLocal(key, extraIds) {
   try {
     const text = window.localStorage.getItem(key);
-    return text === null ? null : normalizePrefs(JSON.parse(text));
+    return text === null ? null : normalizePrefs(JSON.parse(text), extraIds);
   } catch {
     return null;
   }
@@ -387,32 +407,19 @@ const EMPTY_PREFS = () => ({ v: 1, selected: [], custom: [] });
 
 class AreaEventsCard extends HTMLElement {
   setConfig(config) {
-    if (!config || (!config.entity && !config.feed && !Array.isArray(config.events))) {
-      throw new Error("Define 'feed', 'entity' or 'events'.");
-    }
-    if (config.script_prefix !== undefined && !/^[a-z][a-z0-9_]{0,40}$/.test(String(config.script_prefix))) {
-      throw new Error("'script_prefix' must be lowercase letters, digits and underscores.");
-    }
-    if (config.area !== undefined && (typeof config.area !== "string" || !config.area.trim())) {
-      throw new Error("'area' must be text such as 'San Diego, CA' (a city, a ZIP code or 'latitude, longitude').");
-    }
-    if (config.radius_miles !== undefined && !(Number(config.radius_miles) >= 1 && Number(config.radius_miles) <= 250)) {
-      throw new Error("'radius_miles' must be a number from 1 to 250.");
-    }
+    this._settings = readSettings(config);
     this._config = config;
     this._feed = undefined;
+    this._status = undefined;
     this._feedError = undefined;
-    this._control = { run: (this._control ? this._control.run : 0) + 1 };
-    clearTimeout(this._controlTimer);
-    wantedPlaces().delete(this);
+    this._feedErrorCode = undefined;
     this._filterOpen = false;
     this._editing = undefined;
     this._initPrefs();
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this._render();
-    if (this.isConnected) this._startFeed();
+    this._startFeed();
     this._loadRemotePrefs();
-    this._controlStart();
   }
 
   connectedCallback() {
@@ -423,45 +430,46 @@ class AreaEventsCard extends HTMLElement {
   }
 
   disconnectedCallback() {
-    clearInterval(this._feedTimer);
+    this._stopFeed();
     clearInterval(this._ageTimer);
-    clearTimeout(this._controlTimer);
-    this._feedTimer = this._ageTimer = this._controlTimer = undefined;
-    wantedPlaces().delete(this);
-    if (this._control) {
-      this._control.run += 1; // answers still in flight are ignored
-      this._control.started = false;
-    }
+    this._ageTimer = undefined;
   }
 
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
-    // Only entity mode depends on hass state; static data renders once so
-    // images are not reloaded on every state change. Themes need no re-render.
-    if (first || (this._config && this._config.entity && !this._usesFeedOrInline())) this._render();
-    this._loadRemotePrefs();
-    this._controlStart();
+    if (first) {
+      this._startFeed();
+      this._loadRemotePrefs();
+    }
   }
 
   getCardSize() {
     return 4;
   }
 
+  static getConfigElement() {
+    return document.createElement(EDITOR_TAG);
+  }
+
   static getStubConfig() {
-    return { title: "Area Events", events: [] };
+    return { title: "Area Events", radius_miles: 25 };
   }
 
   static get _internals() {
-    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, haHomeArea, parsePlace, extractServiceResponse };
+    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, readSettings, editorToConfig, configToEditor, EDITOR_SCHEMA };
   }
 
   // --- preferences ------------------------------------------------------------
 
+  _interestIds() {
+    return this._settings.interests.map((c) => c.id);
+  }
+
   _initPrefs() {
     this._prefsKey = prefsKey(this._config);
     this._prefsGeneration = (this._prefsGeneration || 0) + 1;
-    const local = readLocal(this._prefsKey);
+    const local = readLocal(this._prefsKey, this._interestIds());
     this._prefs = local || EMPTY_PREFS();
     this._hadLocalPrefs = Boolean(local);
     this._prefsDirty = false;
@@ -478,7 +486,7 @@ class AreaEventsCard extends HTMLElement {
       .then((response) => {
         if (generation !== this._prefsGeneration) return;
         const value = response && typeof response === "object" && "value" in response ? response.value : response;
-        const remote = value === null || value === undefined ? null : normalizePrefs(value);
+        const remote = value === null || value === undefined ? null : normalizePrefs(value, this._interestIds());
         this._remoteState = "ready";
         if (remote && !this._prefsDirty) {
           this._prefs = remote;
@@ -501,7 +509,7 @@ class AreaEventsCard extends HTMLElement {
   }
 
   _setPrefs(next) {
-    this._prefs = normalizePrefs(next) || EMPTY_PREFS();
+    this._prefs = normalizePrefs(next, this._interestIds()) || EMPTY_PREFS();
     this._prefsDirty = true;
     writeLocal(this._prefsKey, this._prefs);
     clearTimeout(this._saveTimer);
@@ -512,17 +520,28 @@ class AreaEventsCard extends HTMLElement {
     this._refreshFilters();
   }
 
-  // --- feed ---------------------------------------------------------------------
+  // --- events from the integration ----------------------------------------------------
 
-  _usesFeedOrInline() {
-    return Array.isArray(this._config.events) || Boolean(this._config.feed);
+  _usesInline() {
+    return Array.isArray(this._config.events);
+  }
+
+  _profileRequest() {
+    const { area, radius, sources } = this._settings;
+    return { radius_miles: radius, ...(area ? { area } : {}), ...(sources.length ? { sources } : {}) };
+  }
+
+  _stopFeed() {
+    clearTimeout(this._feedTimer);
+    this._feedTimer = undefined;
+    this._feedRun = (this._feedRun || 0) + 1; // answers still in flight are ignored
   }
 
   _startFeed() {
-    if (!this._config.feed || Array.isArray(this._config.events)) return;
-    clearInterval(this._feedTimer);
-    this._loadFeed();
-    this._feedTimer = setInterval(() => this._loadFeed(), FEED_REFRESH_MS);
+    if (!this._config || this._usesInline() || !this._hass || !this.isConnected) return;
+    this._stopFeed();
+    const run = this._feedRun;
+    this._feedTimer = setTimeout(() => this._loadFeed(run), 0);
   }
 
   _startAgeTimer() {
@@ -530,56 +549,82 @@ class AreaEventsCard extends HTMLElement {
     this._ageTimer = setInterval(() => this._updateHeader(), AGE_TICK_MS);
   }
 
-  async _loadFeed() {
-    const config = this._config;
-    let next;
+  async _loadFeed(run) {
+    let reply;
     let error;
+    let code;
     try {
-      // A unique query plus no-store keeps the browser from serving a stale feed.
-      const separator = config.feed.includes("?") ? "&" : "?";
-      const response = await fetch(`${config.feed}${separator}ts=${Date.now()}`, { cache: "no-store" });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json();
-      const events = Array.isArray(data) ? data : data && data.events;
-      if (!Array.isArray(events)) throw new Error("feed has no 'events' list");
-      next = {
-        events,
-        generatedAt: Array.isArray(data) ? undefined : data.generated_at,
-        sources: Array.isArray(data) ? undefined : data.sources,
-        location: Array.isArray(data) ? undefined : data.location,
-      };
+      const since = this._feed && this._feed.generatedAt;
+      reply = await this._hass.callWS({ type: WS_EVENTS, ...this._profileRequest(), ...(since ? { since } : {}) });
     } catch (caught) {
-      error = caught.message || String(caught);
+      error = (caught && caught.message) || String(caught);
+      code = caught && caught.code;
     }
-    if (config !== this._config) return;
-    const unchanged = next && this._feed && !this._feedError && this._feed.generatedAt === next.generatedAt &&
-      this._feed.events.length === next.events.length;
-    if (next) this._feed = next;
-    const previousError = this._feedError;
-    this._feedError = error;
-    // An identical feed leaves the tiles alone, so images are not reloaded.
-    if (unchanged && previousError === error) {
-      this._updateHeader();
-      return;
+    if (run !== this._feedRun) return;
+
+    const before = JSON.stringify([this._status, this._feedError, this._feed && this._feed.generatedAt]);
+    if (reply) {
+      const events = Array.isArray(reply.events) ? reply.events : reply.unchanged && this._feed ? this._feed.events : undefined;
+      this._status = { state: reply.state, message: reply.message, refreshing: Boolean(reply.refreshing), connected: reply.connected !== false, report: reply.report || [] };
+      this._feedError = this._feedErrorCode = undefined;
+      if (Array.isArray(events)) this._feed = { events, generatedAt: reply.generated_at, sources: reply.sources, location: reply.location };
+    } else {
+      this._feedError = error;
+      this._feedErrorCode = code;
     }
-    this._render();
+    const after = JSON.stringify([this._status, this._feedError, this._feed && this._feed.generatedAt]);
+    // Nothing new leaves the tiles alone, so images are not reloaded.
+    if (before === after && this._els) this._updateHeader();
+    else this._render();
+
+    const state = reply && reply.state;
+    const busy = reply && (state === "pending" || state === "discovering" || state === "unavailable" || reply.refreshing);
+    const delay = reply ? (busy ? POLL_BUSY_MS : POLL_READY_MS) : PERMANENT_ERRORS.has(code) ? POLL_READY_MS : POLL_RETRY_MS;
+    this._feedTimer = setTimeout(() => this._loadFeed(run), delay);
+  }
+
+  /** The place being searched, for messages. */
+  _placeLabel() {
+    return this._settings.area || "your Home Assistant home location";
   }
 
   _events() {
-    const { entity, events, feed } = this._config;
-    if (Array.isArray(events)) return events.map((event) => this._normalizeEvent(event));
-    if (feed) {
-      const now = Date.now();
-      return ((this._feed && this._feed.events) || [])
-        .map((event) => this._normalizeEvent(event))
-        .filter((event) => {
-          const last = new Date(event.end || event.start).getTime();
-          return Number.isNaN(last) || last >= now;
-        });
+    const settings = this._settings;
+    const source = this._usesInline() ? this._config.events : (this._feed && this._feed.events) || [];
+    const now = Date.now();
+    let list = source.map((event) => this._normalizeEvent(event));
+    if (!this._usesInline()) {
+      list = list.filter((event) => {
+        const last = new Date(event.end || event.start).getTime();
+        return Number.isNaN(last) || last >= now;
+      });
     }
-    const state = this._hass && this._hass.states[entity];
-    const list = state && Array.isArray(state.attributes.events) ? state.attributes.events : [];
-    return list.map((event) => this._normalizeEvent(event));
+    if (settings.days !== undefined) {
+      const limit = now + settings.days * 86400000;
+      list = list.filter((event) => {
+        const start = new Date(event.start).getTime();
+        return Number.isNaN(start) || start <= limit;
+      });
+    }
+    if (settings.exclude.length) {
+      list = list.filter((event) => {
+        const haystack = normalizeText([event.title, event.description, ...event.categories].join(" . "));
+        return !settings.exclude.some((topic) => matchesKeyword(haystack, topic));
+      });
+    }
+    if (settings.categories) {
+      const extra = [...settings.interests, ...this._prefs.custom];
+      const interestIds = new Set(settings.interests.map((c) => c.id));
+      list = list.filter((event) => [...categoriesFor(event, extra)].some((id) => settings.categories.has(id) || interestIds.has(id)));
+    }
+    const time = (event) => {
+      const start = new Date(event.start).getTime();
+      return Number.isNaN(start) ? Infinity : start;
+    };
+    if (settings.sort === "title") list.sort((a, b) => String(a.title).localeCompare(String(b.title)) || time(a) - time(b));
+    else if (settings.sort === "verified") list.sort((a, b) => Number(b.verified) - Number(a.verified) || time(a) - time(b));
+    else list.sort((a, b) => time(a) - time(b));
+    return settings.max ? list.slice(0, settings.max) : list;
   }
 
   // Accepts both the card's own event fields and the discovery feed format.
@@ -603,14 +648,9 @@ class AreaEventsCard extends HTMLElement {
     };
   }
 
-  /** Authoritative generation time: the feed's `generated_at` (or entity attribute), never the page-load time. */
+  /** Authoritative generation time: when the app last discovered events, never the page-load time. */
   _generatedAt() {
-    if (this._config.feed) return this._feed && this._feed.generatedAt;
-    if (this._config.entity && !Array.isArray(this._config.events)) {
-      const state = this._hass && this._hass.states[this._config.entity];
-      return state && state.attributes.generated_at;
-    }
-    return undefined;
+    return this._usesInline() ? undefined : this._feed && this._feed.generatedAt;
   }
 
   _formatDate(value) {
@@ -628,26 +668,45 @@ class AreaEventsCard extends HTMLElement {
     return hours < 48 ? `${hours} h ago` : `${Math.floor(hours / 24)} d ago`;
   }
 
+  /** What the viewer should know about the search, or undefined when there is nothing to say. */
   _feedNotice(count) {
-    if (!this._config.feed) return undefined;
+    if (this._usesInline()) return undefined;
     const updated = this._feed && this._feed.generatedAt ? this._formatDate(this._feed.generatedAt) : undefined;
+    const status = this._status || {};
+    const notes = [];
     if (this._feedError) {
-      return this._feed
-        ? `Could not refresh events (${this._feedError}). Showing stale data${updated ? ` from ${updated}` : ""}.`
-        : `Could not load events feed: ${this._feedError}`;
+      notes.push(this._feed ? `Could not refresh events (${this._feedError}). Showing earlier data${updated ? ` from ${updated}` : ""}.` : `Events are not available: ${this._feedError}`);
+    } else if (!this._status) {
+      notes.push("Loading events...");
+    } else if (status.state === "unavailable") {
+      notes.push(`The Area Events app is not reachable (${status.message || "no answer"}).${this._feed ? ` Showing earlier data${updated ? ` from ${updated}` : ""}.` : ""}`);
+    } else if (status.state === "pending" || status.state === "discovering") {
+      notes.push(`Finding events near ${this._placeLabel()}. The first search can take a few minutes.`);
+    } else if (status.state === "error") {
+      notes.push(`Events could not be found for ${this._placeLabel()}: ${status.message || "discovery failed"}`);
+    } else if (status.message) {
+      notes.push(`Could not refresh events (${status.message}). Showing data${updated ? ` from ${updated}` : ""}.`);
+    } else if (count === 0) {
+      notes.push("No upcoming events match.");
     }
-    if (!this._feed) return "Loading events...";
-    return count === 0 ? "No upcoming events in the feed." : undefined;
+    for (const item of status.report || []) {
+      if (item.status === "unsupported") notes.push(`Source not supported: ${item.url} (${item.reason}).`);
+    }
+    return notes.join(" ") || undefined;
   }
 
   // --- rendering ----------------------------------------------------------------
 
   _categories() {
-    return [...DEFAULT_CATEGORIES.filter((c) => c.id !== OTHER_ID), ...this._prefs.custom, DEFAULT_CATEGORIES.at(-1)];
+    const wanted = this._settings.categories;
+    const builtin = DEFAULT_CATEGORIES.filter((c) => c.id !== OTHER_ID && (!wanted || wanted.has(c.id)));
+    const other = !wanted || wanted.has(OTHER_ID) ? [DEFAULT_CATEGORIES.at(-1)] : [];
+    return [...builtin, ...this._settings.interests, ...this._prefs.custom, ...other];
   }
 
   _computeMatches() {
-    for (const tile of this._tiles || []) tile.matches = categoriesFor(tile.event, this._prefs.custom);
+    const extra = [...this._settings.interests, ...this._prefs.custom];
+    for (const tile of this._tiles || []) tile.matches = categoriesFor(tile.event, extra);
   }
 
   _render() {
@@ -657,7 +716,7 @@ class AreaEventsCard extends HTMLElement {
     root.replaceChildren();
 
     const style = document.createElement("style");
-    style.textContent = STYLES;
+    style.textContent = STYLES + (this._settings.columns ? `\n  .grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, max(160px, (100% - ${(this._settings.columns - 1) * 8}px) / ${this._settings.columns})), 1fr)); }` : "");
     const card = document.createElement("ha-card");
     const wrap = this._el("div", "wrap");
 
@@ -673,11 +732,12 @@ class AreaEventsCard extends HTMLElement {
     this._els.filters = this._el("div", "filters");
     wrap.append(this._els.filters);
 
+    const extra = [...this._settings.interests, ...this._prefs.custom];
     this._tiles = [];
     if (events.length > 0) {
       const grid = this._el("div", "grid");
       for (const event of events) {
-        const tile = { event, el: this._renderEvent(event), matches: categoriesFor(event, this._prefs.custom) };
+        const tile = { event, el: this._renderEvent(event), matches: categoriesFor(event, extra) };
         this._tiles.push(tile);
         grid.append(tile.el);
       }
@@ -685,11 +745,11 @@ class AreaEventsCard extends HTMLElement {
       this._els.noMatch = this._el("div", "no-match", "No events match the selected categories.");
       this._els.noMatch.hidden = true;
       wrap.append(this._els.noMatch);
-    } else if (!this._config.feed) {
+    } else if (this._usesInline()) {
       wrap.append(this._el("div", "empty", "No events to show."));
     }
 
-    const updated = this._generatedAt() ? ` · feed updated ${this._formatDate(this._generatedAt())}` : "";
+    const updated = this._generatedAt() ? ` · events updated ${this._formatDate(this._generatedAt())}` : "";
     wrap.append(this._el("div", "footer", `${AREA_EVENTS_CARD_BUILD}${updated}`));
     card.append(wrap);
     root.append(style, card);
@@ -698,9 +758,7 @@ class AreaEventsCard extends HTMLElement {
 
   _updateNotice(count) {
     if (!this._els || !this._els.notice) return;
-    const control = this._control || {};
-    const text = [control.error ? `Location could not be applied: ${control.error}` : control.message,
-      this._feedNotice(count === undefined ? (this._tiles || []).length : count)].filter(Boolean).join(" ");
+    const text = this._feedNotice(count === undefined ? (this._tiles || []).length : count) || "";
     this._els.notice.textContent = text;
     this._els.notice.hidden = !text;
   }
@@ -733,11 +791,15 @@ class AreaEventsCard extends HTMLElement {
       meta.append(updated);
       if (age > FEED_STALE_MS) meta.append(this._el("span", "badge", "Stale"));
     }
-    if (this._feedError) meta.append(this._el("span", "badge error", this._feed ? "Update failed" : "Feed unavailable"));
+    if (this._feedError || (this._status && this._status.state === "unavailable")) {
+      meta.append(this._el("span", "badge error", this._feed ? "Update failed" : "Events unavailable"));
+    }
+    const place = this._feed && this._feed.location && this._feed.location.display_name;
+    if (place) meta.append(this._el("span", "place", `${place} · ${this._settings.radius} mi`));
 
     const total = this._tiles.length;
     const shown = this._visibleCount();
-    if (this._config.feed ? this._feed : true) {
+    if (this._usesInline() || this._feed) {
       meta.append(this._el("span", "counts", shown === total ? `${total} event${total === 1 ? "" : "s"}` : `${shown} of ${total} events`));
     }
     const sources = this._feed && this._feed.sources && typeof this._feed.sources === "object" ? Object.values(this._feed.sources) : [];
@@ -751,7 +813,7 @@ class AreaEventsCard extends HTMLElement {
 
   _refreshFilters() {
     if (!this._els) return;
-    if (!this._tiles || this._tiles.length === 0) {
+    if (!this._tiles || this._tiles.length === 0 || !this._settings.showFilters) {
       if (this._els.filters) this._els.filters.replaceChildren();
       this._updateHeader();
       return;
@@ -767,180 +829,6 @@ class AreaEventsCard extends HTMLElement {
     if (pressed !== undefined) button.setAttribute("aria-pressed", String(pressed));
     button.addEventListener("click", onClick);
     return button;
-  }
-
-  // --- location control from YAML ---------------------------------------------------
-
-  _canControl() {
-    return Boolean(this._config.location_control);
-  }
-
-  async _controlCall(name, data = {}) {
-    if (!this._hass || typeof this._hass.callWS !== "function") throw new Error("Home Assistant is not connected.");
-    const script = `${this._config.script_prefix || "area_events"}_${name}`;
-    let result;
-    try {
-      result = await this._hass.callWS({ type: "call_service", domain: "script", service: script, service_data: data, return_response: true });
-    } catch (error) {
-      throw new Error(`Home Assistant could not run script.${script} (${(error && error.message) || error}).`);
-    }
-    return extractServiceResponse(result);
-  }
-
-  _setControl(patch) {
-    this._control = { ...this._control, ...patch };
-    this._updateNotice();
-  }
-
-  _defaultCountry() {
-    const country = this._config.country || (this._hass && this._hass.config && this._hass.config.country);
-    return typeof country === "string" && /^[A-Za-z]{2}$/.test(country) ? country.toUpperCase() : undefined;
-  }
-
-  /** The place this card wants, from `area` (or the Home Assistant home) and `radius_miles`: {spec, key} or {error}. */
-  _desiredPlace() {
-    const radius = Number(this._config.radius_miles) || 25;
-    let spec;
-    if (this._config.area) {
-      const parsed = parsePlace(this._config.area, this._defaultCountry(), radius);
-      if (parsed.error) return { error: parsed.error };
-      spec = { ...parsed.spec, name: this._config.area.trim().slice(0, 60) };
-    } else {
-      const home = haHomeArea(this._hass);
-      if (!home) return { error: "No area is set in the card and Home Assistant has no home location." };
-      const round = (value) => Math.round(value * 10000) / 10000;
-      spec = { latitude: round(home.latitude), longitude: round(home.longitude), radius_miles: radius, name: home.name, ...(home.timezone ? { timezone: home.timezone } : {}) };
-    }
-    const where = spec.latitude !== undefined ? `${spec.latitude.toFixed(3)},${spec.longitude.toFixed(3)}` : (spec.zip || spec.query).toLowerCase();
-    return { spec, key: `${where}|${radius}` };
-  }
-
-  /** Does the server's active place (or the change it is already running) match what this card wants? */
-  _sameAsServer(spec, status) {
-    const same = (place) => {
-      if (!place || Math.abs(Number(place.radius_miles) - spec.radius_miles) > 0.05) return false;
-      if (spec.latitude !== undefined) {
-        return Math.abs(Number(place.latitude) - spec.latitude) < 0.002 && Math.abs(Number(place.longitude) - spec.longitude) < 0.002;
-      }
-      return typeof place.name === "string" && place.name.trim().toLowerCase() === (spec.name || "").toLowerCase();
-    };
-    const change = status.change || {};
-    const pending = change.state === "queued" || change.state === "running";
-    return same(status.active && status.active.location) || (pending && same(change.requested));
-  }
-
-  /** Once per page load: make sure the server works on this card's place, switching it only if it does not. */
-  async _controlStart() {
-    if (!this._canControl() || !this._hass || this._control.started) return;
-    this._control.started = true;
-    const run = this._control.run;
-    try {
-      const desired = this._desiredPlace();
-      if (desired.error) throw new Error(desired.error);
-      const wants = wantedPlaces();
-      const rival = [...wants].find(([card, key]) => card !== this && key !== desired.key);
-      wants.set(this, desired.key);
-      if (rival) {
-        const conflict = "Another Area Events card on this page wants a different place. Only one place can be active, so this card does not change it.";
-        this._setControl({ error: conflict });
-        rival[0]._setControl({ error: conflict });
-        return;
-      }
-      // Identical requests from other cards on this page (the editor's preview, a second dashboard card) go first.
-      const applying = applyingPlaces();
-      const earlier = applying.get(desired.key);
-      let release;
-      const mine = new Promise((resolve) => { release = resolve; });
-      applying.set(desired.key, mine);
-      try {
-        if (earlier) await earlier;
-        if (run !== this._control.run) return;
-        let { status, content } = await this._controlCall("location");
-        if (run !== this._control.run) return;
-        if (status !== 200) throw new Error(apiMessage(content, status));
-        const state = content.change && content.change.state;
-        const pending = state === "queued" || state === "running";
-        if (this._sameAsServer(desired.spec, content) && !pending) {
-          // Already the active place. The change may have finished while no card was watching (editing the YAML
-          // reloads the card), leaving Home Assistant's copy of the feed behind: fetch it now.
-          if (!this._feed) await this._loadFeed();
-          if (run === this._control.run && !sameFeedPlace(this._feed && this._feed.location, content.feed)) await this._controlFetchResults(run, content.feed);
-          return;
-        }
-        if (!this._sameAsServer(desired.spec, content)) {
-          this._setControl({ message: `Switching discovery to ${desired.spec.name}...` });
-          let reply;
-          try {
-            reply = await this._controlCall("set_location", { spec: desired.spec });
-          } catch (error) {
-            if (!error.noResponse) throw error;
-            // An empty reply proves nothing either way: ask the server what it is doing before deciding.
-            reply = await this._controlCall("location");
-            if (reply.status !== 200 || !this._sameAsServer(desired.spec, reply.content)) {
-              throw new Error("The Home Assistant script returned no response and the server is not switching to this place (the script may have been busy; reload to retry).");
-            }
-          }
-          if (run !== this._control.run) return;
-          // 202 queued, 200 already this place, 409 busy: with an identical change underway the server says so via GET.
-          if (![200, 202, 409].includes(reply.status)) throw new Error(apiMessage(reply.content, reply.status));
-          if (reply.status === 409) {
-            const check = await this._controlCall("location");
-            if (!this._sameAsServer(desired.spec, check.content)) throw new Error(`${apiMessage(reply.content, 409)} (a different change is running; reload to retry)`);
-          }
-        }
-      } finally {
-        release();
-        if (applying.get(desired.key) === mine) applying.delete(desired.key);
-      }
-      this._controlWatch(run, desired.spec);
-    } catch (error) {
-      if (run === this._control.run) this._setControl({ error: error.message, message: undefined });
-    }
-  }
-
-  /** While a change runs, keep checking; when it succeeds fetch the new feed, when it fails say why. */
-  async _controlWatch(run, spec) {
-    clearTimeout(this._controlTimer);
-    try {
-      const { status, content } = await this._controlCall("location");
-      if (run !== this._control.run) return;
-      if (status !== 200) throw new Error(apiMessage(content, status));
-      const change = content.change || {};
-      const mine = change.requested && (this._sameAsServer(spec, { change, active: undefined }) || change.requested.name === spec.name);
-      if (mine && (change.state === "queued" || change.state === "running")) {
-        this._control.waitStarted = this._control.waitStarted || Date.now();
-        if (Date.now() - this._control.waitStarted > CONTROL_MAX_WAIT_MS) throw new Error("Discovery is taking much longer than expected.");
-        this._setControl({ message: `Discovery for ${spec.name} is ${change.state === "queued" ? "waiting to start" : "running"}; the current events stay until it succeeds.` });
-        this._controlTimer = setTimeout(() => this._controlWatch(run, spec), CONTROL_POLL_MS);
-      } else if (mine && change.state === "failed") {
-        throw new Error(`${change.error || "discovery failed"} (the events shown are still for ${(content.feed && content.feed.location) || "the previous place"}).`);
-      } else if (mine && change.state === "succeeded") {
-        if (!this._sameAsServer(spec, { active: content.active })) {
-          throw new Error(`Discovery finished but the server's active place is not ${spec.name}.`);
-        }
-        this._setControl({ message: undefined, error: undefined });
-        await this._controlFetchResults(run, content.feed);
-      } else {
-        this._setControl({ message: undefined, error: undefined });
-      }
-    } catch (error) {
-      if (run === this._control.run) this._setControl({ error: error.message, message: undefined });
-    }
-  }
-
-  /** Copy the server's new feed to Home Assistant now (the existing sync script) and reload it. */
-  async _controlFetchResults(run, served) {
-    try {
-      const { status, content } = await this._controlCall("sync_now");
-      if (run !== this._control.run) return;
-      if (status < 200 || status >= 300) throw new Error(apiMessage(content, status));
-      await this._loadFeed();
-      if (run === this._control.run && !sameFeedPlace(this._feed && this._feed.location, served)) {
-        this._setControl({ error: `The server has the new place but Home Assistant is still serving a different feed${served && served.location ? ` (server: ${served.location})` : ""}.` });
-      }
-    } catch (error) {
-      if (run === this._control.run) this._setControl({ message: `The new place is ready; its events arrive with the next Home Assistant sync (${error.message}).` });
-    }
   }
 
   _renderFilterUI() {
@@ -1082,7 +970,7 @@ class AreaEventsCard extends HTMLElement {
 
     const image = this._el("div", "image");
     const placeholder = () => image.prepend(this._icon("mdi:calendar-star"));
-    if (event.image) {
+    if (event.image && this._settings.showImages) {
       const img = document.createElement("img");
       img.src = event.image;
       img.alt = "";
@@ -1148,15 +1036,126 @@ class AreaEventsCard extends HTMLElement {
   }
 }
 
+/*
+ * Visual editor. `ha-form` is Home Assistant's own form component, so the editor follows the theme and the
+ * user's language like every other card editor. List settings are edited one item per line.
+ */
+const EDITOR_TAG = "area-events-card-editor";
+const LIST_KEYS = ["sources", "interests", "exclude"];
+const EDITOR_SCHEMA = [
+  { name: "title", selector: { text: {} } },
+  {
+    type: "grid", name: "", schema: [
+      { name: "area", selector: { text: {} } },
+      { name: "radius_miles", selector: { number: { min: 1, max: 250, mode: "box", unit_of_measurement: "mi" } } },
+    ],
+  },
+  { name: "sources", selector: { text: { multiline: true } } },
+  {
+    name: "categories",
+    selector: { select: { multiple: true, mode: "dropdown", options: DEFAULT_CATEGORIES.map((c) => ({ value: c.id, label: c.name })) } },
+  },
+  { name: "interests", selector: { text: { multiline: true } } },
+  { name: "exclude", selector: { text: { multiline: true } } },
+  {
+    type: "grid", name: "", schema: [
+      { name: "days", selector: { number: { min: 1, max: 365, mode: "box", unit_of_measurement: "days" } } },
+      { name: "max_events", selector: { number: { min: 1, max: 200, mode: "box" } } },
+      { name: "sort", selector: { select: { mode: "dropdown", options: [{ value: "date", label: "Date" }, { value: "title", label: "Title" }, { value: "verified", label: "Verified first" }] } } },
+    ],
+  },
+  {
+    type: "expandable", name: "", title: "Layout", schema: [
+      { name: "columns", selector: { number: { min: 1, max: 4, mode: "box" } } },
+      { name: "show_images", selector: { boolean: {} } },
+      { name: "show_filters", selector: { boolean: {} } },
+    ],
+  },
+];
+const EDITOR_LABELS = {
+  title: "Title", area: "Area (city, ZIP code or latitude, longitude)", radius_miles: "Search radius", sources: "Source websites (one per line)",
+  categories: "Only these categories", interests: "Interests (one per line: Name: keyword, keyword)", exclude: "Excluded topics (one per line)",
+  days: "Only the next days", max_events: "Maximum events", sort: "Sort by", columns: "Columns (at most)", show_images: "Show images", show_filters: "Show filters",
+};
+const EDITOR_HELP = {
+  area: "Leave empty to use the Home Assistant home location.",
+  sources: "Only websites with an adapter work; the card says which ones do not.",
+};
+
+/** Card configuration -> the values ha-form shows (lists as one item per line). */
+function configToEditor(config) {
+  const data = { ...config };
+  for (const key of LIST_KEYS) {
+    if (Array.isArray(config[key])) {
+      data[key] = config[key].map((item) => (typeof item === "string" ? item : `${item.name}: ${(item.keywords || []).join(", ")}`)).join("\n");
+    }
+  }
+  return data;
+}
+
+/** ha-form values -> a clean card configuration (empty settings are removed, lists become arrays). */
+function editorToConfig(previous, data) {
+  const config = { ...previous, ...data };
+  for (const key of LIST_KEYS) {
+    if (typeof config[key] === "string") config[key] = config[key].split("\n").map((line) => line.trim()).filter(Boolean);
+  }
+  for (const key of Object.keys(config)) {
+    const value = config[key];
+    if (value === "" || value === undefined || value === null || (Array.isArray(value) && value.length === 0)) delete config[key];
+  }
+  config.type = previous.type;
+  return config;
+}
+
+class AreaEventsCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = config;
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (this._form) this._form.hass = hass;
+  }
+
+  _render() {
+    if (!this._form) {
+      this._form = document.createElement("ha-form");
+      this._form.computeLabel = (item) => EDITOR_LABELS[item.name] || item.name;
+      this._form.computeHelper = (item) => EDITOR_HELP[item.name];
+      this._form.schema = EDITOR_SCHEMA;
+      this._form.addEventListener("value-changed", (event) => this._changed(event));
+      this.append(this._form);
+    }
+    this._form.hass = this._hass;
+    this._form.data = configToEditor(this._config || {});
+  }
+
+  _changed(event) {
+    event.stopPropagation();
+    const config = editorToConfig(this._config || {}, event.detail.value);
+    this._config = config;
+    // Typing fires once per key; the card (and the app behind it) should only see the finished value.
+    clearTimeout(this._emit);
+    this._emit = setTimeout(() => {
+      this.dispatchEvent(new CustomEvent("config-changed", { detail: { config }, bubbles: true, composed: true }));
+    }, EDITOR_DEBOUNCE_MS);
+  }
+}
+
 if (!customElements.get(CARD_TAG)) {
   customElements.define(CARD_TAG, AreaEventsCard);
+}
+if (!customElements.get(EDITOR_TAG)) {
+  customElements.define(EDITOR_TAG, AreaEventsCardEditor);
 }
 
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: `custom:${CARD_TAG}`,
   name: "Area Events Card",
-  description: "Local events for your area.",
+  description: "Local events for your area, found by the Area Events integration.",
+  preview: false,
 });
 
 console.info(
