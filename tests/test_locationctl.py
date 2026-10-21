@@ -230,6 +230,18 @@ class Rejections(Base):
         self.clock.advance(301)
         self.assertEqual(self.controller.request_change(SAN_DIEGO)[0], 202)
 
+    def test_identical_requests_are_idempotent_and_different_ones_conflict(self):
+        first = self.controller.request_change(AUSTIN)
+        again = self.controller.request_change({**AUSTIN, "name": "Austin again"})  # e.g. a second card or the editor preview
+        self.assertEqual((first[0], again[0]), (202, 202))
+        self.assertEqual(again[1]["change"]["requested_at"], first[1]["change"]["requested_at"])
+        with self.assertRaises(ApiError) as raised:
+            self.controller.request_change(SAN_DIEGO)
+        self.assertEqual(raised.exception.status, 409)
+        self.controller.run_pending()
+        # repeated after it succeeded: still the active place, not "changed a moment ago"
+        self.assertEqual(self.controller.request_change(AUSTIN)[1]["change"]["state"], "unchanged")
+
     def test_the_hourly_geocoding_budget_is_enforced(self):
         controller = self.new_controller(limits={"geocodes_per_hour": 1, "min_change_interval_seconds": 0})
         controller.request_change({"query": "Austin, TX", "radius_miles": 25})

@@ -328,6 +328,22 @@ function wantedPlaces() {
   return (globalThis.__areaEventsWantedPlaces = globalThis.__areaEventsWantedPlaces || new Map());
 }
 
+/** Requests being made by cards on this page (place key -> promise settled when that card's request is in), so identical cards make one. */
+function applyingPlaces() {
+  return (globalThis.__areaEventsApplying = globalThis.__areaEventsApplying || new Map());
+}
+
+/** Is the feed a card shows the one the server serves? By position when both have one, else by label. */
+function sameFeedPlace(shown, served) {
+  if (!shown || !served) return true; // nothing to compare against
+  const near = (a, b) => Math.abs(Number(a) - Number(b)) < 0.002;
+  if ([shown.latitude, shown.longitude, served.latitude, served.longitude].every((v) => v !== undefined && v !== null && !Number.isNaN(Number(v)))) {
+    return near(shown.latitude, served.latitude) && near(shown.longitude, served.longitude);
+  }
+  const label = (place) => String(place.display_name || place.name || place.location || "").trim().toLowerCase();
+  return !label(shown) || !label(served) || label(shown) === label(served);
+}
+
 function hashString(text) {
   let hash = 5381;
   for (let i = 0; i < text.length; i++) hash = ((hash << 5) + hash + text.charCodeAt(i)) >>> 0;
@@ -830,30 +846,51 @@ class AreaEventsCard extends HTMLElement {
         rival[0]._setControl({ error: conflict });
         return;
       }
-      let { status, content } = await this._controlCall("location");
-      if (run !== this._control.run) return;
-      if (status !== 200) throw new Error(apiMessage(content, status));
-      const state = content.change && content.change.state;
-      if (this._sameAsServer(desired.spec, content) && state !== "queued" && state !== "running") {
-        // Already the active place. The change may have finished while no card was watching (editing the YAML
-        // reloads the card), leaving Home Assistant's copy of the feed behind: fetch it now.
-        if (!this._feed) await this._loadFeed();
-        const shown = this._feed && this._feed.location && (this._feed.location.display_name || this._feed.location.name);
-        const served = content.feed && content.feed.location;
-        if (run === this._control.run && shown && served && String(shown).toLowerCase() !== String(served).toLowerCase()) await this._controlFetchResults(run);
-        return;
-      }
-      if (!this._sameAsServer(desired.spec, content)) {
-        this._setControl({ message: `Switching discovery to ${desired.spec.name}...` });
-        try {
-          ({ status, content } = await this._controlCall("set_location", { spec: desired.spec }));
-          if (run !== this._control.run) return;
-          if (status !== 200 && status !== 202 && status !== 409) throw new Error(apiMessage(content, status));
-        } catch (error) {
-          // The script runs one at a time: a call made while another (the same dashboard's other card, or the card
-          // editor's preview) is running comes back empty. That request is the one switching; just watch it.
-          if (!error.noResponse) throw error;
+      // Identical requests from other cards on this page (the editor's preview, a second dashboard card) go first.
+      const applying = applyingPlaces();
+      const earlier = applying.get(desired.key);
+      let release;
+      const mine = new Promise((resolve) => { release = resolve; });
+      applying.set(desired.key, mine);
+      try {
+        if (earlier) await earlier;
+        if (run !== this._control.run) return;
+        let { status, content } = await this._controlCall("location");
+        if (run !== this._control.run) return;
+        if (status !== 200) throw new Error(apiMessage(content, status));
+        const state = content.change && content.change.state;
+        const pending = state === "queued" || state === "running";
+        if (this._sameAsServer(desired.spec, content) && !pending) {
+          // Already the active place. The change may have finished while no card was watching (editing the YAML
+          // reloads the card), leaving Home Assistant's copy of the feed behind: fetch it now.
+          if (!this._feed) await this._loadFeed();
+          if (run === this._control.run && !sameFeedPlace(this._feed && this._feed.location, content.feed)) await this._controlFetchResults(run, content.feed);
+          return;
         }
+        if (!this._sameAsServer(desired.spec, content)) {
+          this._setControl({ message: `Switching discovery to ${desired.spec.name}...` });
+          let reply;
+          try {
+            reply = await this._controlCall("set_location", { spec: desired.spec });
+          } catch (error) {
+            if (!error.noResponse) throw error;
+            // An empty reply proves nothing either way: ask the server what it is doing before deciding.
+            reply = await this._controlCall("location");
+            if (reply.status !== 200 || !this._sameAsServer(desired.spec, reply.content)) {
+              throw new Error("The Home Assistant script returned no response and the server is not switching to this place (the script may have been busy; reload to retry).");
+            }
+          }
+          if (run !== this._control.run) return;
+          // 202 queued, 200 already this place, 409 busy: with an identical change underway the server says so via GET.
+          if (![200, 202, 409].includes(reply.status)) throw new Error(apiMessage(reply.content, reply.status));
+          if (reply.status === 409) {
+            const check = await this._controlCall("location");
+            if (!this._sameAsServer(desired.spec, check.content)) throw new Error(`${apiMessage(reply.content, 409)} (a different change is running; reload to retry)`);
+          }
+        }
+      } finally {
+        release();
+        if (applying.get(desired.key) === mine) applying.delete(desired.key);
       }
       this._controlWatch(run, desired.spec);
     } catch (error) {
@@ -878,8 +915,11 @@ class AreaEventsCard extends HTMLElement {
       } else if (mine && change.state === "failed") {
         throw new Error(`${change.error || "discovery failed"} (the events shown are still for ${(content.feed && content.feed.location) || "the previous place"}).`);
       } else if (mine && change.state === "succeeded") {
+        if (!this._sameAsServer(spec, { active: content.active })) {
+          throw new Error(`Discovery finished but the server's active place is not ${spec.name}.`);
+        }
         this._setControl({ message: undefined, error: undefined });
-        await this._controlFetchResults(run);
+        await this._controlFetchResults(run, content.feed);
       } else {
         this._setControl({ message: undefined, error: undefined });
       }
@@ -889,12 +929,15 @@ class AreaEventsCard extends HTMLElement {
   }
 
   /** Copy the server's new feed to Home Assistant now (the existing sync script) and reload it. */
-  async _controlFetchResults(run) {
+  async _controlFetchResults(run, served) {
     try {
       const { status, content } = await this._controlCall("sync_now");
       if (run !== this._control.run) return;
       if (status < 200 || status >= 300) throw new Error(apiMessage(content, status));
       await this._loadFeed();
+      if (run === this._control.run && !sameFeedPlace(this._feed && this._feed.location, served)) {
+        this._setControl({ error: `The server has the new place but Home Assistant is still serving a different feed${served && served.location ? ` (server: ${served.location})` : ""}.` });
+      }
     } catch (error) {
       if (run === this._control.run) this._setControl({ message: `The new place is ready; its events arrive with the next Home Assistant sync (${error.message}).` });
     }

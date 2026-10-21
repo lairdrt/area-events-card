@@ -165,20 +165,24 @@ class LocationController:
         raw, name = self._validate(body)
         with self._lock:
             state = self._state()
-            if state.get("state") in ("queued", "running"):
-                raise ApiError(409, "busy", "a location change is already in progress")
-            wait = self.limits["min_change_interval_seconds"] - (self.clock() - state.get("requested_ts", 0))
-            if state.get("requested_ts") and wait > 0:
-                raise ApiError(429, "change_rate", "the location was changed a moment ago", {"Retry-After": str(int(wait) + 1)})
+            busy = state.get("state") in ("queued", "running")
             resolved = self._resolve(raw)
             request = {k: resolved[k] for k in ("latitude", "longitude", "radius_miles", "country", "region", "timezone") if resolved.get(k) is not None}
             request["name"] = name or resolved["display_name"]
+            if busy:
+                # The same request repeated (several cards, an editor preview) joins the change underway; a different one conflicts.
+                if state.get("requested") and self._same_place(state["requested"], request):
+                    return 202, {"change": {k: v for k, v in state.items() if k != "requested_ts"}}
+                raise ApiError(409, "busy", "a location change is already in progress")
             current = effective_config(self.config_loader(), self.data_dir).get("location")
             try:
                 if current and self._same_place(resolve_location(current, None, self._path(GEOCODE_CACHE), self.providers), request):
                     return 200, {"change": {"state": "unchanged", "requested": request}}
             except LocationError:
                 pass  # the current place cannot be resolved offline: treat the request as a change
+            wait = self.limits["min_change_interval_seconds"] - (self.clock() - state.get("requested_ts", 0))
+            if state.get("requested_ts") and wait > 0:
+                raise ApiError(429, "change_rate", "the location was changed a moment ago", {"Retry-After": str(int(wait) + 1)})
             now = self.clock()
             self._write_state({"state": "queued", "requested": request, "requested_at": _iso(now), "requested_ts": now})
             self._wake.set()

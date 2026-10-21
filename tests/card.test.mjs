@@ -406,7 +406,7 @@ const HOME = { latitude: 30.267153, longitude: -97.743061, time_zone: "America/C
 /** A stand-in for Home Assistant plus the discovery server's /api/v1/location, reached only through scripts. */
 function createServer() {
   const server = { calls: [], wsCalls: [], change: { state: "idle" }, rejectSet: undefined, syncFails: false,
-    active: { name: "San Diego, CA", latitude: 32.7157, longitude: -117.1611, radius_miles: 25 }, feedLocation: "San Diego, CA" };
+    active: { name: "San Diego, CA", latitude: 32.7157, longitude: -117.1611, radius_miles: 25 }, feedLocation: "San Diego, CA", haFeed: "San Diego, CA" };
   const handlers = {
     location: () => ({ status: 200, content: { active: { source: "configuration", location: server.active }, feed: { location: server.feedLocation }, change: server.change } }),
     set_location: ({ spec }) => {
@@ -416,7 +416,7 @@ function createServer() {
       server.change = { state: "queued", requested: spec };
       return { status: 202, content: { change: server.change } };
     },
-    sync_now: () => (server.syncFails ? { status: 500, content: "sync failed" } : { status: 200, content: "published" }),
+    sync_now: () => { if (server.syncFails) return { status: 500, content: "sync failed" }; if (!server.syncStale) server.haFeed = server.feedLocation; return { status: 200, content: "published" }; },
   };
   server.hass = (config = HOME) => ({
     states: {}, config: { country: "US", ...config },
@@ -439,7 +439,7 @@ const open = [];
 async function makeControlled(config, server, hass, samePage = false) {
   if (!samePage) delete globalThis.__areaEventsWantedPlaces; // each card is on its own page unless a test says otherwise
   let feedLoads = 0;
-  globalThis.fetch = async () => { feedLoads++; return { ok: true, json: async () => makeFeed({ location: { display_name: "San Diego, CA", latitude: 32.7157, longitude: -117.1611, radius_miles: 25 } }) }; };
+  globalThis.fetch = async () => { feedLoads++; return { ok: true, json: async () => makeFeed({ location: { display_name: server.haFeed } }) }; };
   const card = new CardClass();
   open.push(card);
   card.setConfig({ feed: "/f.json", location_control: true, ...config });
@@ -496,6 +496,8 @@ test("a different area is applied once, the old events stay, and the new feed is
   await watchOnce(card, server.setSpec());
   assert.match(noticeText(card), /is running/);
   const loads = card.feedLoads();
+  server.active = { name: "Austin, TX", latitude: 30.2649, longitude: -97.7474, radius_miles: 30 };
+  server.feedLocation = "Austin, TX";
   server.change = { ...server.change, state: "succeeded" };
   await watchOnce(card, server.setSpec());
   assert.equal(server.count("sync_now"), 1); // the existing sync script copies the new feed to Home Assistant now
@@ -512,6 +514,7 @@ test("a card reloaded after the server already switched fetches the stale Home A
   server.feedLocation = "Austin, TX";
   server.change = { state: "succeeded", requested: { ...server.active } };
   const card = await makeControlled({ area: "Austin, TX" }, server);
+  assert.equal(server.haFeed, "Austin, TX");
   assert.equal(server.count("set_location"), 0);
   assert.equal(server.count("sync_now"), 1);
   assert.equal(card.feedLoads(), 2); // initial load, then the reload after the sync
@@ -531,6 +534,37 @@ test("a set_location call that returns no response (script already running) is w
   const card = await makeControlled({ area: "Austin, TX" }, server, hass);
   assert.doesNotMatch(noticeText(card), /returned no response|could not be applied/);
   assert.match(noticeText(card), /Discovery for Austin, TX is waiting to start/);
+});
+
+test("identical cards (dashboard card and editor preview) make one set_location request", async () => {
+  const server = createServer();
+  const [a, b] = await Promise.all([
+    makeControlled({ area: "Austin, TX", title: "A" }, server, undefined, true),
+    makeControlled({ area: "Austin, TX", title: "B" }, server, undefined, true),
+  ]);
+  assert.equal(server.count("set_location"), 1);
+  for (const card of [a, b]) assert.match(noticeText(card), /Discovery for Austin, TX is waiting to start/);
+});
+
+test("an empty script response is not taken as proof of a change", async () => {
+  const server = createServer();
+  const hass = server.hass();
+  const callWS = hass.callWS;
+  hass.callWS = async (message) => (message.service === "area_events_set_location" ? { context: {}, response: null } : callWS(message));
+  const card = await makeControlled({ area: "Austin, TX" }, server, hass); // the server shows no change under way
+  assert.match(noticeText(card), /returned no response and the server is not switching to this place/);
+});
+
+test("success needs the feed Home Assistant serves to match the server's", async () => {
+  const server = createServer();
+  const card = await makeControlled({ area: "Austin, TX" }, server);
+  server.active = { name: "Austin, TX", latitude: 30.2649, longitude: -97.7474, radius_miles: 25 };
+  server.feedLocation = "Austin, TX";
+  server.change = { state: "succeeded", requested: { ...server.active } };
+  server.syncStale = true; // the sync script succeeds but the HA copy still differs from what the server serves
+  await watchOnce(card, server.setSpec());
+  assert.equal(server.count("sync_now"), 1);
+  assert.match(noticeText(card), /Home Assistant is still serving a different feed/);
 });
 
 test("a different radius counts as a different place", async () => {
