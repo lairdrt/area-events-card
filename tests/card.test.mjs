@@ -26,7 +26,8 @@ globalThis.document = {
   createElement: (t) => { if (t === "img") created.img++; return new El(t); },
   createTextNode: (text) => ({ text }),
 };
-globalThis.customElements = { get: () => undefined, define: (name, c) => { if (name === "area-events-card") CardClass = c; } };
+// <home-assistant> counts as defined: the card registers itself only after the frontend has started (see "Registration" in the card)
+globalThis.customElements = { get: (name) => (name === "home-assistant" ? class {} : undefined), define: (name, c) => { if (name === "area-events-card") CardClass = c; }, whenDefined: () => new Promise(() => {}) };
 globalThis.window = { location: { pathname: "/lovelace/events" }, localStorage: new Storage() };
 await import("../src/area-events-card.js");
 const { categoriesFor, normalizePrefs, prefsKey, readSettings, assertEditable, EDITOR_SCHEMA, ART, ART_LABELS, artFor } = CardClass._internals;
@@ -968,40 +969,99 @@ test("a card registered first by an older Area Events resource is reported, with
 
 // --- runtime reliability: card registration and optional-website notices ------------------------------------------
 
-test("the card module is one self-contained script that defines its element during evaluation and records its load", async () => {
-  const { readFileSync } = await import("node:fs");
-  const source = readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
-  assert.doesNotMatch(source, /^\s*(import|export)\s/m, "no imports or exports: nothing to fetch or link between the request and customElements.define");
-  assert.doesNotMatch(source, /\bimport\s*\(|^\s*await\s/m, "no dynamic import or top-level await before the element is defined");
-
-  const saved = { get: customElements.get, define: customElements.define, cards: window.customCards, marker: globalThis.__AREA_EVENTS_CARD_LOAD__ };
-  const seen = { defines: 0 };
-  let defined;
-  customElements.get = (name) => (name === "area-events-card" ? defined : undefined);
-  customElements.define = (name, cls) => {
-    seen.defines++;
-    seen.markerAtDefine = { ...globalThis.__AREA_EVENTS_CARD_LOAD__ };
-    defined = cls;
+/** A stand-in for a custom element registry: records what is defined and lets whenDefined wait. */
+function fakeRegistry(name) {
+  const defs = new Map();
+  const waiting = new Map();
+  return {
+    constructor: { name }, defs, defines: [],
+    get: (tag) => defs.get(tag),
+    define(tag, cls) { this.defines.push(tag); defs.set(tag, cls); (waiting.get(tag) || []).forEach((resolve) => resolve(cls)); },
+    whenDefined: (tag) => (defs.has(tag) ? Promise.resolve(defs.get(tag)) : new Promise((resolve) => waiting.set(tag, [...(waiting.get(tag) || []), resolve]))),
   };
+}
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+async function withFreshModule(registry, run) {
+  const saved = { registry: globalThis.customElements, cards: window.customCards, marker: globalThis.__AREA_EVENTS_CARD_LOAD__ };
+  globalThis.customElements = registry;
   delete globalThis.__AREA_EVENTS_CARD_LOAD__;
   window.customCards = undefined;
-  try {
-    await import("../src/area-events-card.js?cold-load");
-    assert.equal(seen.defines, 1);
-    assert.equal(seen.markerAtDefine.defined, false); // the record exists before the element is defined...
-    assert.equal(typeof seen.markerAtDefine.started, "number");
-    assert.equal(globalThis.__AREA_EVENTS_CARD_LOAD__.defined, true); // ...and says so once it is
-    const load = globalThis.__AREA_EVENTS_CARD_LOAD__;
-    assert.equal(load.registry, customElements); // the registry used for define is kept, to compare with the page's registry later
-    assert.equal(load.cardClass, defined);
-    assert.equal(typeof load.nativeDefine, "boolean");
-    assert.equal(window.customCards.filter((card) => card.type === "custom:area-events-card").length, 1);
-    assert.equal(typeof defined.getConfigForm, "function");
-  } finally {
-    Object.assign(customElements, { get: saved.get, define: saved.define });
+  try { await run(); } finally {
+    globalThis.customElements = saved.registry;
     window.customCards = saved.cards;
     globalThis.__AREA_EVENTS_CARD_LOAD__ = saved.marker;
   }
+}
+
+test("the card module is one self-contained script with no imports, and records its load", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /^\s*(import|export)\s/m, "no imports or exports: nothing to fetch or link between the request and the registration");
+  assert.doesNotMatch(source, /import\s*\(|^\s*await\s/m, "no dynamic import or top-level await");
+  assert.equal((source.match(/customElements\.define\(/g) || []).length, 0, "no direct define on the registry captured at load; registration goes through defineCard()");
+});
+
+test("the card is defined in the registry that is current once Home Assistant has started, after the frontend swaps the registry", async () => {
+  // Reproduces the observed failure: the card module runs first, the frontend then replaces window.customElements with a
+  // scoped-registry polyfill (which does not see earlier native definitions) and defines <home-assistant> in it.
+  const native = fakeRegistry("CustomElementRegistry");
+  const polyfill = fakeRegistry("CustomElementRegistryPolyfill");
+  await withFreshModule(native, async () => {
+    await import("../src/area-events-card.js?before-the-swap");
+    await settle();
+    assert.deepEqual(native.defines, [], "nothing is defined in the original registry while the frontend has not started");
+    assert.equal(globalThis.__AREA_EVENTS_CARD_LOAD__.defined, false);
+    assert.equal(globalThis.__AREA_EVENTS_CARD_LOAD__.afterHomeAssistant, false);
+    assert.equal(window.customCards.length, 1, "the card picker entry does not depend on the registry");
+
+    globalThis.customElements = polyfill; // the frontend installs its polyfill...
+    polyfill.define("home-assistant", class {});
+    native.define("home-assistant", class {}); // ...and the polyfill passes global definitions on to the native registry
+    await settle();
+
+    assert.deepEqual(polyfill.defines.filter((tag) => tag === "area-events-card"), ["area-events-card"], "defined exactly once, in the registry Lovelace uses");
+    assert.equal(native.defines.includes("area-events-card"), false);
+    const load = globalThis.__AREA_EVENTS_CARD_LOAD__;
+    assert.equal(load.registry, polyfill);
+    assert.equal(load.registry, globalThis.customElements);
+    assert.equal(load.defined, true);
+    assert.equal(load.afterHomeAssistant, true);
+    assert.equal(load.registryName, "CustomElementRegistryPolyfill");
+    assert.equal(typeof polyfill.get("area-events-card").getConfigForm, "function");
+    assert.equal(await polyfill.whenDefined("area-events-card") === polyfill.get("area-events-card"), true, "Lovelace's whenDefined resolves");
+  });
+});
+
+test("when the frontend has already started, the card is defined immediately and once", async () => {
+  const registry = fakeRegistry("CustomElementRegistryPolyfill");
+  registry.define("home-assistant", class {});
+  await withFreshModule(registry, async () => {
+    await import("../src/area-events-card.js?after-the-frontend");
+    assert.deepEqual(registry.defines, ["home-assistant", "area-events-card"]);
+    assert.equal(globalThis.__AREA_EVENTS_CARD_LOAD__.afterHomeAssistant, true);
+    assert.equal(globalThis.__AREA_EVENTS_CARD_LOAD__.defined, true);
+    await import("../src/area-events-card.js?loaded-twice"); // a second evaluation does not define it again
+    assert.deepEqual(registry.defines.filter((tag) => tag === "area-events-card"), ["area-events-card"]);
+  });
+});
+
+test("an element that is not ours, or an older card, in the registry is never replaced", async () => {
+  const registry = fakeRegistry("CustomElementRegistry");
+  registry.define("home-assistant", class {});
+  class Legacy {}
+  registry.define("area-events-card", Legacy);
+  const errors = [];
+  const realError = console.error;
+  console.error = (...args) => errors.push(args.join(" "));
+  try {
+    await withFreshModule(registry, async () => {
+      await import("../src/area-events-card.js?legacy-after-frontend");
+      assert.equal(registry.get("area-events-card"), Legacy);
+      assert.equal(globalThis.__AREA_EVENTS_CARD_LOAD__.defined, false);
+      assert.match(errors.join(" "), /older Area Events card is already registered/);
+    });
+  } finally { console.error = realError; }
 });
 
 test("an unsupported added website is one short, nonfatal line with its reason behind a disclosure, and the events stay", async () => {

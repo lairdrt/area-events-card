@@ -297,7 +297,8 @@ class Setup(unittest.TestCase):
     def test_the_served_card_is_the_built_card_and_is_not_the_placeholder(self):
         served = open(os.path.join(ROOT, "frontend", "area-events-card.js"), encoding="utf-8").read()
         self.assertNotIn("__AREA_EVENTS_CARD_BUILD__", served)
-        self.assertIn("customElements.define(CARD_TAG, AreaEventsCard)", served)
+        self.assertIn("registry.define(CARD_TAG, AreaEventsCard)", served)
+        self.assertIn('customElements.whenDefined("home-assistant")', served)  # registered after the frontend's registry swap
         self.assertIn("__AREA_EVENTS_CARD_LOAD__", served)
 
     def test_setup_connects_polls_and_keeps_the_coordinator_listening(self):

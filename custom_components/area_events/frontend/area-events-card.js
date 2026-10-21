@@ -9,12 +9,12 @@
  * visual editor; the filter chips are the viewer's own choices, saved per card instance (see "Preferences").
  */
 
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-c0ebc53c";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-b50af579";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
-// evaluated (the request failed or was never made), has defined: false when evaluation stopped before the card was
-// defined (see the console error), and has defined: true once it is registered.
+// evaluated (the request failed or was never made), has defined: false until the card is registered (that waits for
+// <home-assistant>, see "Registration" below) and defined: true once it is.
 globalThis.__AREA_EVENTS_CARD_LOAD__ = { build: AREA_EVENTS_CARD_BUILD, started: Date.now(), defined: false };
 
 /*
@@ -1396,32 +1396,51 @@ function assertEditable(config) {
   }
 }
 
-const registered = customElements.get(CARD_TAG);
-if (!registered) {
-  customElements.define(CARD_TAG, AreaEventsCard);
-} else if (registered !== AreaEventsCard && typeof registered.getConfigForm !== "function") {
-  // A tag can only be defined once per page. An older Area Events card (the dashboard resource
-  // /local/area-events-card/loader.js of the pre-integration versions) that loaded first has no visual editor and
-  // none of the integration support, and this module can not replace it.
-  console.error(
-    "Area Events: an older Area Events card is already registered, so this card and its visual editor are not in use. " +
-    "Remove the dashboard resource /local/area-events-card/loader.js (Settings > Dashboards > Resources); " +
-    "the Area Events integration loads the card by itself."
-  );
+/*
+ * Registration. Home Assistant's frontend replaces window.customElements with a scoped-custom-element-registry polyfill
+ * while it starts, and the polyfilled registry does not see elements that were defined in the browser's own registry
+ * before the swap. The integration's script is imported in parallel with the frontend, so it can run before the swap;
+ * a card defined then is invisible to Lovelace ("Custom element doesn't exist" although this script ran). The
+ * <home-assistant> element is defined by the frontend after the polyfill is installed, so the card is defined only
+ * then, in whichever registry is current at that moment (customElements is read at call time, never kept earlier).
+ */
+function defineCard() {
+  const registry = customElements;
+  const registered = registry.get(CARD_TAG);
+  if (!registered) {
+    registry.define(CARD_TAG, AreaEventsCard);
+  } else if (registered !== AreaEventsCard && typeof registered.getConfigForm !== "function") {
+    // A tag can only be defined once per page. An older Area Events card (the dashboard resource
+    // /local/area-events-card/loader.js of the pre-integration versions) that loaded first has no visual editor and
+    // none of the integration support, and this module can not replace it.
+    console.error(
+      "Area Events: an older Area Events card is already registered, so this card and its visual editor are not in use. " +
+      "Remove the dashboard resource /local/area-events-card/loader.js (Settings > Dashboards > Resources); " +
+      "the Area Events integration loads the card by itself."
+    );
+  }
+  // What was true at the moment of registration, for diagnosing a failure from the console:
+  //   __AREA_EVENTS_CARD_LOAD__.registry === customElements          false: the page's registry was replaced after the card was defined
+  //   __AREA_EVENTS_CARD_LOAD__.nativeDefine / registryName          whether define was the browser's own, and the registry's constructor
+  //   __AREA_EVENTS_CARD_LOAD__.afterHomeAssistant                   true: defined after <home-assistant> (the intended order)
+  const load = globalThis.__AREA_EVENTS_CARD_LOAD__;
+  load.defined = registry.get(CARD_TAG) === AreaEventsCard;
+  load.definedAt = Date.now();
+  load.registry = registry;
+  load.cardClass = AreaEventsCard;
+  load.nativeDefine = /\[native code\]/.test(Function.prototype.toString.call(registry.define));
+  load.registryName = registry.constructor && registry.constructor.name;
 }
 
-{
-  // What was true at the moment of registration, kept so a later contradiction can be told apart in the console:
-  //   __AREA_EVENTS_CARD_LOAD__.registry === customElements          false: the page's registry was replaced after this ran
-  //   __AREA_EVENTS_CARD_LOAD__.registry.get("area-events-card")     the class: it is still registered in the registry used here
-  //   __AREA_EVENTS_CARD_LOAD__.nativeDefine / registryName          whether define was the browser's own, and the registry's constructor
-  const load = globalThis.__AREA_EVENTS_CARD_LOAD__;
-  load.defined = customElements.get(CARD_TAG) === AreaEventsCard;
-  load.registry = customElements;
-  load.cardClass = AreaEventsCard;
-  load.nativeDefine = /\[native code\]/.test(Function.prototype.toString.call(customElements.define));
-  load.registryName = customElements.constructor && customElements.constructor.name;
-  load.sameWindow = globalThis === window;
+if (customElements.get("home-assistant")) {
+  globalThis.__AREA_EVENTS_CARD_LOAD__.afterHomeAssistant = true;
+  defineCard();
+} else {
+  globalThis.__AREA_EVENTS_CARD_LOAD__.afterHomeAssistant = false;
+  customElements.whenDefined("home-assistant").then(() => {
+    globalThis.__AREA_EVENTS_CARD_LOAD__.afterHomeAssistant = true;
+    defineCard();
+  });
 }
 
 window.customCards = window.customCards || [];
