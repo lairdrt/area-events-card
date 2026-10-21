@@ -284,5 +284,36 @@ class Settings(unittest.TestCase):
             self.assertEqual(server_module.load_settings({}, os.path.join(folder, "none.json"))["token"], "")
 
 
+class AppPackage(unittest.TestCase):
+    """Static checks of the Home Assistant app files (the image itself needs a Supervisor to build and run)."""
+
+    APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "area_events")
+
+    def read(self, name, mode="r"):
+        with open(os.path.join(self.APP, name), mode, **({"encoding": "utf-8"} if mode == "r" else {})) as handle:
+            return handle.read()
+
+    def test_config_declares_what_the_supervisor_requires(self):
+        config = self.read("config.yaml")
+        for line in ('slug: area_events', 'init: false', '- aarch64', '- amd64', 'token: password', 'watchdog: "http://[HOST]:[PORT:8765]/health"'):
+            self.assertIn(line, config)
+        self.assertNotIn("armv7", config)
+
+    def test_run_script_has_unix_line_endings_and_starts_the_engine(self):
+        script = self.read("run.sh", "rb")
+        self.assertTrue(script.startswith(b"#!/command/with-contenv bashio\n"))
+        self.assertNotIn(b"\r", script)
+        self.assertIn(b"exec python3 -m discovery", script)
+
+    def test_image_contains_only_the_engine_and_no_pip_dependencies(self):
+        dockerfile = self.read("Dockerfile")
+        self.assertIn("COPY discovery/ /app/discovery/", dockerfile)
+        self.assertNotIn("pip install", dockerfile.replace("nothing to pip install", ""))
+
+    def test_the_app_version_matches_the_integration(self):
+        version = json.load(open(os.path.join(os.path.dirname(self.APP), "custom_components", "area_events", "manifest.json"), encoding="utf-8"))["version"]
+        self.assertIn(f'version: "{version}"', self.read("config.yaml"))
+
+
 if __name__ == "__main__":
     unittest.main()

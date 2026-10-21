@@ -1,0 +1,10 @@
+configuration:
+  token:
+    name: Token
+    description: A random secret of at least 32 characters. Enter the same value when you add the Area Events integration. The app does not start without it.
+  refresh_minutes:
+    name: Refresh interval (minutes)
+    description: How often each area's events are rediscovered. Areas nobody has asked for recently are not refreshed.
+  log_level:
+    name: Log level
+    description: How much the app writes to its log.
