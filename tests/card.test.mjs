@@ -991,6 +991,10 @@ test("the card module is one self-contained script that defines its element duri
     assert.equal(seen.markerAtDefine.defined, false); // the record exists before the element is defined...
     assert.equal(typeof seen.markerAtDefine.started, "number");
     assert.equal(globalThis.__AREA_EVENTS_CARD_LOAD__.defined, true); // ...and says so once it is
+    const load = globalThis.__AREA_EVENTS_CARD_LOAD__;
+    assert.equal(load.registry, customElements); // the registry used for define is kept, to compare with the page's registry later
+    assert.equal(load.cardClass, defined);
+    assert.equal(typeof load.nativeDefine, "boolean");
     assert.equal(window.customCards.filter((card) => card.type === "custom:area-events-card").length, 1);
     assert.equal(typeof defined.getConfigForm, "function");
   } finally {

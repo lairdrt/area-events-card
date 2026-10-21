@@ -9,7 +9,7 @@
  * visual editor; the filter chips are the viewer's own choices, saved per card instance (see "Preferences").
  */
 
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-be2eea40";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-c0ebc53c";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
@@ -1410,7 +1410,19 @@ if (!registered) {
   );
 }
 
-globalThis.__AREA_EVENTS_CARD_LOAD__.defined = customElements.get(CARD_TAG) === AreaEventsCard;
+{
+  // What was true at the moment of registration, kept so a later contradiction can be told apart in the console:
+  //   __AREA_EVENTS_CARD_LOAD__.registry === customElements          false: the page's registry was replaced after this ran
+  //   __AREA_EVENTS_CARD_LOAD__.registry.get("area-events-card")     the class: it is still registered in the registry used here
+  //   __AREA_EVENTS_CARD_LOAD__.nativeDefine / registryName          whether define was the browser's own, and the registry's constructor
+  const load = globalThis.__AREA_EVENTS_CARD_LOAD__;
+  load.defined = customElements.get(CARD_TAG) === AreaEventsCard;
+  load.registry = customElements;
+  load.cardClass = AreaEventsCard;
+  load.nativeDefine = /\[native code\]/.test(Function.prototype.toString.call(customElements.define));
+  load.registryName = customElements.constructor && customElements.constructor.name;
+  load.sameWindow = globalThis === window;
+}
 
 window.customCards = window.customCards || [];
 if (!window.customCards.some((card) => card.type === `custom:${CARD_TAG}`)) {
