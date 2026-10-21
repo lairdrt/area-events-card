@@ -10,7 +10,7 @@ class El {
   setAttribute(k, v) { this.attrs[k] = v; }
   getAttribute(k) { return this.attrs[k]; }
   addEventListener(e, f) { this.listeners[e] = f; }
-  replaceChildren() { this.children = []; }
+  replaceChildren(...n) { this.children = n; }
   attachShadow() { this.shadowRoot = new El("root"); return this.shadowRoot; }
   get isConnected() { return true; }
 }
@@ -134,7 +134,7 @@ test("without an area the card asks for the Home Assistant home location", async
   const card = await make({});
   assert.deepEqual(card.hassStub.eventsCalls()[0], { type: "area_events/events", radius_miles: 25 });
   const pending = await make({}, { reply: () => ({ state: "pending", connected: true, report: [], sources: {} }) });
-  assert.match(text(byClass(pending.shadowRoot, "notice")[0]), /Finding events near your Home Assistant home location/);
+  assert.match(text(byClass(pending.shadowRoot, "progress")[0]), /Discovering events near your Home Assistant home location/);
 });
 
 test("a failure shows an error, never demo events", async () => {
@@ -148,7 +148,8 @@ test("a failure shows an error, never demo events", async () => {
 
 test("discovery states are told apart: finding, not reachable, nothing found, unsupported sources", async () => {
   const pending = await make({ area: "Austin, TX" }, { reply: () => ({ state: "discovering", connected: true, report: [], sources: {} }) });
-  assert.match(text(byClass(pending.shadowRoot, "notice")[0]), /Finding events near Austin, TX/);
+  assert.match(text(byClass(pending.shadowRoot, "progress")[0]), /Discovering events near Austin, TX/);
+  assert.equal(byClass(pending.shadowRoot, "progress")[0].hidden, false);
 
   const down = await make({}, { reply: () => ({ state: "unavailable", connected: false, message: "connection refused", report: [], sources: {} }) });
   assert.match(text(byClass(down.shadowRoot, "notice")[0]), /app is not reachable \(connection refused\)/);
@@ -189,7 +190,7 @@ test("polling is quick while discovering and relaxed once ready", async () => {
   } finally {
     globalThis.setTimeout = realSetTimeout;
   }
-  assert.ok(delays.includes(10000), "10 s while discovering");
+  assert.ok(delays.includes(5000), "5 s while discovering");
   assert.ok(delays.includes(300000), "5 min after a permanent error");
 });
 
@@ -564,6 +565,135 @@ test("inline events show a header without a fabricated update time", async () =>
   assert.match(header, /Demo/);
   assert.match(header, /1 event$/);
   assert.doesNotMatch(header, /Updated/);
+});
+
+// --- progressive discovery -----------------------------------------------------------------------
+
+const searching = (extra = {}) => ({ phase: "searching", current: "KPBS", completed: 1, total: 3, failed: 0, empty: 0, events: 12, ...extra });
+const panel = (card) => byClass(card.shadowRoot, "progress")[0];
+const nothingYet = (progress, extra = {}) => ({ state: "discovering", connected: true, report: [], sources: {}, initial: true, refreshing: false, progress, ...extra });
+/** Replies one after another (the last repeats), so a test can play a discovery from start to finish. */
+const sequence = (...replies) => { let i = 0; return () => replies[Math.min(i++, replies.length - 1)]; };
+
+test("initial discovery with nothing to show yet: a full panel with the real activity", async () => {
+  const waiting = await make({ area: "Austin, TX" }, { reply: () => nothingYet({ phase: "queued", current: null, completed: 0, total: null, failed: 0, events: 0 }, { state: "pending" }) });
+  assert.equal(panel(waiting).hidden, false);
+  assert.equal(panel(waiting).className, "progress");
+  assert.match(text(panel(waiting)), /Discovering events near Austin, TX/);
+  assert.match(text(panel(waiting)), /Waiting to start/);
+  assert.equal(panel(waiting).attrs["aria-live"], "polite");
+
+  const busy = await make({ area: "Austin, TX" }, { reply: () => nothingYet(searching()) });
+  assert.match(text(byClass(busy.shadowRoot, "detail")[0]), /^Searching KPBS · 1 of 3 sources done · 12 events so far$/);
+  assert.equal(byClass(busy.shadowRoot, "event").length, 0);
+
+  const processing = await make({ area: "Austin, TX" }, { reply: () => nothingYet(searching({ phase: "processing", current: "DoSD", completed: 2, failed: 1, events: 1 })) });
+  assert.match(text(byClass(processing.shadowRoot, "detail")[0]), /^Processing DoSD · 2 of 3 sources done · 1 could not be read · 1 event so far$/);
+  assert.ok(byClass(processing.shadowRoot, "spinner").length === 1 && byClass(processing.shadowRoot, "bar").length === 1);
+});
+
+test("tiles appear as soon as usable events exist, with a compact indicator while the rest is searched", async () => {
+  const first = await make({}, { reply: () => answer(makeFeed(), { refreshing: true, initial: true, progress: searching({ events: 3 }) }) });
+  assert.equal(byClass(first.shadowRoot, "event").length, 3);
+  assert.equal(panel(first).hidden, false);
+  assert.equal(panel(first).className, "progress compact");
+  assert.match(text(byClass(first.shadowRoot, "headline")[0]), /Finding more events/);
+
+  const refresh = await make({}, { reply: () => answer(makeFeed(), { refreshing: true, initial: false, progress: searching() }) });
+  assert.match(text(byClass(refresh.shadowRoot, "headline")[0]), /Refreshing events/);
+  assert.equal(byClass(refresh.shadowRoot, "event").length, 3); // a refresh never blanks the card
+});
+
+test("new results are merged into the existing tiles: unchanged ones keep their elements and images", async () => {
+  const withImage = (title, days, extra = {}) => event(title, days, { image: `https://img.example/${encodeURIComponent(title)}.jpg`, ...extra });
+  const one = makeFeed({ generated_at: "2030-01-01T00:00:00+00:00", events: [withImage("Alpha", 1), withImage("Beta", 3)] });
+  const two = makeFeed({ generated_at: "2030-01-01T00:05:00+00:00", events: [withImage("Alpha", 1), withImage("Beta", 3, { verified: true, verification: { status: "verified", evidence: ["two publishers agree"] } }), withImage("Gamma", 2)] });
+  const card = await make({}, { reply: sequence(answer(one, { refreshing: true, initial: true, progress: searching() }), answer(two, { refreshing: true, initial: true, progress: searching({ completed: 2 }) })) });
+  const [alpha, beta] = byClass(card.shadowRoot, "event");
+  const images = created.img;
+  await pollAgain(card);
+  const tiles = byClass(card.shadowRoot, "event");
+  assert.deepEqual(visibleTitles(card.shadowRoot), ["Alpha", "Gamma", "Beta"]); // ordered by date, the new tile slotted in
+  assert.equal(tiles[0], alpha, "an unchanged event keeps its tile");
+  assert.notEqual(tiles[2], beta, "a changed event (now verified) gets a fresh tile");
+  assert.match(text(tiles[2]), /Verified/);
+  assert.equal(created.img - images, 2, "only the new and the changed tile create images");
+  assert.match(text(byClass(card.shadowRoot, "detail")[0]), /2 of 3 sources done/);
+});
+
+test("events that disappear are removed, and an unchanged or failed poll never blanks the card", async () => {
+  const full = makeFeed({ generated_at: "2030-01-01T00:00:00+00:00", events: [event("Alpha", 1), event("Beta", 2)] });
+  const less = makeFeed({ generated_at: "2030-01-01T00:10:00+00:00", events: [event("Beta", 2)] });
+  const card = await make({}, { reply: sequence(answer(full), answer(less), { ...answer(less, { events: undefined }), unchanged: true, refreshing: true, progress: searching() }) });
+  assert.equal(byClass(card.shadowRoot, "event").length, 2);
+  await pollAgain(card);
+  assert.deepEqual(visibleTitles(card.shadowRoot), ["Beta"]);
+  await pollAgain(card);
+  assert.deepEqual(visibleTitles(card.shadowRoot), ["Beta"]);
+  card.hassStub.fail = { code: "unknown_error", message: "offline" };
+  await pollAgain(card);
+  assert.deepEqual(visibleTitles(card.shadowRoot), ["Beta"]);
+});
+
+test("the panel is built once, only its text changes, and it goes away when discovery completes", async () => {
+  const feed = makeFeed();
+  const card = await make({}, { reply: sequence(answer(feed, { refreshing: true, progress: searching() }), answer(feed, { refreshing: true, progress: searching({ completed: 2, current: "DoSD" }) }),
+    answer(feed, { refreshing: false, outcome: "complete", progress: searching({ phase: "complete", completed: 3, current: null }) })) });
+  const element = panel(card);
+  await pollAgain(card);
+  assert.equal(panel(card), element, "the same element, so its animation is not restarted");
+  assert.match(text(byClass(card.shadowRoot, "detail")[0]), /Searching DoSD · 2 of 3/);
+  await pollAgain(card);
+  assert.equal(panel(card).hidden, true);
+  assert.equal(byClass(card.shadowRoot, "event").length, 3);
+});
+
+test("the viewer's filter stays applied while new events arrive", async () => {
+  const one = makeFeed({ generated_at: "2030-01-01T00:00:00+00:00", events: [event("Rock Concert", 1, { categories: ["Music"] })] });
+  const two = makeFeed({ generated_at: "2030-01-01T00:05:00+00:00", events: [event("Rock Concert", 1, { categories: ["Music"] }), event("Quarterly meeting", 2), event("Folk Band", 3, { categories: ["Music"] })] });
+  const card = await make({}, { reply: sequence(answer(one, { refreshing: true, progress: searching() }), answer(two, { refreshing: true, progress: searching({ completed: 2 }) })) });
+  openFilters(card.shadowRoot);
+  click(chip(card.shadowRoot, "Music"));
+  await pollAgain(card);
+  assert.deepEqual(visibleTitles(card.shadowRoot), ["Rock Concert", "Folk Band"]);
+  assert.match(text(byClass(card.shadowRoot, "counts")[0]), /2 of 3 events/);
+});
+
+test("outcomes are told apart: no results, complete failure, partial failure, a failed refresh", async () => {
+  const none = await make({ area: "Nowhere" }, { reply: () => ({ state: "error", outcome: "no_results", message: "No upcoming events were found by the 2 sources searched.", connected: true, report: [], sources: {}, initial: true, progress: searching({ phase: "complete" }) }) });
+  assert.match(text(byClass(none.shadowRoot, "notice")[0]), /No upcoming events were found by the 2 sources searched\. Try a larger radius or another area/);
+  assert.equal(panel(none).hidden, true);
+
+  const failed = await make({ area: "Austin, TX" }, { reply: () => ({ state: "error", outcome: "failed", message: "all sources are down", connected: true, report: [], sources: {}, initial: true, progress: searching({ phase: "complete" }) }) });
+  assert.match(text(byClass(failed.shadowRoot, "notice")[0]), /Events could not be found for Austin, TX: all sources are down/);
+
+  const partial = await make({}, { reply: () => answer(makeFeed({ sources: { a: { ok: true }, b: { ok: false } } }), { outcome: "partial", initial: false, progress: searching({ phase: "complete", failed: 1 }) }) });
+  assert.match(text(byClass(partial.shadowRoot, "notice")[0]), /1 of 2 sources could not be read; events they provided earlier are kept/);
+  assert.equal(byClass(partial.shadowRoot, "event").length, 3);
+
+  const stale = await make({}, { reply: () => answer(makeFeed(), { message: "site down", outcome: "failed", initial: false, progress: searching({ phase: "complete" }) }) });
+  assert.match(text(byClass(stale.shadowRoot, "notice")[0]), /Could not refresh events \(site down\)\. Showing data/);
+  assert.equal(byClass(stale.shadowRoot, "event").length, 3);
+
+  const retrying = await make({}, { reply: () => answer(makeFeed(), { message: "site down", refreshing: true, initial: false, progress: searching() }) });
+  assert.match(text(byClass(retrying.shadowRoot, "notice")[0]), /The last refresh failed \(site down\); showing earlier data/);
+});
+
+test("each card shows only its own profile's progress", async () => {
+  const austin = await make({ area: "Austin, TX" }, { reply: () => nothingYet(searching({ current: "UT Austin Events", completed: 0, total: 1, events: 0 })) });
+  const boston = await make({ area: "Boston, MA" }, { reply: () => nothingYet(searching({ current: "Boston Calendar", completed: 2, total: 4, events: 9 })) });
+  assert.match(text(panel(austin)), /Discovering events near Austin, TX[\s\S]*Searching UT Austin Events · 0 of 1 sources done/);
+  assert.match(text(panel(boston)), /Discovering events near Boston, MA[\s\S]*Searching Boston Calendar · 2 of 4 sources done · 9 events so far/);
+  assert.doesNotMatch(text(panel(austin)), /Boston/);
+});
+
+test("the animation is lightweight CSS and stops for reduced motion", async () => {
+  const card = await make({});
+  const css = card.shadowRoot.children[0].textContent;
+  assert.match(css, /@keyframes ae-spin/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[^}]*\.spinner \{ animation: none; \}[\s\S]*\.bar::before \{ animation: none/);
+  assert.match(css, /var\(--primary-color\)/);
+  assert.doesNotMatch(css, /#[0-9a-fA-F]{3,6}\b/, "colors come from the theme only");
 });
 
 // --- build -------------------------------------------------------------------------------

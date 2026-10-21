@@ -127,10 +127,14 @@ def save_events(document, path):
     """Atomic write so a crash never leaves a truncated feed."""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     temporary = path + ".tmp"
-    with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
-        json.dump(document, handle, indent=2, ensure_ascii=False)
-        handle.write("\n")
-    os.replace(temporary, path)
+    try:
+        with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(document, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
 
 
 # --- shared helpers for adapters ---------------------------------------------

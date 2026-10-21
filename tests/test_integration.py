@@ -217,6 +217,33 @@ class HubCoordination(unittest.TestCase):
         self.assertFalse(self.hub.busy)
 
 
+class HubProgress(unittest.TestCase):
+    def test_progress_reaches_the_card_per_profile_even_when_the_events_are_unchanged(self):
+        client = FakeClient()
+        hub = Hub(client, clock=lambda: 1000.0)
+        original_get = client.get
+        steps = {"n": 0}
+
+        async def get(pid, since=None):
+            answer = await original_get(pid, since)
+            steps["n"] += 1
+            answer.update(initial=True, outcome=None, refreshing=True,
+                          progress={"phase": "searching", "completed": steps["n"], "total": 3, "events": 10 * steps["n"], "current": f"source {pid}"})
+            return answer
+
+        client.get = get
+        first = run(hub.request({"area": "Austin, TX", "radius_miles": 25.0}))
+        other = run(hub.request({"area": "Boston, MA", "radius_miles": 25.0}))
+        self.assertEqual((first["progress"]["completed"], first["initial"], first["refreshing"]), (1, True, True))
+        self.assertEqual(other["progress"]["completed"], 2)
+        self.assertNotEqual(first["progress"]["current"], other["progress"]["current"])  # profiles do not share progress
+        run(hub.refresh())  # unchanged events, newer progress
+        again = run(hub.request({"area": "Austin, TX", "radius_miles": 25.0}, since=first["generated_at"]))
+        self.assertTrue(again["unchanged"])
+        self.assertGreater(again["progress"]["completed"], first["progress"]["completed"])
+        self.assertTrue(hub.busy)
+
+
 class Client(unittest.TestCase):
     def test_base_url_normalization(self):
         normalize = client_module.normalize_base_url

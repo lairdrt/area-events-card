@@ -12,5 +12,5 @@ ACTIVE_SECONDS = 30 * 60
 # How often a registration is repeated, so an engine that restarted or dropped the profile hears of it again.
 REGISTER_TTL_SECONDS = 15 * 60
 # Poll intervals: quick while discovery is under way, relaxed otherwise.
-BUSY_INTERVAL_SECONDS = 15
+BUSY_INTERVAL_SECONDS = 5
 IDLE_INTERVAL_SECONDS = 5 * 60

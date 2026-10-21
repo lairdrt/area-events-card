@@ -96,7 +96,7 @@ class Engine:
         return os.path.join(self.data_dir, pid)
 
     def _save(self, record):
-        keys = ("id", "profile", "requested_at", "state", "error", "attempt_at", "success_at", "report")
+        keys = ("id", "profile", "requested_at", "state", "error", "attempt_at", "success_at", "report", "outcome")
         try:
             write_atomic(os.path.join(self._dir(record["id"]), "profile.json"), json.dumps({k: record.get(k) for k in keys}, indent=2) + "\n")
         except OSError as error:
@@ -116,7 +116,7 @@ class Engine:
             saved["profile"] = profile
             if saved.get("state") in ("pending", "discovering"):
                 saved["state"] = "pending"  # a restart abandoned the run
-            self._profiles[pid] = {"queued": False, "report": [], **saved}
+            self._profiles[pid] = {"queued": False, "report": [], "progress": None, **saved}
             if self._feed(pid) is None or self._due(self._profiles[pid]):
                 self._enqueue(pid)
 
@@ -126,7 +126,8 @@ class Engine:
         """The newest valid feed of a profile, or None. An invalid file never replaces a good copy."""
         path = os.path.join(self._dir(pid), "events.json")
         try:
-            mtime = os.stat(path).st_mtime_ns
+            info = os.stat(path)
+            mtime = (info.st_mtime_ns, info.st_size)  # two quick publishes can share a timestamp, but not also a size
         except OSError:
             return self._feeds.get(pid, (None, None))[1]
         cached = self._feeds.get(pid)
@@ -155,7 +156,7 @@ class Engine:
                 self._make_room()
                 os.makedirs(self._dir(pid), exist_ok=True)
                 record = self._profiles[pid] = {"id": pid, "profile": profile, "state": "pending", "error": None, "queued": False,
-                                                "attempt_at": None, "success_at": None, "report": []}
+                                                "attempt_at": None, "success_at": None, "report": [], "progress": None, "outcome": None}
                 record["requested_at"] = now
                 self._save(record)
                 self._enqueue(pid)
@@ -201,6 +202,8 @@ class Engine:
             else:
                 state = "error" if record["state"] == "error" else "pending"
             result = {"id": pid, "state": state, "refreshing": bool(feed) and (running or record["queued"]),
+                      "initial": record.get("success_at") is None, "outcome": record.get("outcome"),
+                      "progress": dict(record["progress"]) if record.get("progress") else None,
                       "error": record.get("error"), "requested_at": _iso(record["requested_at"]),
                       "attempt_at": _iso(record["attempt_at"]) if record.get("attempt_at") else None,
                       "success_at": _iso(record["success_at"]) if record.get("success_at") else None,
@@ -231,8 +234,34 @@ class Engine:
         record = self._profiles[pid]
         if not record["queued"] and self._running != pid:
             record["queued"] = True
+            record["progress"] = self._new_progress("queued", record)
             self._queue.append(pid)
             self._wake.set()
+
+    def _new_progress(self, phase, record):
+        feed = self._feed(record["id"])
+        return {"phase": phase, "current": None, "completed": 0, "total": None, "failed": 0, "empty": 0, "sources": [],
+                "events": len(feed["events"]) if feed else 0, "started_at": None, "finished_at": None}
+
+    def _progress_callback(self, record):
+        """Receives refresh()'s progress notifications and keeps the profile's progress current."""
+        def notify(kind, **info):
+            with self._lock:
+                progress = record["progress"]
+                if kind == "start":
+                    progress.update(phase="searching", total=info["total"], sources=info["sources"], completed=0, failed=0, empty=0, current=None)
+                elif kind == "source_start":
+                    progress.update(phase="searching", current=info["name"])
+                elif kind == "source_processing":
+                    progress.update(phase="processing", current=info["name"])
+                elif kind == "source_done":
+                    progress["completed"] += 1
+                    progress["failed"] += 0 if info["ok"] else 1
+                    progress["empty"] += 1 if info["empty"] else 0
+                    progress["phase"] = "searching"
+                elif kind == "published":
+                    progress["events"] = info["events"]
+        return notify
 
     def tick(self):
         """Queue profiles that are due and drop those nobody uses."""
@@ -256,6 +285,8 @@ class Engine:
                 return pid
             record["queued"] = False
             self._running = pid
+            record["progress"] = record.get("progress") or self._new_progress("queued", record)
+            record["progress"].update(phase="searching", started_at=_iso(self.clock()), finished_at=None)
         try:
             self._run(record)
         finally:
@@ -309,7 +340,7 @@ class Engine:
         pid, profile = record["id"], record["profile"]
         started = self.clock()
         record["attempt_at"] = started
-        error, report = None, []
+        error, report, outcome = None, [], "failed"
         folder = self._dir(pid)
         stderr = _LogWriter(logging.WARNING)
         try:
@@ -324,13 +355,21 @@ class Engine:
             with self._lock:
                 record["state"] = "discovering"
             with contextlib.redirect_stdout(_LogWriter(logging.INFO)), contextlib.redirect_stderr(stderr):
-                code = self.refresh_fn(run_config, {"interval": 2.0, "explicit_sources": explicit}, fetcher=fetcher,
+                code = self.refresh_fn(run_config, {"interval": 2.0, "explicit_sources": explicit, "progress": self._progress_callback(record)}, fetcher=fetcher,
                                        cache_path=os.path.join(folder, "source-cache.json"), output=os.path.join(folder, "events.json"),
                                        lock_path=os.path.join(folder, ".refresh.lock"),
                                        location_cache_path=os.path.join(folder, "location-cache.json"))
+            progress = record["progress"]
             if code not in (0, 2):
                 reasons = [line for line in stderr.lines if not line.startswith("No source refreshed")] or list(stderr.lines)
                 error = "; ".join(reasons[-3:])[:400] or "discovery produced no events"
+                if progress.get("empty") and progress["failed"] == progress["empty"]:
+                    outcome = "no_results"  # every source answered, none had events here: not a failure of any source
+                    error = f"No upcoming events were found by the {progress['completed']} source{'s' if progress['completed'] != 1 else ''} searched."
+                else:
+                    outcome = "failed"
+            else:
+                outcome = "partial" if code == 2 else "complete"
         except EngineError as caught:
             error = caught.message
         except Exception as caught:  # a crashing adapter or bad configuration must not stop the worker
@@ -339,6 +378,12 @@ class Engine:
         with self._lock:
             record["report"] = report
             record["error"] = error
+            record["outcome"] = outcome
+            record["progress"] = {**(record.get("progress") or self._new_progress("complete", record)), "phase": "complete", "current": None,
+                                  "finished_at": _iso(self.clock())}
+            feed = self._feed(pid)
+            if feed:
+                record["progress"]["events"] = len(feed["events"])
             record["state"] = "error" if error else "ready"
             if not error:
                 record["success_at"] = self.clock()

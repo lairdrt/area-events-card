@@ -20,6 +20,10 @@ class RefreshLocked(Exception):
     pass
 
 
+class EmptyResult(FetchError):
+    """A source was read successfully but has no events for this area (not the same as a source being down)."""
+
+
 class Lock:
     """Exclusive lock file so overlapping scheduled runs cannot collide."""
 
@@ -81,7 +85,7 @@ def build_document(config, cache, now, selected, location=None):
         if stale:
             events = []  # failing for longer than retention: too old to trust
         records[source.id] = events
-        status[source.id] = {"ok": entry.get("ok", False), "stale": stale, "last_success_at": last_ok,
+        status[source.id] = {"ok": entry.get("ok") if entry else None, "pending": not entry, "stale": stale, "last_success_at": last_ok,
                              "last_attempt_at": entry.get("last_attempt_at"), "error": entry.get("error"),
                              "events": len(events), "notes": entry.get("notes", {})}
     minimum = config.get("verification", {}).get("min_independent_publishers", 2)
@@ -93,8 +97,16 @@ def build_document(config, cache, now, selected, location=None):
 
 
 def refresh(config, options, cache_path, output, lock_path, fetcher=None, location_cache_path=None, location_providers=None):
-    """Discover events for config["location"] into `output`. Returns an exit code: 0 all ok, 2 partial, 1 nothing refreshed / error."""
+    """Discover events for config["location"] into `output`. Returns an exit code: 0 all ok, 2 partial, 1 nothing refreshed / error.
+
+    The feed is republished (atomically, after the cache) each time a source finishes, so usable events appear
+    without waiting for the slowest source, and the merge/verification is redone with everything known so far.
+    `options["progress"]`, if given, is called as progress(kind, **info) with kind one of
+    start (total, sources), source_start (name, index), source_processing (name), source_done (name, ok, empty,
+    events, error), published (events) so a caller can show real activity.
+    """
     lock = Lock(lock_path)
+    notify = options.get("progress") or (lambda kind, **info: None)
     fetcher = fetcher or Fetcher(options.get("interval", 2.0))
     only = set(options.get("only") or [])
 
@@ -139,46 +151,63 @@ def refresh(config, options, cache_path, output, lock_path, fetcher=None, locati
         succeeded = failed = 0
         if options.get("offline"):  # rebuild the feed from cached source data only
             succeeded = 1
-        for source in chosen:
-            if options.get("offline") or (only and source.id not in only):
-                continue
+        active = [source for source in chosen if not (options.get("offline") or (only and source.id not in only))]
+        notify("start", total=len(active), sources=[source.name for source in active])
+
+        def publish(final=False):
+            """Write the cache, then the feed, from everything known so far. Skips (returns None) while there is nothing usable."""
+            document = build_document(config, cache, datetime.now(timezone.utc), chosen, location)
+            try:
+                validate_feed(document)
+            except FeedError as error:
+                if final:
+                    print(f"Refusing to write feed: {error}", file=sys.stderr)
+                return None
+            if options.get("dry_run"):
+                return document
+            save_events(cache, cache_path)
+            save_events(document, output)
+            notify("published", events=len(document["events"]))
+            return document
+
+        for index, source in enumerate(active):
+            notify("source_start", name=source.name, index=index)
             entry = cache.setdefault(source.id, {"events": []})
             entry["last_attempt_at"] = stamp
             try:
                 found, notes = source.discover(fetcher, entry.get("events", []), details=not options.get("no_details"),
                                                limit=options.get("limit"), location=location)
+                notify("source_processing", name=source.name)
                 found, summary = locate_events(found, location, resolver)
                 notes["places"] = summary
                 notes["outside_area"] = summary["outside_area"]
                 if not found:
-                    raise FetchError(f"all {summary['outside_area']} events are outside the {location['radius_miles']:.0f} mi search area of {location['display_name']}"
-                                     if summary["outside_area"] else "extraction produced no events")
+                    raise EmptyResult(f"all {summary['outside_area']} events are outside the {location['radius_miles']:.0f} mi search area of {location['display_name']}"
+                                      if summary["outside_area"] else "extraction produced no events")
             except Exception as error:  # a failing source must never lose its previous data
                 entry.update(ok=False, error=str(error))
                 failed += 1
                 print(f"[{source.name}] FAILED, keeping {len(entry.get('events', []))} cached events: {error}", file=sys.stderr)
+                notify("source_done", name=source.name, ok=False, empty=isinstance(error, EmptyResult), events=0, error=str(error))
                 continue
             entry.update(ok=True, error=None, events=found, notes=notes, last_success_at=stamp)
             succeeded += 1
             print(f"[{source.name}] {len(found)} events; {notes}")
+            if not options.get("dry_run"):
+                publish()
+            notify("source_done", name=source.name, ok=True, empty=False, events=len(found), error=None)
 
         if not succeeded:
             print("No source refreshed; feed and cache left untouched.", file=sys.stderr)
             return 1
 
-        document = build_document(config, cache, now, chosen, location)
-        try:
-            validate_feed(document)
-        except FeedError as error:
-            print(f"Refusing to write feed: {error}", file=sys.stderr)
+        document = publish(final=True)
+        if document is None:
             return 1
         if options.get("dry_run"):
             print(f"Dry run: {len(document['events'])} merged events, nothing written")
-            return 2 if failed else 0
-
-        save_events(cache, cache_path)
-        save_events(document, output)
-        print(f"Wrote {len(document['events'])} merged events to {output}")
+        else:
+            print(f"Wrote {len(document['events'])} merged events to {output}")
         return 2 if failed else 0
     finally:
         lock.release()

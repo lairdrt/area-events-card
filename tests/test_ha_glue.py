@@ -310,7 +310,7 @@ class Coordinator(unittest.TestCase):
         hub = self.hub(busy=True)
         coordinator, _ = self.make(hub)
         self.assertEqual(run(coordinator._async_update_data()), {"profiles": 2})
-        self.assertEqual(coordinator.update_interval, timedelta(seconds=15))
+        self.assertEqual(coordinator.update_interval, timedelta(seconds=5))
         hub.busy = False
         run(coordinator._async_update_data())
         self.assertEqual(coordinator.update_interval, timedelta(minutes=5))
@@ -325,7 +325,7 @@ class Coordinator(unittest.TestCase):
         coordinator, entry = self.make(self.hub())
         coordinator.async_boost()
         coordinator.async_boost()
-        self.assertEqual((coordinator.update_interval, entry.tasks), (timedelta(seconds=15), ["area_events boost"]))
+        self.assertEqual((coordinator.update_interval, entry.tasks), (timedelta(seconds=5), ["area_events boost"]))
 
 
 class WebSocket(unittest.TestCase):

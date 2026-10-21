@@ -160,6 +160,36 @@ const STYLES = `
     border: 1px solid var(--divider-color); color: var(--primary-text-color); overflow-wrap: anywhere;
   }
   .empty { padding: 16px 4px; color: var(--secondary-text-color); }
+  .progress {
+    display: flex; flex-direction: column; gap: 8px; margin: 0 0 8px; padding: 14px 16px; border-radius: 12px; box-sizing: border-box;
+    border: 1px solid var(--divider-color); color: var(--primary-text-color);
+    background: color-mix(in srgb, var(--primary-text-color, currentColor) 6%, transparent);
+  }
+  .progress .row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .progress ha-icon { --mdc-icon-size: 32px; flex: none; color: var(--primary-color); }
+  .progress .text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+  .progress .headline { font-weight: min(var(--ha-font-weight-medium, 500), 600); overflow-wrap: anywhere; }
+  .progress .detail { font-size: 0.875rem; color: var(--secondary-text-color); overflow-wrap: anywhere; }
+  .progress.compact { padding: 6px 12px; gap: 6px; }
+  .progress.compact ha-icon { --mdc-icon-size: 20px; }
+  .progress.compact .headline { font-size: 0.875rem; }
+  .spinner {
+    flex: none; width: 20px; height: 20px; box-sizing: border-box; border-radius: 50%;
+    border: 3px solid color-mix(in srgb, var(--primary-text-color, currentColor) 15%, transparent); border-top-color: var(--primary-color);
+    animation: ae-spin 0.9s linear infinite;
+  }
+  .progress.compact .spinner { width: 14px; height: 14px; border-width: 2px; }
+  .bar { position: relative; height: 4px; border-radius: 2px; overflow: hidden; background: color-mix(in srgb, var(--primary-text-color, currentColor) 12%, transparent); }
+  .bar::before {
+    content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 35%; border-radius: 2px; background: var(--primary-color);
+    animation: ae-slide 1.4s ease-in-out infinite;
+  }
+  @keyframes ae-spin { to { transform: rotate(360deg); } }
+  @keyframes ae-slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; }
+    .bar::before { animation: none; width: 40%; }
+  }
   /* Build tag, bottom-left, below the grid. A diagnostic label, not content. */
   .footer {
     margin-top: 8px; font-size: 0.8125rem; line-height: 1.25; letter-spacing: 0.02em;
@@ -168,7 +198,7 @@ const STYLES = `
 `;
 
 const POLL_READY_MS = 5 * 60 * 1000;
-const POLL_BUSY_MS = 10 * 1000;
+const POLL_BUSY_MS = 5 * 1000;
 const POLL_RETRY_MS = 30 * 1000;
 const FEED_STALE_MS = 3 * 60 * 60 * 1000; // the app refreshes hourly by default
 const SAVE_DEBOUNCE_MS = 300;
@@ -176,6 +206,7 @@ const AGE_TICK_MS = 60 * 1000;
 const EDITOR_DEBOUNCE_MS = 700;
 const WS_EVENTS = "area_events/events";
 // Errors the user must fix; polling faster would not help.
+const ACTIVE_PHASES = ["queued", "searching", "processing"];
 const PERMANENT_ERRORS = new Set(["invalid_profile", "rejected", "not_configured", "unauthorized"]);
 
 /*
@@ -570,7 +601,10 @@ class AreaEventsCard extends HTMLElement {
     const before = JSON.stringify([this._status, this._feedError, this._feed && this._feed.generatedAt]);
     if (reply) {
       const events = Array.isArray(reply.events) ? reply.events : reply.unchanged && this._feed ? this._feed.events : undefined;
-      this._status = { state: reply.state, message: reply.message, refreshing: Boolean(reply.refreshing), connected: reply.connected !== false, report: reply.report || [] };
+      this._status = {
+        state: reply.state, message: reply.message, refreshing: Boolean(reply.refreshing), connected: reply.connected !== false,
+        report: reply.report || [], initial: reply.initial !== false, outcome: reply.outcome || undefined, progress: reply.progress || undefined,
+      };
       this._feedError = this._feedErrorCode = undefined;
       if (Array.isArray(events)) this._feed = { events, generatedAt: reply.generated_at, sources: reply.sources, location: reply.location };
     } else {
@@ -578,12 +612,12 @@ class AreaEventsCard extends HTMLElement {
       this._feedErrorCode = code;
     }
     const after = JSON.stringify([this._status, this._feedError, this._feed && this._feed.generatedAt]);
-    // Nothing new leaves the tiles alone, so images are not reloaded.
+    // Nothing new changes nothing on screen; new events are merged into the existing tiles in place.
     if (before === after && this._els) this._updateHeader();
-    else this._render();
+    else this._applyData();
 
     const state = reply && reply.state;
-    const busy = reply && (state === "pending" || state === "discovering" || state === "unavailable" || reply.refreshing);
+    const busy = reply && (state === "pending" || state === "discovering" || state === "unavailable" || reply.refreshing || this._discovering());
     const delay = reply ? (busy ? POLL_BUSY_MS : POLL_READY_MS) : PERMANENT_ERRORS.has(code) ? POLL_READY_MS : POLL_RETRY_MS;
     this._feedTimer = setTimeout(() => this._loadFeed(run), delay);
   }
@@ -637,6 +671,7 @@ class AreaEventsCard extends HTMLElement {
     const verification = event.verification || {};
     const categories = Array.isArray(event.categories) ? event.categories : event.category ? [event.category] : [];
     return {
+      id: event.id,
       title: event.title,
       start: event.start,
       end: event.end,
@@ -673,6 +708,14 @@ class AreaEventsCard extends HTMLElement {
     return hours < 48 ? `${hours} h ago` : `${Math.floor(hours / 24)} d ago`;
   }
 
+  /** Is a search for this card's profile queued or running (so the progress panel shows)? */
+  _discovering() {
+    if (this._usesInline() || this._feedError || !this._status) return false;
+    const progress = this._status.progress;
+    if (progress && ACTIVE_PHASES.includes(progress.phase)) return true;
+    return !progress && (this._status.state === "pending" || this._status.state === "discovering");
+  }
+
   /** What the viewer should know about the search, or undefined when there is nothing to say. */
   _feedNotice(count) {
     if (this._usesInline()) return undefined;
@@ -685,12 +728,19 @@ class AreaEventsCard extends HTMLElement {
       notes.push("Loading events...");
     } else if (status.state === "unavailable") {
       notes.push(`The Area Events app is not reachable (${status.message || "no answer"}).${this._feed ? ` Showing earlier data${updated ? ` from ${updated}` : ""}.` : ""}`);
-    } else if (status.state === "pending" || status.state === "discovering") {
-      notes.push(`Finding events near ${this._placeLabel()}. The first search can take a few minutes.`);
+    } else if (this._discovering()) {
+      // the progress panel says what is happening; a failed earlier run is still worth a word
+      if (status.message && this._feed) notes.push(`The last refresh failed (${status.message}); showing earlier data${updated ? ` from ${updated}` : ""}.`);
+    } else if (status.state === "error" && status.outcome === "no_results") {
+      notes.push(`${status.message || "No upcoming events were found."} Try a larger radius or another area.`);
     } else if (status.state === "error") {
       notes.push(`Events could not be found for ${this._placeLabel()}: ${status.message || "discovery failed"}`);
     } else if (status.message) {
       notes.push(`Could not refresh events (${status.message}). Showing data${updated ? ` from ${updated}` : ""}.`);
+    } else if (status.outcome === "partial") {
+      const sources = this._feed && this._feed.sources && typeof this._feed.sources === "object" ? Object.values(this._feed.sources) : [];
+      const failing = sources.filter((source) => source && source.ok === false).length;
+      notes.push(`${failing || "Some"} of ${sources.length || "the"} sources could not be read; events they provided earlier are kept.`);
     } else if (count === 0) {
       notes.push("No upcoming events match.");
     }
@@ -714,9 +764,9 @@ class AreaEventsCard extends HTMLElement {
     for (const tile of this._tiles || []) tile.matches = categoriesFor(tile.event, extra);
   }
 
+  /** Builds the card's frame once; events and status are then merged in place by _applyData. */
   _render() {
     if (!this._config || !this.shadowRoot) return;
-    const events = this._events();
     const root = this.shadowRoot;
     root.replaceChildren();
 
@@ -726,39 +776,121 @@ class AreaEventsCard extends HTMLElement {
     const wrap = this._el("div", "wrap");
 
     this._els = {};
+    this._tiles = [];
     this._els.header = this._el("div", "sticky-header");
     wrap.append(this._els.header);
     if (this._config.demo) wrap.append(this._el("div", "demo-banner", "DEMONSTRATION DATA - not real events"));
 
     this._els.notice = this._el("div", "notice");
     wrap.append(this._els.notice);
-    this._updateNotice(events.length);
+
+    this._els.progress = this._renderProgress();
+    wrap.append(this._els.progress);
 
     this._els.filters = this._el("div", "filters");
     wrap.append(this._els.filters);
 
-    const extra = [...this._settings.interests, ...this._prefs.custom];
-    this._tiles = [];
-    if (events.length > 0) {
-      const grid = this._el("div", "grid");
-      for (const event of events) {
-        const tile = { event, el: this._renderEvent(event), matches: categoriesFor(event, extra) };
-        this._tiles.push(tile);
-        grid.append(tile.el);
-      }
-      wrap.append(grid);
-      this._els.noMatch = this._el("div", "no-match", "No events match the selected categories.");
-      this._els.noMatch.hidden = true;
-      wrap.append(this._els.noMatch);
-    } else if (this._usesInline()) {
-      wrap.append(this._el("div", "empty", "No events to show."));
-    }
+    this._els.body = this._el("div", "events");
+    wrap.append(this._els.body);
 
-    const updated = this._generatedAt() ? ` · events updated ${this._formatDate(this._generatedAt())}` : "";
-    wrap.append(this._el("div", "footer", `${AREA_EVENTS_CARD_BUILD}${updated}`));
+    this._els.footer = this._el("div", "footer");
+    wrap.append(this._els.footer);
     card.append(wrap);
     root.append(style, card);
+    this._applyData();
+  }
+
+  /** The progress panel: built once so its animation is never restarted; _updateProgress only changes its text. */
+  _renderProgress() {
+    const panel = this._el("div", "progress");
+    panel.hidden = true;
+    panel.setAttribute("role", "status");
+    panel.setAttribute("aria-live", "polite");
+    const row = this._el("div", "row");
+    const text = this._el("div", "text");
+    this._els.headline = this._el("div", "headline");
+    this._els.detail = this._el("div", "detail");
+    text.append(this._els.headline, this._els.detail);
+    row.append(this._icon("mdi:calendar-search"), text, this._el("div", "spinner"));
+    panel.append(row, this._el("div", "bar"));
+    return panel;
+  }
+
+  /** Merges the current events and status into the frame: tiles are kept, added or removed individually. */
+  _applyData() {
+    if (!this._els || !this._els.body) {
+      this._render();
+      return;
+    }
+    const events = this._events();
+    this._syncTiles(events);
+    this._updateNotice(events.length);
+    this._updateProgress(events.length);
+    const updated = this._generatedAt() ? ` · events updated ${this._formatDate(this._generatedAt())}` : "";
+    this._els.footer.textContent = `${AREA_EVENTS_CARD_BUILD}${updated}`;
     this._refreshFilters();
+  }
+
+  /**
+   * Reconciles the tiles with the events: a tile whose event is unchanged keeps its element (so images do not
+   * reload or flash), changed events get a new tile, vanished ones are removed, and the order follows the events.
+   */
+  _syncTiles(events) {
+    const extra = [...this._settings.interests, ...this._prefs.custom];
+    const previous = new Map((this._tiles || []).map((tile) => [tile.key, tile]));
+    const used = new Set();
+    const tiles = events.map((event, index) => {
+      let key = event.id || `${event.title}|${event.start}`;
+      if (used.has(key)) key = `${key}#${index}`;
+      used.add(key);
+      const signature = JSON.stringify(event);
+      const old = previous.get(key);
+      if (old && old.signature === signature) return old;
+      return { event, key, signature, el: this._renderEvent(event), matches: categoriesFor(event, extra) };
+    });
+    this._tiles = tiles;
+
+    const body = this._els.body;
+    if (tiles.length === 0) {
+      body.replaceChildren();
+      this._els.grid = this._els.noMatch = undefined;
+      if (this._usesInline()) body.append(this._el("div", "empty", "No events to show."));
+      return;
+    }
+    if (!this._els.grid) {
+      this._els.grid = this._el("div", "grid");
+      this._els.noMatch = this._el("div", "no-match", "No events match the selected categories.");
+      this._els.noMatch.hidden = true;
+      body.replaceChildren(this._els.grid, this._els.noMatch);
+    }
+    const wanted = tiles.map((tile) => tile.el);
+    const current = this._els.grid.children;
+    if (current.length !== wanted.length || wanted.some((el, i) => current[i] !== el)) this._els.grid.replaceChildren(...wanted);
+  }
+
+  /** Shows what discovery is really doing; large while there is nothing else to look at, compact above existing tiles. */
+  _updateProgress(count) {
+    const panel = this._els && this._els.progress;
+    if (!panel) return;
+    const active = this._discovering();
+    panel.hidden = !active;
+    if (!active) return;
+    const status = this._status || {};
+    const progress = status.progress || {};
+    const compact = count > 0;
+    panel.className = compact ? "progress compact" : "progress";
+    const refreshing = status.initial === false;
+    this._els.headline.textContent = compact
+      ? (refreshing ? "Refreshing events..." : "Finding more events...")
+      : `Discovering events near ${this._placeLabel()}`;
+    const parts = [];
+    if (progress.phase === "queued" || !progress.phase) parts.push("Waiting to start");
+    else if (progress.current) parts.push(`${progress.phase === "processing" ? "Processing" : "Searching"} ${progress.current}`);
+    else parts.push("Starting");
+    if (progress.total) parts.push(`${Math.min(progress.completed || 0, progress.total)} of ${progress.total} sources done`);
+    if (progress.failed) parts.push(`${progress.failed} could not be read`);
+    if (progress.events) parts.push(`${progress.events} event${progress.events === 1 ? "" : "s"} so far`);
+    this._els.detail.textContent = parts.join(" · ");
   }
 
   _updateNotice(count) {
