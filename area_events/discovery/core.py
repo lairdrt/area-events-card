@@ -14,7 +14,6 @@ USER_AGENT = "area-events-card-poc/0.1 (personal Home Assistant project; +https:
 REQUEST_INTERVAL = 2.0  # seconds between requests to the same host
 TIMEOUT = 20
 TIMEZONE_NAME = "America/Los_Angeles"
-DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "events.json")
 
 
 class FetchError(Exception):
@@ -124,15 +123,7 @@ def html_to_text(fragment):
 
 # --- storage ----------------------------------------------------------------
 
-def load_events(path=DATA_FILE):
-    try:
-        with open(path, encoding="utf-8") as handle:
-            return json.load(handle)
-    except (OSError, ValueError):
-        return None
-
-
-def save_events(document, path=DATA_FILE):
+def save_events(document, path):
     """Atomic write so a crash never leaves a truncated feed."""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     temporary = path + ".tmp"

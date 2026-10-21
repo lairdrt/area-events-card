@@ -1,13 +1,4 @@
 {
-  "location": {
-    "name": "San Diego, CA",
-    "latitude": 32.7157,
-    "longitude": -117.1611,
-    "country": "US",
-    "region": "CA",
-    "timezone": "America/Los_Angeles",
-    "radius_miles": 25
-  },
   "retention_days": 3,
   "verification": {
     "min_independent_publishers": 2
@@ -94,10 +85,5 @@
         "days": 14
       }
     }
-  ],
-  "control": {
-    "max_radius_miles": 100,
-    "min_change_interval_seconds": 300,
-    "geocodes_per_hour": 20
-  }
+  ]
 }

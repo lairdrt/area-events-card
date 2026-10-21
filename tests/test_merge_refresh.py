@@ -8,7 +8,7 @@ from discovery import refresh as refresh_module
 from discovery import sources as sources_module
 from discovery.core import FetchError, make_event, finish_event
 from discovery.merge import merge_events, title_relation, venues_match
-from discovery.publish import FeedError, publish_feed, validate_feed
+from discovery.publish import FeedError, validate_feed, write_atomic
 
 from datetime import datetime, timedelta, timezone
 
@@ -159,48 +159,27 @@ class RefreshRetention(unittest.TestCase):
         os.utime(lock.path, (old, old))
         self.assertEqual(self.run_refresh(), 0)
 
-    def test_publish_failure_reports_error_and_keeps_destination(self):
-        destination = os.path.join(self.folder, "missing-dir", "events.json")
-        self.assertEqual(self.run_refresh(publish_to=destination), 1)
-        self.assertFalse(os.path.exists(destination))
 
-
-class PublishSafety(unittest.TestCase):
+class FeedSafety(unittest.TestCase):
     def feed(self, n=1):
         events = [{"id": f"x:{i}", "title": "T", "start": "2030-01-01T00:00:00-08:00", "url": "https://x.example"} for i in range(n)]
         return {"generated_at": "2030-01-01T00:00:00-08:00", "events": events}
 
-    def test_valid_feed_is_published_and_no_temp_files_remain(self):
-        with tempfile.TemporaryDirectory() as folder:
-            destination = os.path.join(folder, "events.json")
-            self.assertEqual(publish_feed(self.feed(3), destination), 3)
-            self.assertEqual(os.listdir(folder), ["events.json"])
-            validate_feed(json.load(open(destination, encoding="utf-8")))
+    def test_valid_feed_passes_and_empty_or_invalid_feeds_are_refused(self):
+        validate_feed(self.feed(3))
+        for bad in ({"generated_at": "x", "events": []}, {"events": [{"id": "1"}]}, {"events": None}, []):
+            with self.assertRaises(FeedError):
+                validate_feed(bad)
 
-    def test_empty_or_invalid_feed_never_replaces_a_good_one(self):
+    def test_failed_atomic_write_leaves_the_old_file_and_no_temp_files(self):
         with tempfile.TemporaryDirectory() as folder:
             destination = os.path.join(folder, "events.json")
-            publish_feed(self.feed(2), destination)
-            good = open(destination, encoding="utf-8").read()
-            for bad in ({"generated_at": "x", "events": []}, {"events": [{"id": "1"}]}, {"events": None}, []):
-                with self.assertRaises(FeedError):
-                    publish_feed(bad, destination)
-            self.assertEqual(open(destination, encoding="utf-8").read(), good)
-
-    def test_failed_write_leaves_destination_and_cleans_up(self):
-        with tempfile.TemporaryDirectory() as folder:
-            destination = os.path.join(folder, "events.json")
-            publish_feed(self.feed(2), destination)
-            good = open(destination, encoding="utf-8").read()
-            with mock.patch("discovery.publish.os.replace", side_effect=OSError("share dropped")):
+            write_atomic(destination, "good")
+            with mock.patch("discovery.publish.os.replace", side_effect=OSError("disk full")):
                 with self.assertRaises(OSError):
-                    publish_feed(self.feed(5), destination)
-            self.assertEqual(open(destination, encoding="utf-8").read(), good)
+                    write_atomic(destination, "bad")
+            self.assertEqual(open(destination, encoding="utf-8").read(), "good")
             self.assertEqual(os.listdir(folder), ["events.json"])
-
-    def test_missing_destination_directory_is_an_error(self):
-        with self.assertRaises(FeedError):
-            publish_feed(self.feed(), os.path.join(tempfile.gettempdir(), "no-such-dir-xyz", "events.json"))
 
 
 if __name__ == "__main__":

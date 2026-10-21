@@ -164,12 +164,8 @@ class Registry(unittest.TestCase):
             adapter = sources_module.adapter_module(module)
             self.assertFalse(hasattr(adapter, "COVERAGE"), module)  # coverage lives in configuration, not adapters
 
-    def test_example_configurations_load(self):
-        for name in ("discovery.san-diego.json", "discovery.austin.json"):
-            with open(os.path.join(os.path.dirname(__file__), "..", "examples", name), encoding="utf-8") as handle:
-                config = json.load(handle)
-            parse_spec(config["location"])
-            registry.load_sources(config)
+    def test_registered_sources_load(self):
+        registry.load_sources(load_config())
 
     def test_validation_errors(self):
         bad = {

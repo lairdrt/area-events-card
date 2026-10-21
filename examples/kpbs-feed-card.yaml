@@ -1,4 +1,0 @@
-# Real events from the deployed discovery feed (see README: Showing real events).
-type: custom:area-events-card
-title: San Diego Events
-feed: /local/area-events-card/events.json

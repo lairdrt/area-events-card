@@ -1,6 +1,4 @@
-"""Safe feed writing and publishing (validate, write beside target, atomic replace)."""
-import hashlib
-import json
+"""Feed validation and atomic file writing."""
 import os
 
 
@@ -36,22 +34,3 @@ def write_atomic(path, text):
     finally:
         if os.path.exists(temporary):
             os.remove(temporary)
-
-
-def publish_feed(document, destination):
-    """Validate, write atomically to `destination`, and read it back to confirm.
-
-    The destination directory must already exist (the HA www folder is created
-    by deploy.ps1). An invalid or empty feed never touches the destination.
-    """
-    validate_feed(document)
-    if not os.path.isdir(os.path.dirname(os.path.abspath(destination))):
-        raise FeedError(f"destination directory does not exist: {os.path.dirname(destination)}")
-    text = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
-    write_atomic(destination, text)
-    with open(destination, encoding="utf-8") as handle:
-        written = handle.read()
-    if hashlib.sha256(written.encode()).hexdigest() != hashlib.sha256(text.encode()).hexdigest():
-        raise FeedError(f"read-back of {destination} does not match what was written")
-    validate_feed(json.loads(written))
-    return len(document["events"])

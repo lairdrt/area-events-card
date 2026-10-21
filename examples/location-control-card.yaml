@@ -1,8 +1,0 @@
-# The real-feed card with location control: `area` and `radius_miles` in YAML set the one place the server discovers events for.
-# Needs the scripts from homeassistant/location_control.example.yaml (see docs/location-control.md).
-type: custom:area-events-card
-title: Area Events
-feed: /local/area-events-card/events.json
-location_control: true
-area: San Diego, CA   # city, ZIP code (needs country) or "latitude, longitude"; omit to use the Home Assistant home location
-radius_miles: 25
