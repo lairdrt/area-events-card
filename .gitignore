@@ -11,3 +11,6 @@ __pycache__/
 .venv/
 /data/
 .env
+
+# local review assets (photo candidates, contact sheets); not committed
+/review/
