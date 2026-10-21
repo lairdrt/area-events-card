@@ -10,7 +10,7 @@ import json
 import time
 
 from .client import AreaEventsAuthError, AreaEventsConnectionError, AreaEventsRequestError
-from .const import ACTIVE_SECONDS, REGISTER_TTL_SECONDS
+from .const import ACTIVE_SECONDS, REGISTER_TTL_SECONDS, UNPROVEN_SECONDS
 
 BUSY_STATES = ("pending", "discovering")
 
@@ -51,7 +51,8 @@ class Hub:
 
     async def request(self, profile, since=None):
         """The current answer for a profile. Never waits for discovery. Raises AreaEventsAuthError / AreaEventsRequestError."""
-        key = json.dumps(profile, sort_keys=True)
+        # "San Diego, CA" and "san diego, ca" are the same place: one record, one registration
+        key = json.dumps({**profile, "area": profile["area"].lower()} if "area" in profile else profile, sort_keys=True)
         record = self._records.get(key)
         created = record is None
         if created:
@@ -95,8 +96,10 @@ class Hub:
         await self.client.status()
         now = self.clock()
         for key, record in list(self._records.items()):
-            if now - record.last_requested > ACTIVE_SECONDS:
-                del self._records[key]
+            idle = now - record.last_requested
+            proven = bool(record.snapshot) and "events" in record.snapshot
+            if idle > ACTIVE_SECONDS or (not proven and idle > UNPROVEN_SECONDS):
+                del self._records[key]  # no card is asking for it any more; the app expires it by itself
         for record in list(self._records.values()):
             async with record.lock:
                 await self._sync(record)

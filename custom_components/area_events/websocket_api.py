@@ -49,7 +49,8 @@ async def ws_events(hass: HomeAssistant, connection: websocket_api.ActiveConnect
         connection.send_error(msg["id"], "invalid_profile", str(error))
         return
     except AreaEventsRequestError as error:
-        connection.send_error(msg["id"], "rejected", error.message)
+        # 429 means the app is at capacity: the card should try again later, not treat it as a bad configuration or no events
+        connection.send_error(msg["id"], "capacity" if error.status == 429 else "rejected", error.message)
         return
     except AreaEventsAuthError:
         entries[0].async_start_reauth(hass)

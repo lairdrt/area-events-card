@@ -380,8 +380,10 @@ class WebSocket(unittest.TestCase):
 
     def test_errors_reach_the_card_with_a_code_and_a_message(self):
         self.assertEqual(self.call(self.hass(None), {})[2], "not_configured")
-        refused = self.entry_with_hub(error=client.AreaEventsRequestError(429, "too many areas"))
-        self.assertEqual(self.call(self.hass(refused), {"area": "x"})[2:], ("rejected", "too many areas"))
+        refused = self.entry_with_hub(error=client.AreaEventsRequestError(422, "could not resolve location"))
+        self.assertEqual(self.call(self.hass(refused), {"area": "x"})[2:], ("rejected", "could not resolve location"))
+        full = self.entry_with_hub(error=client.AreaEventsRequestError(429, "too many different areas"))
+        self.assertEqual(self.call(self.hass(full), {"area": "x"})[2:], ("capacity", "too many different areas"))
         denied = self.entry_with_hub(error=client.AreaEventsAuthError("no"))
         self.assertEqual(self.call(self.hass(denied), {"area": "x"})[2], "unauthorized")
         self.assertEqual(denied.started_reauth, 1)

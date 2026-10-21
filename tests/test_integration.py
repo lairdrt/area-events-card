@@ -168,7 +168,9 @@ class HubCoordination(unittest.TestCase):
     def test_registration_is_repeated_now_and_then(self):
         profile = {"area": "Austin, TX", "radius_miles": 25.0}
         run(self.hub.request(profile))
-        self.now += 1000
+        self.now += 500
+        run(self.hub.request(profile))  # a card keeps asking
+        self.now += 500
         run(self.hub.refresh())
         self.assertEqual(len(self.client.registered), 2)
 
@@ -196,6 +198,47 @@ class HubCoordination(unittest.TestCase):
             run(self.hub.refresh())
         kept = run(self.hub.request(profile))
         self.assertEqual((kept["state"], len(kept["events"])), ("ready", 1))
+
+    def test_spelling_variants_of_one_area_share_a_record_and_a_registration(self):
+        async def scenario():
+            for spelling in ("San Diego, CA", "san diego, ca", "SAN DIEGO, CA"):
+                for _ in range(5):
+                    await self.hub.request({"area": spelling, "radius_miles": 25.0})
+        run(scenario())
+        self.assertEqual((self.hub.profiles, len(self.client.registered)), (1, 1))
+
+    def test_abandoned_profiles_expire_quickly_but_ones_with_events_are_kept_longer(self):
+        run(self.hub.request({"area": "Austin, TX", "radius_miles": 25.0}))  # has events
+        self.client.state = "discovering"
+        for text in ("S", "Sa", "San"):  # an editor preview typed over: asked for once, never has events
+            run(self.hub.request({"area": text, "radius_miles": 25.0}))
+        self.assertEqual(self.hub.profiles, 4)
+        self.now += 130
+        self.client.state = "ready"
+        run(self.hub.refresh())
+        self.assertEqual(self.hub.profiles, 1)  # the typed-over ones are gone after two minutes
+        self.now += 500
+        run(self.hub.refresh())
+        self.assertEqual(self.hub.profiles, 1)  # the real one outlives them
+        self.now += 300
+        run(self.hub.refresh())
+        self.assertEqual(self.hub.profiles, 0)  # and goes too once no card has asked for twelve minutes
+
+    def test_a_card_that_keeps_asking_keeps_its_profile(self):
+        profile = {"area": "Austin, TX", "radius_miles": 25.0}
+        run(self.hub.request(profile))
+        for _ in range(10):
+            self.now += 290  # a ready card asks about every five minutes
+            run(self.hub.request(profile))
+            run(self.hub.refresh())
+        self.assertEqual((self.hub.profiles, len(self.client.registered)), (1, 3))  # registered again every 15 minutes, never duplicated
+
+    def test_the_app_being_at_capacity_is_an_error_for_the_card_not_an_empty_feed(self):
+        self.client.reject = (429, "too many different areas are in use (at most 12)")
+        with self.assertRaises(AreaEventsRequestError) as raised:
+            run(self.hub.request({"area": "Austin, TX", "radius_miles": 25.0}))
+        self.assertEqual(raised.exception.status, 429)
+        self.assertEqual(self.hub.profiles, 0)
 
     def test_a_refused_profile_raises_and_is_not_kept(self):
         self.client.reject = (422, "no such place")

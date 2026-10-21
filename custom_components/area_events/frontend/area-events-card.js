@@ -9,7 +9,7 @@
  * visual editor; the filter chips are the viewer's own choices, saved per card instance (see "Preferences").
  */
 
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-55d479cb";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-6d3894de";
 const CARD_TAG = "area-events-card";
 
 /*
@@ -204,6 +204,9 @@ const FEED_STALE_MS = 3 * 60 * 60 * 1000; // the app refreshes hourly by default
 const SAVE_DEBOUNCE_MS = 300;
 const AGE_TICK_MS = 60 * 1000;
 const EDITOR_DEBOUNCE_MS = 700;
+// In the dashboard editor every keystroke rebuilds the preview card; wait until the settings stop changing before
+// asking for a search, so half-typed areas never become searches of their own.
+const PREVIEW_DELAY_MS = 1500;
 const WS_EVENTS = "area_events/events";
 // Errors the user must fix; polling faster would not help.
 const ACTIVE_PHASES = ["queued", "searching", "processing"];
@@ -444,6 +447,7 @@ class AreaEventsCard extends HTMLElement {
     this._status = undefined;
     this._feedError = undefined;
     this._feedErrorCode = undefined;
+    this._previewWaited = false;
     this._filterOpen = false;
     this._editing = undefined;
     this._initPrefs();
@@ -577,7 +581,14 @@ class AreaEventsCard extends HTMLElement {
     if (!this._config || this._usesInline() || !this._hass || !this.isConnected) return;
     this._stopFeed();
     const run = this._feedRun;
-    this._feedTimer = setTimeout(() => this._loadFeed(run), 0);
+    this._feedTimer = setTimeout(() => {
+      if (this.preview && !this._previewWaited) {
+        this._previewWaited = true;
+        this._feedTimer = setTimeout(() => this._loadFeed(run), PREVIEW_DELAY_MS);
+        return;
+      }
+      this._loadFeed(run);
+    }, 0);
   }
 
   _startAgeTimer() {
@@ -722,7 +733,10 @@ class AreaEventsCard extends HTMLElement {
     const updated = this._feed && this._feed.generatedAt ? this._formatDate(this._feed.generatedAt) : undefined;
     const status = this._status || {};
     const notes = [];
-    if (this._feedError) {
+    if (this._feedErrorCode === "capacity") {
+      // the app is busy with other areas: not an empty feed and not a bad configuration; the card keeps trying
+      notes.push(`Too many different areas are being searched right now; this card will try again shortly.${this._feed ? ` Showing earlier data${updated ? ` from ${updated}` : ""}.` : ""}`);
+    } else if (this._feedError) {
       notes.push(this._feed ? `Could not refresh events (${this._feedError}). Showing earlier data${updated ? ` from ${updated}` : ""}.` : `Events are not available: ${this._feedError}`);
     } else if (!this._status) {
       notes.push("Loading events...");

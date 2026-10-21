@@ -696,6 +696,70 @@ test("the animation is lightweight CSS and stops for reduced motion", async () =
   assert.doesNotMatch(css, /#[0-9a-fA-F]{3,6}\b/, "colors come from the theme only");
 });
 
+// --- admission: the card never turns a refusal into an empty feed, and previews do not search half-typed areas ------
+
+test("a preview waits for the settings to stop changing before it asks for a search", async () => {
+  const delays = [];
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...rest) => { delays.push(ms); return realSetTimeout(fn, 0 && ms, ...rest); };
+  const hass = fakeHass();
+  try {
+    // the editor rebuilds the preview card for every keystroke: each one is replaced before its wait is over
+    for (const typed of ["S", "Sa", "San"]) {
+      const preview = new CardClass();
+      preview.preview = true;
+      preview.setConfig({ area: typed });
+      preview.hass = hass;
+      await wait(2);
+      preview.disconnectedCallback();
+    }
+    await wait(5);
+    assert.equal(hass.eventsCalls().length, 0, "half-typed areas were never searched");
+    assert.ok(delays.includes(1500));
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+});
+
+test("a card on a dashboard asks right away, a preview only after its wait", async () => {
+  const real = await make({ area: "San Diego, CA" });
+  assert.equal(real.hassStub.eventsCalls().length, 1);
+  const hass = fakeHass();
+  const preview = new CardClass();
+  preview.preview = true;
+  preview.setConfig({ area: "San Diego, CA" });
+  preview.hass = hass;
+  await wait(10);
+  assert.equal(hass.eventsCalls().length, 0);
+  await preview._loadFeed(preview._feedRun); // what its timer does once the wait is over
+  preview.disconnectedCallback();
+  assert.equal(hass.eventsCalls().length, 1);
+});
+
+test("the app being at capacity is said so, keeps earlier events and is retried soon - it is not an empty feed", async () => {
+  const card = await make({ area: "San Diego, CA" });
+  card.hassStub.fail = { code: "capacity", message: "too many different areas are in use (at most 12)" };
+  await pollAgain(card);
+  const notice = text(byClass(card.shadowRoot, "notice")[0]);
+  assert.match(notice, /Too many different areas are being searched right now; this card will try again shortly\. Showing earlier data/);
+  assert.doesNotMatch(notice, /No upcoming events/);
+  assert.equal(byClass(card.shadowRoot, "event").length, 3);
+
+  const first = await make({ area: "San Diego, CA" }, { hass: Object.assign(fakeHass(), { fail: { code: "capacity", message: "too many different areas" } }) });
+  assert.match(text(byClass(first.shadowRoot, "notice")[0]), /Too many different areas are being searched right now/);
+  assert.equal(byClass(first.shadowRoot, "event").length, 0);
+
+  const delays = [];
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...rest) => { delays.push(ms); return realSetTimeout(fn, 0 && ms, ...rest); };
+  try {
+    await pollAgain(card);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+  assert.ok(delays.includes(30000), "retried in 30 s, unlike a configuration error");
+});
+
 // --- build -------------------------------------------------------------------------------
 
 test("the card the integration serves is the current source, stamped", async () => {

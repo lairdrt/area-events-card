@@ -32,7 +32,8 @@ MIN_INTERVAL = 900
 RETRY_SECONDS = 600            # after a failed run
 ACTIVE_SECONDS = 7 * 86400     # profiles nobody asked for within this long stop refreshing ...
 DROP_SECONDS = 14 * 86400      # ... and are deleted after this long
-IDLE_EVICT_SECONDS = 600       # a profile asked for within this long is never evicted to make room
+IDLE_EVICT_SECONDS = 600       # a profile with events asked for within this long is not evicted to make room
+ABANDON_SECONDS = 3600         # a profile that never produced events and nobody has asked for in this long is deleted
 MAX_PROFILES = 12
 
 
@@ -117,7 +118,13 @@ class Engine:
             if saved.get("state") in ("pending", "discovering"):
                 saved["state"] = "pending"  # a restart abandoned the run
             self._profiles[pid] = {"queued": False, "report": [], "progress": None, **saved}
-            if self._feed(pid) is None or self._due(self._profiles[pid]):
+            record = self._profiles[pid]
+            if self._feed(pid) is None:
+                # A profile that never produced events is only worth retrying if someone asked for it lately; the rest
+                # (typed-over editor previews, removed cards) wait until a card asks again.
+                if self.clock() - record["requested_at"] <= IDLE_EVICT_SECONDS:
+                    self._enqueue(pid)
+            elif self._due(record):
                 self._enqueue(pid)
 
     # --- feeds -----------------------------------------------------------------------------
@@ -160,6 +167,7 @@ class Engine:
                 record["requested_at"] = now
                 self._save(record)
                 self._enqueue(pid)
+                log.info("new profile %s: %s (%d in use)", pid, profile.get("area") or profile.get("name") or "home coordinates", len(self._profiles))
                 return pid
             record["requested_at"] = now
             retry = record["state"] == "error" and now - (record.get("attempt_at") or 0) >= RETRY_SECONDS
@@ -170,13 +178,20 @@ class Engine:
             return pid
 
     def _make_room(self):
+        """Free a slot for a new profile, or refuse. The one running is never touched; profiles that never produced
+        events (a card's area typed letter by letter in the editor, a removed card) go first, then idle ones with events."""
         if len(self._profiles) < self.max_profiles:
             return
         now = self.clock()
-        idle = [r for r in self._profiles.values() if r["id"] != self._running and now - r["requested_at"] > IDLE_EVICT_SECONDS]
-        if not idle:
+        others = [r for r in self._profiles.values() if r["id"] != self._running]
+        unproven = [r for r in others if r.get("success_at") is None and self._feed(r["id"]) is None]
+        idle = [r for r in others if now - r["requested_at"] > IDLE_EVICT_SECONDS]
+        victims = unproven or idle
+        if not victims:
             raise EngineError(429, f"too many different areas are in use (at most {self.max_profiles}); remove a card or wait a few minutes")
-        self._drop(min(idle, key=lambda r: r["requested_at"])["id"])
+        victim = min(victims, key=lambda r: r["requested_at"])
+        log.info("evicting profile %s (%s) to make room", victim["id"], victim["profile"].get("area") or "coordinates")
+        self._drop(victim["id"])
 
     def _drop(self, pid):
         self._profiles.pop(pid, None)
@@ -268,8 +283,10 @@ class Engine:
         with self._lock:
             now = self.clock()
             for pid, record in list(self._profiles.items()):
-                if now - record["requested_at"] > DROP_SECONDS and not record["queued"] and self._running != pid:
-                    log.info("dropping unused profile %s", pid)
+                unused = now - record["requested_at"]
+                abandoned = unused > ABANDON_SECONDS and self._feed(pid) is None
+                if (unused > DROP_SECONDS or abandoned) and self._running != pid:
+                    log.info("dropping unused profile %s (%s)", pid, record["profile"].get("area") or "coordinates")
                     self._drop(pid)
                 elif self._due(record):
                     self._enqueue(pid)
@@ -279,11 +296,16 @@ class Engine:
         with self._lock:
             if not self._queue:
                 return None
-            pid = self._queue.popleft()
+            # Whoever asked most recently is the one still waiting; older first-time requests that nobody repeated are
+            # left for later and skipped once abandoned.
+            pid = max(self._queue, key=lambda queued: self._profiles[queued]["requested_at"] if queued in self._profiles else 0)
+            self._queue.remove(pid)
             record = self._profiles.get(pid)
             if record is None:
                 return pid
             record["queued"] = False
+            if self._feed(pid) is None and self.clock() - record["requested_at"] > IDLE_EVICT_SECONDS:
+                return pid  # abandoned before it ran: not worth a search; a card that still wants it asks again
             self._running = pid
             record["progress"] = record.get("progress") or self._new_progress("queued", record)
             record["progress"].update(phase="searching", started_at=_iso(self.clock()), finished_at=None)

@@ -164,23 +164,116 @@ class Scheduling(EngineCase):
         self.assertEqual(again.snapshot(pid)["state"], "ready")
         self.assertIsNone(again.run_next())
 
-    def test_the_number_of_profiles_is_bounded(self):
-        engine = self.make(max_profiles=2)
-        engine.register({"area": "A1"})
-        engine.register({"area": "A2"})
-        with self.assertRaises(EngineError) as raised:  # both were just asked for, so neither can be evicted
-            engine.register({"area": "A3"})
-        self.assertEqual(raised.exception.status, 429)
-        self.clock.now += 1200
-        engine.register({"area": "A3"})
-        self.assertEqual(engine.status()["profiles"], 2)
-
     def test_snapshot_omits_unchanged_events(self):
         pid = self.engine.register(AUSTIN)
         self.drain()
         generated = self.engine.snapshot(pid)["generated_at"]
         self.assertTrue(self.engine.snapshot(pid, since=generated)["unchanged"])
         self.assertNotIn("events", self.engine.snapshot(pid, since=generated))
+
+
+class Admission(EngineCase):
+    """Profile identity and admission: repeated loads reuse one profile, abandoned ones never exhaust the limit."""
+
+    def typed_letter_by_letter(self, engine, text="San Diego, CA"):
+        ids = []
+        for i in range(len(text)):
+            self.clock.now += 0.5  # keystrokes arrive over a few seconds
+            ids.append(engine.register({"area": text[: i + 1].rstrip(), "radius_miles": 25}))
+        return ids
+
+    def test_repeated_card_loads_and_equivalent_spellings_reuse_one_profile(self):
+        ids = set()
+        for _ in range(20):  # page loads, a second dashboard, the editor preview of the same card
+            for spelling in ("San Diego, CA", "  San   Diego, CA ", "san diego, ca"):
+                ids.add(self.engine.register({"area": spelling, "radius_miles": 25}))
+                ids.add(self.engine.register({"area": spelling, "radius_miles": 25.0, "sources": []}))
+        self.assertEqual(len(ids), 1)
+        self.assertEqual(self.engine.status()["profiles"], 1)
+        self.drain()
+        self.assertEqual(len(self.refresh.calls), 1)  # one discovery, however often it was asked for
+
+    def test_an_area_typed_letter_by_letter_never_locks_out_the_real_card(self):
+        self.typed_letter_by_letter(self.engine)  # 13 distinct half-typed areas arrive within seconds, more than the limit of 12
+        self.assertLessEqual(self.engine.status()["profiles"], 12)
+        self.clock.now += 0.5
+        real = self.engine.register({"area": "San Diego, CA", "radius_miles": 25})  # never refused
+        self.assertEqual(self.engine.snapshot(real)["state"], "pending")
+        self.assertEqual(self.engine.run_next(), real)  # whoever asked last is searched first, not after twelve typos
+        self.assertEqual(self.engine.snapshot(real)["state"], "ready")
+
+    def test_a_profile_being_discovered_is_never_evicted(self):
+        engine = self.make(max_profiles=3)
+        running = engine.register({"area": "Running, CA"})
+        outcome = {}
+        original = self.refresh.__call__
+
+        def busy(config, options, **kwargs):
+            for name in ("B", "C", "D", "E"):  # other areas arrive while this one is being searched
+                engine.register({"area": name})
+            outcome["still_there"] = engine.snapshot(running)["state"]
+            return original(config, options, **kwargs)
+
+        engine.refresh_fn = busy
+        engine.run_next()
+        self.assertEqual(outcome["still_there"], "discovering")
+        self.assertEqual(engine.snapshot(running)["state"], "ready")
+        self.assertLessEqual(engine.status()["profiles"], 3)
+
+    def test_profiles_with_events_survive_the_clean_up_of_abandoned_ones(self):
+        proven = self.engine.register({"area": "Austin, TX"})
+        self.drain()
+        before = self.engine.snapshot(proven)["events"]
+        self.typed_letter_by_letter(self.engine, "Boston, MA")
+        self.clock.now += 2 * 3600
+        self.engine.tick()
+        self.assertEqual(self.engine.status()["profiles"], 1)  # the unproven ones expired, the proven one stayed
+        self.assertEqual(self.engine.snapshot(proven)["events"], before)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp.name, "profiles", proven, "events.json")))
+
+    def test_when_every_profile_has_events_and_is_in_use_the_limit_is_reported_not_hidden(self):
+        engine = self.make(max_profiles=2)
+        for name in ("A1", "A2"):
+            engine.register({"area": name})
+        self.drain(engine)
+        with self.assertRaises(EngineError) as raised:
+            engine.register({"area": "A3"})
+        self.assertEqual(raised.exception.status, 429)
+        self.assertIn("too many different areas", raised.exception.message)
+        self.clock.now += 700  # idle ones with events can be evicted once nobody has asked for ten minutes
+        engine.register({"area": "A3"})
+        self.assertEqual(engine.status()["profiles"], 2)
+
+    def test_after_a_restart_abandoned_profiles_are_not_searched_but_used_ones_are(self):
+        self.engine.register({"area": "Abandoned"})
+        self.clock.now += 3600  # the engine was stopped; nobody has asked for it since
+        restarted = self.make()
+        self.assertEqual(restarted.status()["profiles"], 1)  # remembered on disk...
+        self.assertIsNone(restarted.run_next())  # ...but not searched
+        revived = restarted.register({"area": "Abandoned"})  # a card asks again
+        self.assertEqual(restarted.run_next(), revived)
+
+        fresh = self.make()
+        recent = fresh.register({"area": "Just asked"})
+        self.clock.now += 60
+        again = self.make()
+        self.assertEqual(again.run_next(), recent)  # asked a minute before the restart: still wanted
+
+    def test_queued_requests_nobody_repeated_are_skipped(self):
+        stale = self.engine.register({"area": "Typo"})
+        self.clock.now += 700
+        fresh = self.engine.register({"area": "Real"})
+        self.assertEqual(self.engine.run_next(), fresh)
+        self.assertEqual(self.engine.run_next(), stale)  # popped, but too old to be worth a search
+        self.assertEqual(len(self.refresh.calls), 1)
+        self.assertEqual(self.engine.snapshot(stale)["state"], "pending")
+
+    def test_separate_areas_stay_isolated_through_all_of_it(self):
+        a, b = self.engine.register({"area": "Austin, TX"}), self.engine.register({"area": "Boston, MA"})
+        self.drain()
+        self.typed_letter_by_letter(self.engine, "Chicago, IL")
+        self.assertEqual({e["id"].split(":")[0] for e in self.engine.snapshot(a)["events"]}, {"Austin, TX"})
+        self.assertEqual({e["id"].split(":")[0] for e in self.engine.snapshot(b)["events"]}, {"Boston, MA"})
 
 
 class Sources(EngineCase):
