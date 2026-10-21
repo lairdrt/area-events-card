@@ -1,0 +1,34 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Area Events app",
+        "description": "Open the Area Events app in Settings > Apps, copy its hostname from the Info tab (it looks like abc12345-area-events) and the token you set in its Configuration tab.",
+        "data": {
+          "url": "App address",
+          "token": "Token"
+        },
+        "data_description": {
+          "url": "For example http://abc12345-area-events:8765",
+          "token": "The same token as in the app's configuration."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Token rejected",
+        "description": "The Area Events app rejected the token. Enter the token from the app's configuration.",
+        "data": {
+          "token": "Token"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "The app could not be reached. Check that it is running and that the address is correct.",
+      "invalid_auth": "The app rejected the token.",
+      "invalid_url": "Enter the address as http://hostname:8765."
+    },
+    "abort": {
+      "already_configured": "This app is already set up.",
+      "reauth_successful": "The token was updated."
+    }
+  }
+}
