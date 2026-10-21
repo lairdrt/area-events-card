@@ -13,7 +13,7 @@ Contact sheets (local, untracked): `review/category-photos/final-1.jpg` (music, 
 - Not covered by the licence and not cleared: logos or artwork visible inside photos. Items to eyeball are noted below. No person releases are held; people are identifiable in some photos (marked), so avoid captions implying endorsement.
 - Source access: Pexels and Unsplash scripted search/API returned 401/403, so candidates were found through page fetches and viewed locally. Unsplash was **not** used (no per-asset verification possible). Wikimedia Commons was not needed for this pass. Photographer names come from each photo page, not from filenames.
 
-## Manifest (39 approved-with-caveat candidates)
+## Manifest (39 candidates; 34 visually approved, 5 replacements awaiting review)
 
 Source URL pattern: `https://www.pexels.com/photo/<id>/`. Licence: Pexels License ("Free").
 
@@ -23,19 +23,19 @@ Source URL pattern: `https://www.pexels.com/photo/<id>/`. Licence: Pexels Licens
 | music-2 | [8040838](https://www.pexels.com/photo/8040838/) | Musicians Playing Musical Instrument | [ANTONI SHKRABA production](https://www.pexels.com/@anthonyshkraba-production/) | 6000x4000 |  |
 | music-3 | [1613240](https://www.pexels.com/photo/1613240/) | Man Playing Guitar Singing On Stage | [Nandhu Kumar](https://www.pexels.com/@nandhukumar/) | 4602x3068 |  |
 | theater-1 | [713149](https://www.pexels.com/photo/713149/) | People at Theater | [Monica Silvestre](https://www.pexels.com/@monica/) | 4032x3024 |  |
-| theater-2 | [13632046](https://www.pexels.com/photo/13632046/) | Person Covered in Delicate Fabric Dancing on Stage | [Miguel Rodriguez Leon](https://www.pexels.com/@miguel-rodriguez-leon-279978609/) | 6000x3375 |  |
+| theater-2 | [20898292](https://www.pexels.com/photo/20898292/) | Actors on Theater Stage | [468684 Ink](https://www.pexels.com/@468684-ink-1117962645/) | 10667x7096 | Replacement, awaiting visual review. Costumed actors, stage lighting |
 | theater-3 | [16225271](https://www.pexels.com/photo/16225271/) | Actors on Stage Playing a Medieval Play | [Arian Fernandez](https://www.pexels.com/@troopper84/) | 5760x3223 |  |
 | festival-1 | [36204083](https://www.pexels.com/photo/36204083/) | Vibrant Dragon Dance in Outdoor Street Festival | [Soc Nang Dong](https://www.pexels.com/@soc-nang-d-ng-2150345854/) | 5520x3680 | Asian-cultural parade; suits parade/cultural events |
 | festival-2 | [30693440](https://www.pexels.com/photo/30693440/) | Vibrant Street Festival Parade Celebration | [Tuan Vy](https://www.pexels.com/@tuan-vy-903011268/) | 6000x4000 |  |
-| festival-3 | [30211544](https://www.pexels.com/photo/30211544/) | Colorful Street Parade in Urban Environment | [Yang (handle 956048109)](https://www.pexels.com/@956048109/) | 3872x2592 |  |
+| festival-3 | [27036324](https://www.pexels.com/photo/27036324/) | Performers on Stilts Posing with Visitors of Funfair | [Chris F](https://www.pexels.com/@chris-f-38966/) | 5463x3590 | Replacement, awaiting visual review. Patriotic costumes suggest the US, but the page states no location |
 | food-restaurant-1 | [2387675](https://www.pexels.com/photo/2387675/) | People in a Bar | [Adrien Olichon](https://www.pexels.com/@adrien-olichon-1257089/) | 6000x4000 | Bar/dining interior |
 | food-restaurant-2 | [12181619](https://www.pexels.com/photo/12181619/) | People at Restaurant | [Cihan Yuce](https://www.pexels.com/@cihanyuce/) | 6016x4016 |  |
 | food-restaurant-3 | [19648312](https://www.pexels.com/photo/19648312/) | Patio of a Restaurant | [Owen Mao](https://www.pexels.com/@owen/) | 6000x4000 | Outdoor dining option |
 | food-farmers-market-1 | [868110](https://www.pexels.com/photo/868110/) | Vegetables Stall | [AS Photography](https://www.pexels.com/@asphotography/) | 6016x4016 | Genuine farmers-market events only |
-| food-farmers-market-2 | [30391784](https://www.pexels.com/photo/30391784/) | Vibrant Outdoor Market in Whitehouse, Texas | [John Robertson](https://www.pexels.com/@john-robertson-1100376905/) | 4608x3072 | Genuine farmers-market events only |
+| food-farmers-market-2 | [27052301](https://www.pexels.com/photo/27052301/) | A Woman Buying Fresh Food at the Market | [coldbeer](https://www.pexels.com/@coldbeer-277046249/) | 12032x8032 | Replacement, awaiting visual review. French signage visible, so probably not a US market; genuine farmers-market events only |
 | food-farmers-market-3 | [2924427](https://www.pexels.com/photo/2924427/) | Two Women in Front of Vegetable Market | [Brett Sayles](https://www.pexels.com/@brett-sayles/) | 6048x4024 | Identifiable people; genuine farmers-market events only |
 | food-truck-1 | [10380371](https://www.pexels.com/photo/10380371/) | People Standing Near a Food Truck Parked Between Palm Trees | [Kate Trysh](https://www.pexels.com/@katetrysh/) | 4104x2736 |  |
-| food-truck-2 | [19469682](https://www.pexels.com/photo/19469682/) | Food Truck in Winter | [Ruben Boekeloo](https://www.pexels.com/@ruben-boekeloo-521336009/) | 4000x6000 | Portrait source; needs a crop. Winter scene |
+| food-truck-2 | [16782204](https://www.pexels.com/photo/16782204/) | Women Buying Coffee at a Mobile Food Truck | [Robert So](https://www.pexels.com/@robertkso/) | 6240x4160 | Replacement, awaiting visual review. Bright, landscape, people ordering |
 | sports-1 | [1884576](https://www.pexels.com/photo/1884576/) | People Watching Football Match | [Tembela Bohle](https://www.pexels.com/@bohlemedia/) | 6720x4480 |  |
 | sports-2 | [2820900](https://www.pexels.com/photo/2820900/) | Men Playing Basketball | [Wallace Chuck](https://www.pexels.com/@chuck/) | 6000x4000 |  |
 | sports-3 | [32471037](https://www.pexels.com/photo/32471037/) | Vibrant Rugby Match at Sunset in Stadium | [Magda Ehlers](https://www.pexels.com/@magda-ehlers-pexels/) | 5472x3648 |  |
@@ -61,13 +61,25 @@ Source URL pattern: `https://www.pexels.com/photo/<id>/`. Licence: Pexels Licens
 
 ### Review flags
 
-- **theater-2** (draped fabric on a stage) is the weakest: reads as abstract stage, not obviously theater. Replace if you agree.
-- **food-truck**: only two candidates; food-truck-2 is portrait and winter, needs a crop.
 - **food-restaurant-3** is an empty patio (outdoor dining); **food-restaurant-1** is a bar/dining room.
 - **music-3** shows a "25" stage backdrop, **community-1** a small shop sign: minor, not brand logos, but crop if bothersome.
-- **festival**: all three are Asian street parades; fine for parades and cultural festivals, a poor match for a US music festival or fair. **general-2/3** or a fair photo may serve those better.
+- **festival**: festival-1 and festival-2 are Asian street parades. festival-3 was replaced (see below).
 - **arts-3**: paintings on easels, check for legible signatures at full size.
 - Excluded after review: restricted or unclear images, white-studio and headless-torso shots, a space-model photo with a white border artifact, an image of volunteers assisting a wheelchair user (sensitive framing).
+
+## Replacement round (2026-10-21)
+
+The 34 other candidates were visually approved and are unchanged. Four were replaced and one alternative was added; contact sheet `review/category-photos/replacements.jpg`, images `review/category-photos/images/<code>.jpg` (ignored, not committed). All five pages were opened individually and show the Pexels "Free" licence.
+
+| Code | Replaces | Pexels id | Photographer | Size | Status |
+|---|---|---|---|---|---|
+| theater-2 | old theater-2 (13632046) | [20898292](https://www.pexels.com/photo/20898292/) | [468684 Ink](https://www.pexels.com/@468684-ink-1117962645/) | 10667x7096 | awaiting review |
+| festival-3 | old festival-3 (30211544) | [27036324](https://www.pexels.com/photo/27036324/) | [Chris F](https://www.pexels.com/@chris-f-38966/) | 5463x3590 | awaiting review; US location not stated on page |
+| food-farmers-market-2 | old (30391784) | [27052301](https://www.pexels.com/photo/27052301/) | [coldbeer](https://www.pexels.com/@coldbeer-277046249/) | 12032x8032 | awaiting review; French signage, likely not US |
+| food-truck-2 | old (19469682) | [16782204](https://www.pexels.com/photo/16782204/) | [Robert So](https://www.pexels.com/@robertkso/) | 6240x4160 | awaiting review |
+| festival-2-alt | none; festival-2 kept | [39967166](https://www.pexels.com/photo/39967166/) | [Adedoyin Tinuoye](https://www.pexels.com/@adedoyin-tinuoye-847499875/) | 3120x2496 (5:4) | alternative; Nigerian cultural celebration, location not stated on page |
+
+Redistribution: unchanged from the licence section above (Pexels licence is silent on open-source repositories; Unsplash and Wikimedia were not used this round, Pexels covered all five). The replaced originals are dropped from the approved set.
 
 ## Recommended integration approach (not implemented)
 
