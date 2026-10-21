@@ -29,7 +29,7 @@ globalThis.document = {
 globalThis.customElements = { get: () => undefined, define: (name, c) => { if (name === "area-events-card") CardClass = c; } };
 globalThis.window = { location: { pathname: "/lovelace/events" }, localStorage: new Storage() };
 await import("../src/area-events-card.js");
-const { categoriesFor, normalizePrefs, prefsKey, readSettings, assertEditable, EDITOR_SCHEMA } = CardClass._internals;
+const { categoriesFor, normalizePrefs, prefsKey, readSettings, assertEditable, EDITOR_SCHEMA, ART, ART_LABELS, artFor } = CardClass._internals;
 
 const day = 24 * 3600 * 1000;
 const iso = (offsetMs) => new Date(Date.now() + offsetMs).toISOString();
@@ -98,6 +98,7 @@ async function make(config, { feed = makeFeed(), hass, reply } = {}) {
   card.setConfig(config);
   card.hass = hass;
   await wait();
+  for (let i = 0; i < 60 && !(card._status || card._feedError || card._usesInline()); i++) await wait(5); // a slow machine may need longer
   card.disconnectedCallback();
   card.hassStub = hass;
   return card;
@@ -606,8 +607,9 @@ test("tiles appear as soon as usable events exist, with a compact indicator whil
 
 test("new results are merged into the existing tiles: unchanged ones keep their elements and images", async () => {
   const withImage = (title, days, extra = {}) => event(title, days, { image: `https://img.example/${encodeURIComponent(title)}.jpg`, ...extra });
-  const one = makeFeed({ generated_at: "2030-01-01T00:00:00+00:00", events: [withImage("Alpha", 1), withImage("Beta", 3)] });
-  const two = makeFeed({ generated_at: "2030-01-01T00:05:00+00:00", events: [withImage("Alpha", 1), withImage("Beta", 3, { verified: true, verification: { status: "verified", evidence: ["two publishers agree"] } }), withImage("Gamma", 2)] });
+  const alpha1 = withImage("Alpha", 1); // one object: the same event must be byte-identical in both answers, whatever the clock does
+  const one = makeFeed({ generated_at: "2030-01-01T00:00:00+00:00", events: [alpha1, withImage("Beta", 3)] });
+  const two = makeFeed({ generated_at: "2030-01-01T00:05:00+00:00", events: [alpha1, withImage("Beta", 3, { verified: true, verification: { status: "verified", evidence: ["two publishers agree"] } }), withImage("Gamma", 2)] });
   const card = await make({}, { reply: sequence(answer(one, { refreshing: true, initial: true, progress: searching() }), answer(two, { refreshing: true, initial: true, progress: searching({ completed: 2 }) })) });
   const [alpha, beta] = byClass(card.shadowRoot, "event");
   const images = created.img;
@@ -691,7 +693,7 @@ test("the animation is lightweight CSS and stops for reduced motion", async () =
   const card = await make({});
   const css = card.shadowRoot.children[0].textContent;
   assert.match(css, /@keyframes ae-spin/);
-  assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[^}]*\.spinner \{ animation: none; \}[\s\S]*\.bar::before \{ animation: none/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*\.image img \{ transition: none; \}[\s\S]*\.spinner \{ animation: none; \}[\s\S]*\.bar::before \{ animation: none/);
   assert.match(css, /var\(--primary-color\)/);
   assert.doesNotMatch(css, /#[0-9a-fA-F]{3,6}\b/, "colors come from the theme only");
 });
@@ -758,6 +760,135 @@ test("the app being at capacity is said so, keeps earlier events and is retried 
     globalThis.setTimeout = realSetTimeout;
   }
   assert.ok(delays.includes(30000), "retried in 30 s, unlike a configuration error");
+});
+
+// --- images: photos, failure fallback, category artwork ----------------------------------------------------------
+
+const tileFor = (card, title) => byClass(card.shadowRoot, "event").find((tile) => text(byClass(tile, "title")[0]) === title);
+const imgOf = (tile) => walk(tile).find((el) => el.tag === "img");
+const artOf = (tile) => byClass(tile, "art")[0];
+const tagOf = (tile) => byClass(tile, "art-tag")[0];
+const withImages = (title, images, extra = {}) => event(title, 2, { images, image_url: images[0], ...extra });
+
+test("the packaged artwork is complete, themed, offline and well-formed", () => {
+  const kinds = ["music", "theater", "festival", "food", "sports", "arts", "science", "family", "community", "outdoors", "general"];
+  assert.deepEqual(Object.keys(ART).sort(), [...kinds].sort());
+  assert.deepEqual(Object.keys(ART_LABELS).sort(), [...kinds].sort());
+  for (const kind of kinds) {
+    const markup = ART[kind];
+    assert.ok(markup.startsWith("<svg ") && markup.endsWith("</svg>"), kind);
+    assert.doesNotMatch(markup, /https?:|<image|href=|<script|on\w+=|url\(/i, `${kind}: nothing external or active`);
+    assert.doesNotMatch(markup, /(fill|stroke)="/, `${kind}: colours come from the theme classes only`);
+    const stack = [];
+    for (const [, close, name, selfClosing] of markup.matchAll(/<(\/?)([a-z]+)[^>]*?(\/?)>/g)) {
+      if (selfClosing) continue;
+      if (close) assert.equal(stack.pop(), name, `${kind}: balanced tags`);
+      else stack.push(name);
+    }
+    assert.deepEqual(stack, [], `${kind}: all tags closed`);
+  }
+});
+
+test("the artwork is shipped inside the card the integration serves, so it needs no extra request", async () => {
+  const { readFileSync } = await import("node:fs");
+  const served = readFileSync(new URL("../custom_components/area_events/frontend/area-events-card.js", import.meta.url), "utf8");
+  assert.equal((served.match(/: SVG_HEAD \+/g) || []).length, 11, "eleven illustrations in the served file");
+  assert.match(served, /Illustration/);
+});
+
+test("artwork follows the event's category, with a general illustration when there is none", () => {
+  const kind = (e) => artFor(categoriesFor(e));
+  assert.equal(kind({ title: "Jazz concert at the park" }), "music");
+  assert.equal(kind({ title: "Shakespeare in the park", description: "theatre" }), "theater");
+  assert.equal(kind({ title: "Stand up comedy night" }), "theater");
+  assert.equal(kind({ title: "Street festival" }), "festival");
+  assert.equal(kind({ title: "Wine tasting dinner" }), "food");
+  assert.equal(kind({ title: "Marathon and 5k" }), "sports");
+  assert.equal(kind({ title: "Gallery exhibition" }), "arts");
+  assert.equal(kind({ title: "Astronomy lecture" }), "science");
+  assert.equal(kind({ title: "Kids storytime" }), "family");
+  assert.equal(kind({ title: "Neighborhood cleanup volunteers" }), "community");
+  assert.equal(kind({ title: "Guided hike on the trail" }), "outdoors");
+  assert.equal(kind({ title: "Quarterly planning meeting" }), "general");
+  assert.equal(kind({ title: "Jazz brunch at the beach", description: "wine" }), "music", "the first category in priority order wins");
+});
+
+test("an event with a photo shows its illustration until the photo has loaded, then the photo", async () => {
+  const feed = makeFeed({ events: [withImages("Jazz Night", ["https://img.example/jazz.jpg"], { categories: ["Music"] })] });
+  const card = await make({}, { feed });
+  const tile = tileFor(card, "Jazz Night");
+  const img = imgOf(tile);
+  assert.equal(img.src, "https://img.example/jazz.jpg");
+  assert.equal(img.alt, "Image for Jazz Night");
+  assert.equal(img.referrerPolicy, "no-referrer");
+  assert.equal(img.loading, "lazy");
+  assert.equal(artOf(tile).hidden, false, "never an empty box while the photo loads");
+  assert.match(artOf(tile).className, /art music/);
+  assert.equal(artOf(tile).attrs["aria-label"], "Illustration: Music and concerts");
+  assert.equal(tagOf(tile).textContent, "Illustration");
+  img.listeners.load({});
+  assert.equal(img.className, "loaded");
+  assert.equal(artOf(tile).hidden, true);
+  assert.equal(tagOf(tile).hidden, true, "a real photo carries no illustration label");
+});
+
+test("a photo that fails to load falls back through the other candidates, then to the illustration", async () => {
+  const feed = makeFeed({ events: [withImages("Folk Band", ["https://a.example/1.jpg", "https://b.example/2.jpg", "https://c.example/3.jpg"], { categories: ["Music"] })] });
+  const card = await make({}, { feed });
+  const tile = tileFor(card, "Folk Band");
+  const img = imgOf(tile);
+  assert.equal(img.src, "https://a.example/1.jpg");
+  img.listeners.error({});
+  assert.equal(img.src, "https://b.example/2.jpg");
+  img.listeners.error({});
+  assert.equal(img.src, "https://c.example/3.jpg");
+  img.listeners.error({});
+  assert.equal(img.removed, true, "the broken image is removed, so no broken-image icon");
+  assert.equal(artOf(tile).hidden, false);
+  assert.equal(tagOf(tile).hidden, false, "and the illustration says it is one");
+});
+
+test("events with no photo, and cards with images switched off, show only the illustration and make no image request", async () => {
+  const none = makeFeed({ events: [event("Quarterly planning meeting", 1), event("Wine tasting", 2)] });
+  const before = created.img;
+  const card = await make({}, { feed: none });
+  assert.equal(created.img, before, "no image element at all");
+  assert.match(artOf(tileFor(card, "Quarterly planning meeting")).className, /art general/);
+  assert.match(artOf(tileFor(card, "Wine tasting")).className, /art food/);
+
+  const withPhoto = makeFeed({ events: [withImages("Jazz Night", ["https://img.example/jazz.jpg"])] });
+  const mark = created.img;
+  const off = await make({ show_images: false }, { feed: withPhoto });
+  assert.equal(created.img, mark);
+  assert.equal(imgOf(tileFor(off, "Jazz Night")), undefined);
+  assert.equal(artOf(tileFor(off, "Jazz Night")).hidden, false);
+});
+
+test("only plain http(s) photo addresses are ever used, de-duplicated and in order", async () => {
+  const feed = makeFeed({ events: [event("Odd Event", 1, { image_url: "javascript:alert(1)", images: ["data:image/png;base64,AAAA", "https://ok.example/a.jpg", "https://ok.example/a.jpg", " https://ok.example/b.jpg ", ""] })] });
+  const card = await make({}, { feed });
+  const img = imgOf(tileFor(card, "Odd Event"));
+  assert.equal(img.src, "https://ok.example/a.jpg");
+  img.listeners.error({});
+  assert.equal(img.src, "https://ok.example/b.jpg");
+  img.listeners.error({});
+  assert.equal(img.removed, true);
+  const legacy = await make({}, { feed: makeFeed({ events: [event("Single", 1, { image: "https://x.example/one.jpg" })] }) });
+  assert.equal(imgOf(tileFor(legacy, "Single")).src, "https://x.example/one.jpg", "a lone image / image_url field still works");
+});
+
+test("changing images does not disturb unchanged tiles, and the illustration is stable per event", async () => {
+  const alphaEvent = withImages("Alpha", ["https://img.example/a.jpg"]);
+  const one = makeFeed({ generated_at: "2030-01-01T00:00:00+00:00", events: [alphaEvent, event("Beta", 3)] });
+  const two = makeFeed({ generated_at: "2030-01-01T00:05:00+00:00", events: [alphaEvent, event("Beta", 3, { image_url: "https://img.example/b.jpg", images: ["https://img.example/b.jpg"] })] });
+  const card = await make({}, { reply: sequence(answer(one), answer(two)) });
+  const alpha = tileFor(card, "Alpha");
+  const betaArt = artOf(tileFor(card, "Beta"));
+  await pollAgain(card);
+  assert.equal(tileFor(card, "Alpha"), alpha);
+  assert.notEqual(tileFor(card, "Beta"), undefined);
+  assert.equal(imgOf(tileFor(card, "Beta")).src, "https://img.example/b.jpg");
+  assert.ok(betaArt);
 });
 
 // --- build -------------------------------------------------------------------------------

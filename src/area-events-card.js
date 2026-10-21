@@ -122,8 +122,28 @@ const STYLES = `
     background-color: color-mix(in srgb, var(--primary-text-color, currentColor) 10%, transparent);
     color: var(--secondary-text-color);
   }
-  .image img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-  .image ha-icon { --mdc-icon-size: 48px; }
+  .image img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 0.25s; }
+  .image img.loaded { opacity: 1; }
+  .art { position: absolute; inset: 0; --ae-accent: hsl(210 60% 55%); --ae-bg: color-mix(in srgb, var(--ae-accent) 16%, var(--card-background-color, Canvas)); }
+  .art svg { width: 100%; height: 100%; display: block; }
+  .art .bg, .art .e { fill: var(--ae-bg); }
+  .art .a { fill: var(--ae-accent); }
+  .art .b { fill: color-mix(in srgb, var(--ae-accent) 38%, transparent); }
+  .art .c { fill: color-mix(in srgb, var(--primary-text-color, CanvasText) 62%, transparent); }
+  .art .s, .art .sb, .art .sc, .art .se { fill: none; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+  .art .s { stroke: var(--ae-accent); }
+  .art .sb { stroke: color-mix(in srgb, var(--ae-accent) 45%, transparent); }
+  .art .sc { stroke: color-mix(in srgb, var(--primary-text-color, CanvasText) 55%, transparent); stroke-width: 3; }
+  .art .se { stroke: var(--ae-bg); stroke-width: 5; }
+  .art .p1 { fill: hsl(8 78% 60%); } .art .p2 { fill: hsl(46 92% 58%); } .art .p3 { fill: hsl(205 75% 56%); } .art .p4 { fill: hsl(140 52% 48%); }
+  .art.music { --ae-accent: hsl(285 58% 58%); } .art.theater { --ae-accent: hsl(345 62% 56%); } .art.festival { --ae-accent: hsl(28 86% 54%); }
+  .art.food { --ae-accent: hsl(12 74% 56%); } .art.sports { --ae-accent: hsl(150 52% 42%); } .art.arts { --ae-accent: hsl(262 52% 60%); }
+  .art.science { --ae-accent: hsl(195 70% 46%); } .art.family { --ae-accent: hsl(42 88% 50%); } .art.community { --ae-accent: hsl(172 52% 42%); }
+  .art.outdoors { --ae-accent: hsl(128 46% 42%); } .art.general { --ae-accent: hsl(220 52% 58%); }
+  .art-tag {
+    position: absolute; right: 8px; bottom: 8px; padding: 1px 8px; border-radius: 12px; font-size: 0.75rem; box-sizing: border-box;
+    background: var(--card-background-color, var(--primary-background-color)); border: 1px solid var(--divider-color); color: var(--secondary-text-color);
+  }
   .category {
     position: absolute; top: 8px; left: 8px; max-width: calc(100% - 16px);
     padding: 2px 8px; border-radius: 12px; box-sizing: border-box;
@@ -187,6 +207,7 @@ const STYLES = `
   @keyframes ae-spin { to { transform: rotate(360deg); } }
   @keyframes ae-slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
   @media (prefers-reduced-motion: reduce) {
+    .image img { transition: none; }
     .spinner { animation: none; }
     .bar::before { animation: none; width: 40%; }
   }
@@ -439,6 +460,89 @@ function writeLocal(key, prefs) {
 
 const EMPTY_PREFS = () => ({ v: 1, selected: [], custom: [] });
 
+/*
+ * Category artwork. Original flat illustrations drawn for this card (no third-party assets), embedded here so they
+ * ship with the card, need no network and follow the Home Assistant theme: every colour is a theme variable or a
+ * tint of one. They are shown when an event has no usable photo, and are always labelled as illustrations.
+ * Which one an event gets follows its categories, in ART_PRIORITY order; events without a category get "general".
+ */
+const SVG_HEAD = '<svg viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false"><rect class="bg" width="320" height="180"/>';
+const ART = {
+  music: SVG_HEAD +
+    '<g class="b"><rect x="28" y="96" width="10" height="40" rx="5"/><rect x="48" y="78" width="10" height="76" rx="5"/><rect x="68" y="62" width="10" height="108" rx="5"/>' +
+    '<rect x="242" y="62" width="10" height="108" rx="5"/><rect x="262" y="78" width="10" height="76" rx="5"/><rect x="282" y="96" width="10" height="40" rx="5"/></g>' +
+    '<g class="a"><ellipse cx="136" cy="128" rx="20" ry="15" transform="rotate(-20 136 128)"/><ellipse cx="196" cy="116" rx="20" ry="15" transform="rotate(-20 196 116)"/>' +
+    '<rect x="150" y="42" width="8" height="82"/><rect x="210" y="30" width="8" height="82"/><path d="M150 42 L218 30 L218 54 L150 66 Z"/></g></svg>',
+  theater: SVG_HEAD +
+    '<path class="b" d="M0 0 H70 Q60 90 40 180 H0 Z"/><path class="b" d="M320 0 H250 Q260 90 280 180 H320 Z"/>' +
+    '<ellipse class="a" cx="130" cy="92" rx="42" ry="52"/><ellipse class="e" cx="116" cy="80" rx="8" ry="6"/><ellipse class="e" cx="146" cy="80" rx="8" ry="6"/>' +
+    '<path class="se" d="M108 108 Q130 134 152 108"/>' +
+    '<ellipse class="c" cx="200" cy="104" rx="38" ry="48"/><ellipse class="e" cx="187" cy="94" rx="7" ry="5"/><ellipse class="e" cx="213" cy="94" rx="7" ry="5"/>' +
+    '<path class="se" d="M184 128 Q200 112 216 128"/></svg>',
+  festival: SVG_HEAD +
+    '<path class="sc" d="M0 30 Q160 70 320 30"/>' +
+    '<path class="a" d="M28 39 L52 39 L40 65 Z"/><path class="c" d="M68 45 L92 45 L80 71 Z"/><path class="a" d="M108 49 L132 49 L120 75 Z"/>' +
+    '<path class="c" d="M148 50 L172 50 L160 76 Z"/><path class="a" d="M188 49 L212 49 L200 75 Z"/><path class="c" d="M228 45 L252 45 L240 71 Z"/><path class="a" d="M268 39 L292 39 L280 65 Z"/>' +
+    '<g class="s"><path d="M110 92 V108 M110 148 V164 M72 128 H88 M132 128 H148 M83 101 L94 112 M126 144 L137 155 M137 101 L126 112 M94 144 L83 155"/></g><circle class="a" cx="110" cy="128" r="6"/>' +
+    '<g class="sb"><path d="M236 104 V116 M236 144 V156 M208 130 H220 M252 130 H264 M216 110 L224 118 M248 142 L256 150 M256 110 L248 118 M224 142 L216 150"/></g><circle class="b" cx="236" cy="130" r="5"/></svg>',
+  food: SVG_HEAD +
+    '<circle class="a" cx="160" cy="96" r="54"/><circle class="e" cx="160" cy="96" r="40"/><circle class="b" cx="160" cy="96" r="22"/>' +
+    '<g class="c"><rect x="76" y="42" width="5" height="34" rx="2.5"/><rect x="86" y="42" width="5" height="34" rx="2.5"/><rect x="96" y="42" width="5" height="34" rx="2.5"/>' +
+    '<rect x="76" y="70" width="25" height="10" rx="5"/><rect x="85" y="78" width="7" height="68" rx="3.5"/>' +
+    '<path d="M240 42 Q264 58 258 104 H240 Z"/><rect x="240" y="102" width="18" height="44" rx="5"/></g></svg>',
+  sports: SVG_HEAD +
+    '<path class="b" d="M0 152 H320 V180 H0 Z"/><g class="s"><path d="M52 66 H98 M40 90 H90 M54 114 H100"/></g>' +
+    '<circle class="a" cx="170" cy="88" r="48"/><path class="e" d="M170 64 L192 80 L184 106 L156 106 L148 80 Z"/>' +
+    '<g class="se"><path d="M170 64 V42 M192 80 L214 72 M184 106 L196 126 M156 106 L144 126 M148 80 L126 72"/></g>' +
+    '<ellipse class="c" cx="170" cy="150" rx="40" ry="6"/></svg>',
+  arts: SVG_HEAD +
+    '<path class="a" d="M160 34 C100 34 60 70 60 108 C60 142 92 152 112 148 C128 145 124 128 140 128 C156 128 160 142 176 144 C236 152 264 120 260 92 C256 56 214 34 160 34 Z"/>' +
+    '<circle class="p1" cx="106" cy="92" r="11"/><circle class="p2" cx="144" cy="68" r="11"/><circle class="p3" cx="192" cy="70" r="11"/><circle class="p4" cx="226" cy="98" r="11"/>' +
+    '<ellipse class="e" cx="136" cy="116" rx="9" ry="7"/>' +
+    '<g transform="rotate(32 270 110)"><rect class="c" x="266" y="40" width="9" height="86" rx="4.5"/><rect class="a" x="263" y="124" width="15" height="22" rx="4"/></g></svg>',
+  science: SVG_HEAD +
+    '<circle class="b" cx="44" cy="40" r="3"/><circle class="b" cx="284" cy="56" r="4"/><circle class="b" cx="270" cy="150" r="3"/><circle class="b" cx="52" cy="140" r="4"/>' +
+    '<g class="s"><ellipse cx="160" cy="90" rx="78" ry="28"/><ellipse cx="160" cy="90" rx="78" ry="28" transform="rotate(60 160 90)"/><ellipse cx="160" cy="90" rx="78" ry="28" transform="rotate(120 160 90)"/></g>' +
+    '<circle class="a" cx="160" cy="90" r="13"/><circle class="c" cx="238" cy="90" r="6"/><circle class="c" cx="199" cy="158" r="6"/><circle class="c" cx="121" cy="158" r="6"/></svg>',
+  family: SVG_HEAD +
+    '<circle class="b" cx="262" cy="46" r="28"/><path class="b" d="M0 150 Q80 112 160 140 T320 132 V180 H0 Z"/>' +
+    '<circle class="a" cx="112" cy="70" r="15"/><rect class="a" x="96" y="88" width="32" height="58" rx="15"/>' +
+    '<circle class="a" cx="208" cy="70" r="15"/><rect class="a" x="192" y="88" width="32" height="58" rx="15"/>' +
+    '<circle class="c" cx="160" cy="100" r="11"/><rect class="c" x="148" y="114" width="24" height="32" rx="11"/>' +
+    '<path class="s" d="M128 112 L148 124 M192 112 L172 124"/></svg>',
+  community: SVG_HEAD +
+    '<path class="b" d="M160 30 C152 14 130 22 138 38 L160 58 L182 38 C190 22 168 14 160 30 Z"/>' +
+    '<circle class="a" cx="106" cy="86" r="17"/><path class="a" d="M74 156 Q106 104 138 156 Z"/>' +
+    '<circle class="a" cx="214" cy="86" r="17"/><path class="a" d="M182 156 Q214 104 246 156 Z"/>' +
+    '<circle class="c" cx="160" cy="76" r="19"/><path class="c" d="M124 160 Q160 98 196 160 Z"/></svg>',
+  outdoors: SVG_HEAD +
+    '<circle class="b" cx="244" cy="46" r="24"/><path class="b" d="M0 150 L90 58 L150 122 L212 68 L320 150 V180 H0 Z"/>' +
+    '<path class="a" d="M0 180 V152 L60 112 L110 152 L172 122 L232 162 L282 132 L320 160 V180 Z"/>' +
+    '<path class="c" d="M236 166 L254 120 L272 166 Z"/><path class="c" d="M262 166 L276 130 L290 166 Z"/></svg>',
+  general: SVG_HEAD +
+    '<circle class="b" cx="52" cy="46" r="3"/><circle class="b" cx="268" cy="44" r="4"/><circle class="b" cx="262" cy="146" r="3"/><circle class="b" cx="60" cy="138" r="4"/>' +
+    '<rect class="a" x="96" y="46" width="128" height="104" rx="14"/><rect class="e" x="106" y="72" width="108" height="68" rx="8"/>' +
+    '<rect class="c" x="124" y="34" width="10" height="26" rx="5"/><rect class="c" x="186" y="34" width="10" height="26" rx="5"/>' +
+    '<polygon class="a" points="160,84 165.3,98.7 180.9,99.2 168.6,108.8 172.9,123.8 160,115 147.1,123.8 151.4,108.8 139.1,99.2 154.7,98.7"/></svg>',
+};
+const ART_LABELS = {
+  music: "Music and concerts", theater: "Theater and performing arts", festival: "Festivals", food: "Food and drink", sports: "Sports",
+  arts: "Arts and exhibitions", science: "Science and technology", family: "Family activities", community: "Community events",
+  outdoors: "Outdoors and recreation", general: "Events",
+};
+const ART_FOR_CATEGORY = {
+  music: "music", theater: "theater", comedy: "theater", festivals: "festival", markets: "festival", "food-drink": "food", sports: "sports",
+  arts: "arts", history: "arts", science: "science", technology: "science", education: "science", family: "family", community: "community",
+  outdoors: "outdoors",
+};
+const ART_PRIORITY = ["music", "theater", "comedy", "festivals", "food-drink", "sports", "arts", "science", "technology", "family", "outdoors", "community", "markets", "education", "history"];
+
+/** The artwork for an event's categories: the first match in ART_PRIORITY, else the general illustration. */
+function artFor(categoryIds) {
+  const found = ART_PRIORITY.find((id) => categoryIds.has(id));
+  return found ? ART_FOR_CATEGORY[found] : "general";
+}
+
 class AreaEventsCard extends HTMLElement {
   setConfig(config) {
     this._settings = readSettings(config);
@@ -497,7 +601,7 @@ class AreaEventsCard extends HTMLElement {
   }
 
   static get _internals() {
-    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, readSettings, assertEditable, EDITOR_SCHEMA };
+    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, readSettings, assertEditable, EDITOR_SCHEMA, ART, ART_LABELS, artFor };
   }
 
   // --- preferences ------------------------------------------------------------
@@ -689,7 +793,8 @@ class AreaEventsCard extends HTMLElement {
       location: event.location || [event.venue, event.address].filter(Boolean).join(", "),
       category: event.category || categories[0],
       categories,
-      image: event.image || event.image_url,
+      images: [...new Set([event.image, event.image_url, ...(Array.isArray(event.images) ? event.images : [])]
+        .filter((url) => typeof url === "string" && /^https?:\/\//i.test(url.trim())).map((url) => url.trim()))],
       description: event.description,
       url: event.url,
       sourceName: event.source && event.source.name,
@@ -1120,20 +1225,35 @@ class AreaEventsCard extends HTMLElement {
     const item = this._el("div", "event");
 
     const image = this._el("div", "image");
-    const placeholder = () => image.prepend(this._icon("mdi:calendar-star"));
-    if (event.image && this._settings.showImages) {
+    const artKind = artFor(categoriesFor(event, [...this._settings.interests, ...this._prefs.custom]));
+    // The illustration is always there first, so a tile never shows an empty box, a broken-image icon or a layout shift.
+    const art = this._el("div", `art ${artKind}`);
+    art.innerHTML = ART[artKind];
+    art.setAttribute("role", "img");
+    art.setAttribute("aria-label", `Illustration: ${ART_LABELS[artKind]}`);
+    const tag = this._el("span", "art-tag", "Illustration");
+    image.append(art, tag);
+    // A photo, if the event has any, fades in over it. If one fails to load the next address is tried; if all fail the
+    // illustration simply stays. Illustrations are labelled so they are never mistaken for a photo of the event.
+    const photos = this._settings.showImages ? [...event.images] : [];
+    if (photos.length) {
       const img = document.createElement("img");
-      img.src = event.image;
-      img.alt = "";
+      img.alt = `Image for ${event.title || "this event"}`;
       img.loading = "lazy";
+      img.decoding = "async";
       img.referrerPolicy = "no-referrer";
-      img.addEventListener("error", () => {
-        img.remove();
-        placeholder();
+      img.addEventListener("load", () => {
+        img.className = "loaded";
+        art.hidden = true;
+        tag.hidden = true;
       });
+      img.addEventListener("error", () => {
+        const next = photos.shift();
+        if (next) img.src = next;
+        else img.remove();
+      });
+      img.src = photos.shift();
       image.append(img);
-    } else {
-      placeholder();
     }
     if (event.category) image.append(this._el("span", "category", event.category));
 

@@ -20,6 +20,7 @@ import re
 import unicodedata
 from datetime import datetime
 
+from . import images
 from .place import combine_places
 
 NEAR_START_MINUTES = 30
@@ -169,7 +170,7 @@ def _combine(group, publishers, min_publishers, reasons):
     with_address = next((r for r in group if r.get("address")), None)
     descriptions = [r["description"] for r in group if r.get("description")]
     chosen_description = max(descriptions, key=len) if descriptions else None
-    image_record = next((r for r in group if r.get("image_url")), None)
+    image = images.choose(group)
     names = [r["source"]["name"] for r in group]
     pubs = sorted({publishers[r["_key"]] for r in group})
 
@@ -211,7 +212,7 @@ def _combine(group, publishers, min_publishers, reasons):
         # Keep anything that lost the field-by-field choice so no image or description is discarded.
         if r.get("description") and r["description"] != chosen_description:
             entry["description"] = r["description"]
-        if r.get("image_url") and image_record and r["image_url"] != image_record["image_url"]:
+        if r.get("image_url") and image["url"] and r["image_url"] != image["url"]:
             entry["image_url"] = r["image_url"]
         sources.append(entry)
 
@@ -221,9 +222,10 @@ def _combine(group, publishers, min_publishers, reasons):
         "venue": (with_address or primary).get("venue") or next((r["venue"] for r in group if r.get("venue")), None),
         "address": with_address["address"] if with_address else None,
         "description": chosen_description,
-        "image_url": image_record["image_url"] if image_record else None,
-        "image_source": (f"{image_record['source']['name']}: {image_record['image_source']}" if image_record else None),
-        "images": list(dict.fromkeys(r["image_url"] for r in group if r.get("image_url"))),
+        "image_url": image["url"],
+        "image_source": (f"{image['source']}: {image['detail']}" if image["url"] else None),
+        "images": ([image["url"]] + image["alternates"]) if image["url"] else [],
+        "image_provenance": {"tier": image["tier"], "kind": image["kind"], "source": image["source"], "skipped": image["skipped"]},
         "categories": list(dict.fromkeys(c for r in group for c in r.get("categories", []))),
         "price": next((r["price"] for r in group if r.get("price")), None),
         "retrieved_at": max(r["retrieved_at"] for r in group),

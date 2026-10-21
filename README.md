@@ -56,6 +56,8 @@ show_filters: true
 
 The filter chips (Show all, categories, your own categories) are the viewer's choices, saved per card instance in the viewer's Home Assistant user data and browser. `feed:` and `entity:` from earlier versions are no longer supported and produce a clear error. Saved filters were keyed by those options, so set an `id` if you want to start fresh with a stable key.
 
+Every tile has a picture: the event's own photo, else a matched source's photo, else a labelled illustration for its category that ships inside the card ([docs/images.md](docs/images.md)).
+
 Event fields the card shows: `title`, `start`, `end`, `location`/`venue`, `categories`, `image`, `description`, `url`, `verified` and the verification evidence.
 
 ## Source websites

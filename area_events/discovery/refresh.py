@@ -5,7 +5,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-from . import registry
+from . import images, registry
 from .place import CityResolver, locate_events
 from .core import FetchError, Fetcher, save_events
 from .location import LocationError, PROVIDERS, resolve_location
@@ -90,6 +90,7 @@ def build_document(config, cache, now, selected, location=None):
                              "events": len(events), "notes": entry.get("notes", {})}
     minimum = config.get("verification", {}).get("min_independent_publishers", 2)
     merged = merge_events(records, publishers, minimum)
+    images.drop_overused(merged)
     document = {"generated_at": now.isoformat(timespec="seconds"), "sources": status, "events": merged}
     if location:
         document["location"] = location
