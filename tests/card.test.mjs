@@ -29,7 +29,7 @@ globalThis.document = {
 globalThis.customElements = { get: () => undefined, define: (name, c) => { if (name === "area-events-card") CardClass = c; } };
 globalThis.window = { location: { pathname: "/lovelace/events" }, localStorage: new Storage() };
 await import("../src/area-events-card.js");
-const { categoriesFor, normalizePrefs, prefsKey, readSettings, editorToConfig, configToEditor, EDITOR_SCHEMA } = CardClass._internals;
+const { categoriesFor, normalizePrefs, prefsKey, readSettings, assertEditable, EDITOR_SCHEMA } = CardClass._internals;
 
 const day = 24 * 3600 * 1000;
 const iso = (offsetMs) => new Date(Date.now() + offsetMs).toISOString();
@@ -272,24 +272,26 @@ test("layout settings: images, filters and columns", async () => {
   assert.match(styled.shadowRoot.children[0].textContent, /\(100% - 8px\) \/ 2/);
 });
 
-test("the visual editor round-trips the configuration", () => {
-  const config = { type: "custom:area-events-card", title: "Events", area: "Austin, TX", radius_miles: 30, sources: ["https://a.example", "https://b.example"],
-    interests: ["Board games: tabletop"], exclude: ["politics"], categories: ["music"], days: 7, max_events: 10, sort: "title", show_images: false };
-  const form = configToEditor(config);
-  assert.equal(form.sources, "https://a.example\nhttps://b.example");
-  assert.equal(form.interests, "Board games: tabletop");
-  assert.deepEqual(editorToConfig(config, form), config);
-  const edited = editorToConfig(config, { ...form, area: "", sources: "", exclude: "a\n\n b ", days: undefined });
-  assert.equal("area" in edited, false);
-  assert.equal("sources" in edited, false);
-  assert.equal("days" in edited, false);
-  assert.deepEqual(edited.exclude, ["a", "b"]);
-  assert.equal(edited.type, "custom:area-events-card");
-  readSettings(edited); // what the editor produces is always a valid configuration
-  const names = EDITOR_SCHEMA.flatMap((item) => item.schema ? item.schema.flatMap((inner) => inner.name) : item.name);
+test("the visual editor is Home Assistant's own form: schema, labels and what it can represent", () => {
+  const form = CardClass.getConfigForm();
+  assert.equal(CardClass.getConfigElement, undefined); // no custom editor element to keep in sync with ha-form
+  const names = EDITOR_SCHEMA.flatMap((item) => (item.schema ? item.schema.map((inner) => inner.name) : item.name));
   for (const key of ["title", "area", "radius_miles", "sources", "categories", "interests", "exclude", "days", "max_events", "sort", "columns", "show_images", "show_filters"]) {
     assert.ok(names.includes(key), key);
+    assert.ok(form.computeLabel({ name: key }) !== key, `${key} has a label`);
   }
+  assert.equal(form.computeHelper({ name: "title" }), "");
+  // list settings are free-text chip pickers that produce arrays, which is what the YAML takes
+  const lists = EDITOR_SCHEMA.filter((item) => ["sources", "interests", "exclude"].includes(item.name));
+  assert.equal(lists.length, 3);
+  assert.ok(lists.every((item) => item.selector.select.multiple && item.selector.select.custom_value));
+  // what the form can edit is accepted; what it cannot, or what is invalid, makes Home Assistant show YAML instead
+  form.assertConfig({ type: "custom:area-events-card", title: "T", area: "Austin, TX", sources: ["https://a.example"], interests: ["Games: dice"], exclude: ["x"] });
+  assert.throws(() => form.assertConfig({ interests: [{ name: "Games", keywords: ["dice"] }] }), /only be edited in YAML/);
+  assert.throws(() => form.assertConfig({ feed: "/f.json" }), /no longer supported/);
+  assert.throws(() => form.assertConfig({ radius_miles: 999 }), /radius_miles/);
+  assert.deepEqual(CardClass.getStubConfig(), { title: "Area Events", radius_miles: 25 });
+  readSettings(CardClass.getStubConfig());
 });
 
 // --- category matching ----------------------------------------------------------------

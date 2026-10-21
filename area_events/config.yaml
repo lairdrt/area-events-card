@@ -9,16 +9,17 @@ arch:
 init: false
 startup: services
 boot: auto
+discovery:
+  - area_events
 watchdog: "http://[HOST]:[PORT:8765]/health"
 ports:
   8765/tcp: null
 ports_description:
   8765/tcp: Engine API (not needed; Home Assistant reaches the app by its hostname)
 options:
-  token: ""
   refresh_minutes: 60
   log_level: info
 schema:
-  token: password
+  token: password?
   refresh_minutes: int(15,1440)
   log_level: list(debug|info|warning|error)

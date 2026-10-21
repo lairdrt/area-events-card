@@ -294,7 +294,7 @@ class AppPackage(unittest.TestCase):
 
     def test_config_declares_what_the_supervisor_requires(self):
         config = self.read("config.yaml")
-        for line in ('slug: area_events', 'init: false', '- aarch64', '- amd64', 'token: password', 'watchdog: "http://[HOST]:[PORT:8765]/health"'):
+        for line in ('slug: area_events', 'init: false', '- aarch64', '- amd64', 'token: password?', 'watchdog: "http://[HOST]:[PORT:8765]/health"'):
             self.assertIn(line, config)
         self.assertNotIn("armv7", config)
 
@@ -307,6 +307,8 @@ class AppPackage(unittest.TestCase):
     def test_image_contains_only_the_engine_and_no_pip_dependencies(self):
         dockerfile = self.read("Dockerfile")
         self.assertIn("COPY discovery/ /app/discovery/", dockerfile)
+        self.assertIn("FROM ghcr.io/home-assistant/base-python:", dockerfile)
+        self.assertNotIn("apk add", dockerfile)
         self.assertNotIn("pip install", dockerfile.replace("nothing to pip install", ""))
 
     def test_the_app_version_matches_the_integration(self):

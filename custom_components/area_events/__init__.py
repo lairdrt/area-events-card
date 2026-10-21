@@ -42,6 +42,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: AreaEventsConfigEntry) -
     coordinator = AreaEventsCoordinator(hass, entry, Hub(client))
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
+    # A coordinator only polls on its own while something listens to it. Nothing here is an entity, so listen once.
+    entry.async_on_unload(coordinator.async_add_listener(lambda: None))
     return True
 
 

@@ -448,8 +448,13 @@ class AreaEventsCard extends HTMLElement {
     return 4;
   }
 
-  static getConfigElement() {
-    return document.createElement(EDITOR_TAG);
+  static getConfigForm() {
+    return {
+      schema: EDITOR_SCHEMA,
+      computeLabel: (item) => EDITOR_LABELS[item.name] || item.name,
+      computeHelper: (item) => EDITOR_HELP[item.name] || "",
+      assertConfig: assertEditable,
+    };
   }
 
   static getStubConfig() {
@@ -457,7 +462,7 @@ class AreaEventsCard extends HTMLElement {
   }
 
   static get _internals() {
-    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, readSettings, editorToConfig, configToEditor, EDITOR_SCHEMA };
+    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, readSettings, assertEditable, EDITOR_SCHEMA };
   }
 
   // --- preferences ------------------------------------------------------------
@@ -1037,11 +1042,11 @@ class AreaEventsCard extends HTMLElement {
 }
 
 /*
- * Visual editor. `ha-form` is Home Assistant's own form component, so the editor follows the theme and the
- * user's language like every other card editor. List settings are edited one item per line.
+ * Visual editor: Home Assistant renders this schema itself (`getConfigForm`), with the same controls and the
+ * user's language as for its own cards. List settings are chip pickers that accept free text; an interest with
+ * its own keyword list written as an object can only be edited in YAML.
  */
-const EDITOR_TAG = "area-events-card-editor";
-const LIST_KEYS = ["sources", "interests", "exclude"];
+const FREE_LIST = { select: { multiple: true, custom_value: true, options: [] } };
 const EDITOR_SCHEMA = [
   { name: "title", selector: { text: {} } },
   {
@@ -1050,13 +1055,13 @@ const EDITOR_SCHEMA = [
       { name: "radius_miles", selector: { number: { min: 1, max: 250, mode: "box", unit_of_measurement: "mi" } } },
     ],
   },
-  { name: "sources", selector: { text: { multiline: true } } },
+  { name: "sources", selector: FREE_LIST },
   {
     name: "categories",
     selector: { select: { multiple: true, mode: "dropdown", options: DEFAULT_CATEGORIES.map((c) => ({ value: c.id, label: c.name })) } },
   },
-  { name: "interests", selector: { text: { multiline: true } } },
-  { name: "exclude", selector: { text: { multiline: true } } },
+  { name: "interests", selector: FREE_LIST },
+  { name: "exclude", selector: FREE_LIST },
   {
     type: "grid", name: "", schema: [
       { name: "days", selector: { number: { min: 1, max: 365, mode: "box", unit_of_measurement: "days" } } },
@@ -1073,81 +1078,26 @@ const EDITOR_SCHEMA = [
   },
 ];
 const EDITOR_LABELS = {
-  title: "Title", area: "Area (city, ZIP code or latitude, longitude)", radius_miles: "Search radius", sources: "Source websites (one per line)",
-  categories: "Only these categories", interests: "Interests (one per line: Name: keyword, keyword)", exclude: "Excluded topics (one per line)",
+  title: "Title", area: "Area (city, ZIP code or latitude, longitude)", radius_miles: "Search radius", sources: "Source websites",
+  categories: "Only these categories", interests: "Interests (Name: keyword, keyword)", exclude: "Excluded topics",
   days: "Only the next days", max_events: "Maximum events", sort: "Sort by", columns: "Columns (at most)", show_images: "Show images", show_filters: "Show filters",
 };
 const EDITOR_HELP = {
   area: "Leave empty to use the Home Assistant home location.",
-  sources: "Only websites with an adapter work; the card says which ones do not.",
+  sources: "Type an address and press Enter. Only websites with an adapter work; the card says which ones do not.",
+  interests: "Extra topics that become their own filters, for example Board games: board game, tabletop",
 };
 
-/** Card configuration -> the values ha-form shows (lists as one item per line). */
-function configToEditor(config) {
-  const data = { ...config };
-  for (const key of LIST_KEYS) {
-    if (Array.isArray(config[key])) {
-      data[key] = config[key].map((item) => (typeof item === "string" ? item : `${item.name}: ${(item.keywords || []).join(", ")}`)).join("\n");
-    }
-  }
-  return data;
-}
-
-/** ha-form values -> a clean card configuration (empty settings are removed, lists become arrays). */
-function editorToConfig(previous, data) {
-  const config = { ...previous, ...data };
-  for (const key of LIST_KEYS) {
-    if (typeof config[key] === "string") config[key] = config[key].split("\n").map((line) => line.trim()).filter(Boolean);
-  }
-  for (const key of Object.keys(config)) {
-    const value = config[key];
-    if (value === "" || value === undefined || value === null || (Array.isArray(value) && value.length === 0)) delete config[key];
-  }
-  config.type = previous.type;
-  return config;
-}
-
-class AreaEventsCardEditor extends HTMLElement {
-  setConfig(config) {
-    this._config = config;
-    this._render();
-  }
-
-  set hass(hass) {
-    this._hass = hass;
-    if (this._form) this._form.hass = hass;
-  }
-
-  _render() {
-    if (!this._form) {
-      this._form = document.createElement("ha-form");
-      this._form.computeLabel = (item) => EDITOR_LABELS[item.name] || item.name;
-      this._form.computeHelper = (item) => EDITOR_HELP[item.name];
-      this._form.schema = EDITOR_SCHEMA;
-      this._form.addEventListener("value-changed", (event) => this._changed(event));
-      this.append(this._form);
-    }
-    this._form.hass = this._hass;
-    this._form.data = configToEditor(this._config || {});
-  }
-
-  _changed(event) {
-    event.stopPropagation();
-    const config = editorToConfig(this._config || {}, event.detail.value);
-    this._config = config;
-    // Typing fires once per key; the card (and the app behind it) should only see the finished value.
-    clearTimeout(this._emit);
-    this._emit = setTimeout(() => {
-      this.dispatchEvent(new CustomEvent("config-changed", { detail: { config }, bubbles: true, composed: true }));
-    }, EDITOR_DEBOUNCE_MS);
+/** Throws (which makes Home Assistant show the YAML editor instead) when the visual editor cannot represent the configuration. */
+function assertEditable(config) {
+  readSettings(config);
+  if (Array.isArray(config.interests) && config.interests.some((item) => typeof item !== "string")) {
+    throw new Error("Interests written as objects can only be edited in YAML.");
   }
 }
 
 if (!customElements.get(CARD_TAG)) {
   customElements.define(CARD_TAG, AreaEventsCard);
-}
-if (!customElements.get(EDITOR_TAG)) {
-  customElements.define(EDITOR_TAG, AreaEventsCardEditor);
 }
 
 window.customCards = window.customCards || [];

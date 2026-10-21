@@ -39,6 +39,8 @@ Result:
 
 All requests under `/api/v1` carry `Authorization: Bearer <token>`; five wrong tokens from one address in a minute are throttled. No CORS headers: the API is for the integration only.
 
+**Authentication without typing.** On first start the app generates a random token and keeps it in `/data/token` (mode 600). When it runs under the Supervisor it announces itself through Supervisor discovery: it reads its own hostname (`/addons/self/info`) and posts `{service: area_events, config: {host, port, token}}` to `/discovery`, which the app is allowed to do because `config.yaml` lists `discovery: [area_events]` (no `hassio_api` is needed). Home Assistant Core receives it as a `hassio` config flow; the integration's `async_step_hassio` asks the user only to confirm, and later announcements (a restart, a new hostname) update the existing entry silently. The token never appears in a log, option or dashboard. An optional `token` app option (32+ characters) and the manual config-flow step remain for an app running elsewhere.
+
 | Request | Meaning |
 |---|---|
 | `GET /health` | Liveness for the Supervisor watchdog; no authentication, reveals nothing. |
@@ -68,16 +70,32 @@ To support a new place: add a Localist entry to `sources.json`, or write an adap
 
 ## The app
 
-`area_events/` follows the Home Assistant app layout: `config.yaml` (aarch64 and amd64, `init: false`, watchdog on `/health`), a `Dockerfile` based on the Home Assistant base image with Python from Alpine and nothing from pip, `run.sh`, `DOCS.md`, `translations/en.yaml`. Options (`token`, `refresh_minutes`, `log_level`) arrive in `/data/options.json`; persistent data lives in `/data`; logs go to stdout and appear in the app's Log tab. The app refuses to start without a token of at least 32 characters. The repository root has `repository.yaml` so the repository can be added in the App store.
+`area_events/` follows the Home Assistant app layout: `config.yaml` (aarch64 and amd64, `init: false`, watchdog on `/health`), a `Dockerfile` based on the Home Assistant base image with Python from Alpine and nothing from pip, `run.sh`, `DOCS.md`, `translations/en.yaml`. Options (`refresh_minutes`, `log_level`, optional `token`) arrive in `/data/options.json`; persistent data lives in `/data`; logs go to stdout and appear in the app's Log tab. The base image is `ghcr.io/home-assistant/base-python:3.14-alpine3.24` (multi-architecture, includes s6 and bashio), so building needs no package downloads. The repository root has `repository.yaml` so the repository can be added in the App store.
 
 ## Security
 
-The token exists only in the app's options and the integration's config entry. The card never sees it. The engine fetches only registered sources and public Localist calendars, honours `robots.txt`, spaces requests and accepts no paths or adapters from requests. Geocoding uses free key-less providers (Nominatim, Zippopotam.us, timeapi.io) with a disk cache.
+The token exists only in the app's data folder and the integration's config entry. The card never sees it, and the app's port is not published. The engine fetches only registered sources and public Localist calendars, honours `robots.txt`, spaces requests and accepts no paths or adapters from requests. Geocoding uses free key-less providers (Nominatim, Zippopotam.us, timeapi.io) with a disk cache.
+
+## Home Assistant interfaces used, and how they were checked
+
+Checked against the current developer documentation and the Home Assistant core, frontend and Supervisor sources (October 2026), not against a running instance:
+
+| Interface | Use here | Finding |
+|---|---|---|
+| Manifest | `domain`, `name`, `version`, `documentation`, `issue_tracker`, `codeowners`, `config_flow`, `integration_type: service`, `iot_class: local_polling`, `dependencies: frontend, http, websocket_api` | Matches the custom-integration requirements. |
+| Config flow | `async_step_user`, `async_step_hassio` + confirm, `async_step_reauth`; one unique id; `_abort_if_unique_id_configured(updates=...)`; `async_update_reload_and_abort(data_updates=...)`; `_get_reauth_entry` | Signatures confirmed in core. Discovery ends in a confirmation step as the docs require. |
+| Supervisor discovery | `discovery:` in `config.yaml`; `POST /discovery`; `async_step_hassio(HassioServiceInfo)` | Any service name is accepted and becomes the flow's domain; the default app role may call `/discovery` and `/addons/self/info`. |
+| Config entry lifecycle | `runtime_data`, `async_setup_entry`/`async_unload_entry`, `ConfigEntryNotReady`/`ConfigEntryAuthFailed` | As documented. Nothing is forwarded to platforms, so unloading has nothing to undo. |
+| DataUpdateCoordinator | `config_entry=`, `async_config_entry_first_refresh`, `UpdateFailed`, a changing `update_interval` | **Corrected:** a coordinator without listeners never polls, so the entry attaches one listener; and changing the interval does not reschedule, so a new busy profile requests a refresh (`async_boost`). |
+| WebSocket API | `websocket_command` above `async_response`, registered in `async_setup`, `send_result`/`send_error` | As documented. Not admin-only on purpose: any signed-in user may view events. Request/response rather than a subscription, since polling is cheap and cached. |
+| Frontend loading | `async_register_static_paths(StaticPathConfig)`, `add_extra_js_url` | Loads the card as a module on every page; no Lovelace resource. Static paths are unauthenticated, which is fine for a file with no secrets. |
+| Card editor | `getConfigForm()` schema rendered by Home Assistant's own form | **Corrected:** the custom editor element was replaced. `ha-form` expects its parent to hold the data and a custom element must load `ha-form` itself; `getConfigForm` has neither problem, and chip pickers (`select` with `multiple` and `custom_value`) give arrays directly. |
+| App | `config.yaml` keys, `base-python` image, `run.sh` with `with-contenv bashio`, `/data`, `watchdog`, `ports: null` | Matches the tutorial and configuration reference. |
 
 ## Limitations and runtime checks
 
-Verified here: engine logic and HTTP API (unit tests, plus a local run that discovered 323 events for Austin through the real API in 26 seconds, reported an uncovered area, an unreadable website and a Localist calendar correctly), the integration's request, client and hub logic (unit tests with a fake app), and the card (DOM-stub tests).
+Verified here: engine logic, HTTP API and Supervisor announcement (unit tests, plus a local run that discovered 323 events for Austin through the real API in 26 seconds and reported an uncovered area, an unreadable website and a Localist calendar correctly), the integration's request, client and hub logic (unit tests with a fake app), the glue (config flow, setup, coordinator, WebSocket command) run against stand-ins that model the interfaces above, and the card (DOM-stub tests).
 
-Not verified, because they need a running Home Assistant: the config flow, the coordinator, the WebSocket registration, static-path and `add_extra_js_url` loading of the card, the ha-form editor, and the app image build and start under the Supervisor on a Raspberry Pi 4. Home Assistant API usage was written against the current developer documentation (config entries with `runtime_data`, `DataUpdateCoordinator`, `async_register_static_paths`) but not executed. The first runtime checks, in order: the app starts and logs `listening`; the integration connects; a card shows events; the editor opens.
+Not verified, because they need a running Home Assistant: that the real framework accepts the glue exactly as the stand-ins do, discovery arriving from a real Supervisor, `add_extra_js_url` loading the card in the browser, the card picker and form editor, and the app image build and start on a Raspberry Pi 4. The `#branch` suffix on the repository URL is assumed to work as for other repositories. The first runtime checks, in order: the integration loads after a restart; the app starts and logs `announced`; the discovered entry appears; a card shows events; the editor opens.
 
-Known limits: registered sources currently cover San Diego, CA and the University of Texas at Austin, so most other areas report that no source applies; the first search for a new area takes a few minutes; discovery state lives per profile, so very large numbers of different areas are refused (12 at most).
+Known limits: registered sources currently cover San Diego, CA and the University of Texas at Austin, so most other areas report that no source applies; the first search for a new area takes a few minutes; very large numbers of different areas are refused (12 at most).

@@ -41,7 +41,10 @@ async def ws_events(hass: HomeAssistant, connection: websocket_api.ActiveConnect
     }
     try:
         profile = build_profile(msg, home, hass.config.country)
-        result = await entries[0].runtime_data.hub.request(profile, msg.get("since"))
+        coordinator = entries[0].runtime_data
+        result = await coordinator.hub.request(profile, msg.get("since"))
+        if coordinator.hub.busy:
+            coordinator.async_boost()
     except ProfileInputError as error:
         connection.send_error(msg["id"], "invalid_profile", str(error))
         return

@@ -5,7 +5,7 @@ import logging
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -26,6 +26,13 @@ class AreaEventsCoordinator(DataUpdateCoordinator[dict]):
     def __init__(self, hass: HomeAssistant, entry: AreaEventsConfigEntry, hub: Hub) -> None:
         super().__init__(hass, _LOGGER, config_entry=entry, name=DOMAIN, update_interval=timedelta(seconds=IDLE_INTERVAL_SECONDS))
         self.hub = hub
+
+    @callback
+    def async_boost(self) -> None:
+        """A profile is being discovered: poll quickly now instead of waiting for the relaxed interval."""
+        if self.update_interval != timedelta(seconds=BUSY_INTERVAL_SECONDS):
+            self.update_interval = timedelta(seconds=BUSY_INTERVAL_SECONDS)
+            self.config_entry.async_create_background_task(self.hass, self.async_request_refresh(), f"{DOMAIN} boost")
 
     async def _async_update_data(self) -> dict:
         try:

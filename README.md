@@ -16,13 +16,7 @@ Details and the API contracts: [docs/architecture.md](docs/architecture.md).
 
 ## Install
 
-Requirements: Home Assistant OS or Supervised (for the app), Home Assistant 2025.1 or newer.
-
-1. **App.** Settings > Apps > App store > ⋮ > Repositories, add `https://github.com/lairdrt/area-events-card`, install **Area Events**, set a **Token** (any random secret of 32+ characters) in its Configuration tab and start it.
-2. **Integration.** Copy the `custom_components/area_events` folder into your Home Assistant `config/custom_components/` and restart Home Assistant (or install the repository with HACS as a custom integration repository). Then Settings > Devices & services > Add integration > **Area Events**. Enter `http://` + the app's **Hostname** (Info tab) + `:8765`, and the same token.
-3. **Card.** Edit a dashboard > Add card > **Area Events Card**. The integration loads the card itself: no dashboard resource and no file copying.
-
-There is no step that needs the machine you develop on, and nothing needs the Cubi that earlier versions used.
+Home Assistant OS or Supervised, Home Assistant 2025.1 or newer. In short: copy the integration, install and start the app, accept the discovered integration, add the card. There is no token to copy and no dashboard resource to register. Step by step, with the PowerShell helper that copies the integration to the Samba share: [docs/installation.md](docs/installation.md).
 
 ## Card configuration
 

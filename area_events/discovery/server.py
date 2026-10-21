@@ -6,9 +6,11 @@
     GET  /api/v1/profiles/<id>   status, location, sources and events of a profile; ?since=<generated_at> omits
                                  the events when they have not changed
 
-Everything under /api/v1 needs `Authorization: Bearer <token>`. The token is the app's `token` option; without a
-token of at least 32 characters the app refuses to start. Responses carry no CORS headers: only the integration
-(server side) calls this API, never a browser.
+Everything under /api/v1 needs `Authorization: Bearer <token>`. The token is generated on first start and kept in
+<data>/token (mode 600); under the Supervisor it is handed to the integration through Supervisor discovery (see
+supervisor.py), so nobody copies it. A token set by hand (the `token` option or AREA_EVENTS_TOKEN) must have at
+least 32 characters and is used instead. Responses carry no CORS headers: only the integration (server side) calls
+this API, never a browser.
 
 Settings come from /data/options.json (Home Assistant app options) and, for running outside the Supervisor,
 from the environment: AREA_EVENTS_TOKEN, AREA_EVENTS_REFRESH_MINUTES, AREA_EVENTS_DATA_DIR, AREA_EVENTS_PORT,
@@ -18,6 +20,7 @@ import hmac
 import json
 import logging
 import os
+import secrets
 import signal
 import sys
 import threading
@@ -25,8 +28,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+from . import supervisor
 from .engine import Engine, EngineError
 from .profiles import ProfileError
+from .publish import write_atomic
 
 log = logging.getLogger("area-events")
 
@@ -155,16 +160,41 @@ def load_settings(environ=None, options_path="/data/options.json"):
     }
 
 
+def resolve_token(settings):
+    """The API token: one set by hand, else the generated one kept in the data folder (created on first start)."""
+    if settings["token"]:
+        if len(settings["token"]) < MIN_TOKEN_LENGTH:
+            raise ValueError(f"the token must be at least {MIN_TOKEN_LENGTH} characters")
+        return settings["token"]
+    path = os.path.join(settings["data_dir"], "token")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            token = handle.read().strip()
+        if len(token) >= MIN_TOKEN_LENGTH:
+            return token
+    except OSError:
+        pass
+    token = secrets.token_urlsafe(32)
+    os.makedirs(settings["data_dir"], exist_ok=True)
+    write_atomic(path, token + chr(10))
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return token
+
+
 def main():
     settings = load_settings()
     logging.basicConfig(stream=sys.__stdout__, level=getattr(logging, settings["log_level"], logging.INFO),
                         format="%(asctime)s %(levelname)s %(message)s")
-    if len(settings["token"]) < MIN_TOKEN_LENGTH:
-        log.error("the 'token' option must be at least %d characters. Set it in the app configuration and use the same value "
-                  "in the Area Events integration. Not starting.", MIN_TOKEN_LENGTH)
+    try:
+        token = resolve_token(settings)
+    except (ValueError, OSError) as error:
+        log.error("%s. Not starting.", error)
         sys.exit(1)
     engine = Engine(settings["data_dir"], interval=settings["refresh_minutes"] * 60)
-    server = make_server(Api(engine, settings["token"]), settings["host"], settings["port"])
+    server = make_server(Api(engine, token), settings["host"], settings["port"])
     stop = threading.Event()
 
     def shutdown(*_):
@@ -175,6 +205,9 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
     threading.Thread(target=engine.run_forever, args=(stop,), daemon=True).start()
+    supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
+    if supervisor_token:  # running as a Home Assistant app: tell Home Assistant where to find this API
+        threading.Thread(target=supervisor.announce_with_retries, args=(settings["port"], token, supervisor_token, stop), daemon=True).start()
     log.info("Area Events engine listening on %s:%s, refreshing every %s minutes, data in %s",
              settings["host"], settings["port"], engine.interval // 60, settings["data_dir"])
     server.serve_forever()
