@@ -46,7 +46,7 @@ show_filters: true
 | `title` | Header text. |
 | `id` | Optional short name (letters, digits, `-`, `_`) that keeps saved filters separate for identical cards on one dashboard. |
 | `area`, `radius_miles` | What to search (radius 1 to 250, default 25). Without `area`, the Home Assistant home location is used; if Home Assistant has none, the card says so. |
-| `sources` | Up to 10 website addresses: an events page, a calendar (ICS) feed or an RSS/Atom feed. Addresses the app cannot read are listed in the card with the reason. |
+| `sources` | Up to 10 **additional** website addresses (an events page, a calendar (ICS) feed or an RSS/Atom feed), read in addition to the automatic sources for the area. Addresses the app cannot read are listed in the card with the reason and never remove other events. |
 | `categories` | Built-in category ids or names to keep: music, festivals, food-drink, arts, sports, science, technology, family, community, outdoors, education, history, theater, comedy, markets, other. |
 | `interests` | Extra topics as `Name: keyword, keyword` (or `{name, keywords}`), up to 20. |
 | `exclude` | Topics to hide, matched as whole words in title, description and categories. |
@@ -62,6 +62,8 @@ Event fields the card shows: `title`, `start`, `end`, `location`/`venue`, `categ
 
 ## Source websites
 
+Websites you add are **additional**: the automatic sources for the area always run, and every readable added website is merged into the same listing (same location filter, de-duplication, classification and sorting). An address that cannot be read is reported and contributes nothing; the other events are unaffected. Removing an address removes only its events.
+
 Type the address of an events page, an ICS calendar or an RSS/Atom feed into **Source websites** in the card editor and save; the app discovers the events itself, with no per-site code. In order of preference it reads:
 
 1. **Schema.org events** in the page (JSON-LD, including `@graph`, lists and nested events, and microdata);
@@ -73,7 +75,7 @@ The address may also be a feed itself, or a single event page. Nothing is invent
 
 The card shows what happened to each address: *events found*, *no events found*, *unsupported format* (for example a page that builds its events with JavaScript, which the app never runs), *blocked* (robots.txt, HTTP 401/403/429, or a non-public address) or *unavailable*. Not every website can be read: pages without structured data or feeds, sites that require JavaScript, logins or CAPTCHAs, and sites whose robots.txt forbids the app are reported, not worked around. The registered sources in [area_events/discovery/sources.json](area_events/discovery/sources.json) (KPBS, San Diego Reader, DoSD, City of San Diego, UT Austin) and any public **Localist** calendar keep their dedicated readers, which take precedence for those addresses.
 
-**Safety.** Typed-in addresses are untrusted: http/https on ports 80 and 443 only; the host is resolved once, every address must be public (loopback, private, link-local, metadata and carrier-grade addresses are refused) and the connection is made to that exact address, so DNS rebinding cannot swap it; each redirect (at most four) is re-checked; robots.txt and Crawl-delay are honoured; requests to a host are spaced at least two seconds apart; responses are limited to 1.5 MB (compressed bodies are inflated within the same limit) and a site gets at most 30 requests (12 event pages, 3 list pages, 3 feeds) and about 100 seconds. The result of a crawl is cached for 15 minutes so profiles that share a website do not fetch it twice. No JavaScript is executed and no browser is involved. Without `sources`, the app uses the registered sources whose declared coverage overlaps the area; for an area with no such source the card says that no source applies. Details are in [docs/architecture.md](docs/architecture.md).
+**Safety.** Typed-in addresses are untrusted: http/https on ports 80 and 443 only; the host is resolved once, every address must be public (loopback, private, link-local, metadata and carrier-grade addresses are refused) and the connection is made to that exact address, so DNS rebinding cannot swap it; each redirect (at most four) is re-checked; robots.txt and Crawl-delay are honoured; requests to a host are spaced at least two seconds apart; responses are limited to 1.5 MB (compressed bodies are inflated within the same limit) and a site gets at most 30 requests (12 event pages, 3 list pages, 3 feeds) and about 100 seconds. The result of a crawl is cached for 15 minutes so profiles that share a website do not fetch it twice. No JavaScript is executed and no browser is involved. The automatic sources are the registered ones whose declared coverage overlaps the area; for an area with none, only added websites apply, and without any the card says that no source applies. Naming a registered source (for example kpbs.org) uses it even outside its declared area. Details are in [docs/architecture.md](docs/architecture.md).
 
 ## Development
 

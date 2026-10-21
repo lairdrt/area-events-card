@@ -680,23 +680,23 @@ class EngineSources(unittest.TestCase):
                           "https://nope.example": "blocked", "https://down.example": "unavailable", "https://uni.example": "supported", "https://intranet.example": "blocked"})
         self.assertEqual((report["https://good.example/events"]["adapter"], report["https://good.example/events"]["found"]), ("web", 7))
         self.assertEqual(report["https://uni.example"]["adapter"], "localist")  # a dedicated adapter wins over the generic reader
-        entries = {e["adapter"]: e for e in calls[0][0]["sources"]}
+        self.assertEqual(len(calls), 2)  # the automatic sources first, then the websites that were added
+        added = calls[1][0]["sources"][len(calls[0][0]["sources"]):]
+        entries = {e["adapter"]: e for e in added}
         self.assertEqual(sorted(entries), ["localist", "web"])
         self.assertEqual((entries["web"]["name"], entries["web"]["options"]), ("Good Events", {"days": 60, "safe": True}))
         self.assertTrue(entries["localist"]["options"]["safe"])
         self.assertEqual(report["https://good.example/events"]["id"], entries["web"]["id"])
-        registry.load_sources(calls[0][0])  # the generated registry entries are valid
+        registry.load_sources(calls[1][0])  # the generated registry entries are valid
 
-    def test_when_no_website_can_be_read_the_error_says_so_and_nothing_runs(self):
+    def test_when_no_added_website_can_be_read_the_automatic_results_stand(self):
         engine, refresh = self.make({"https://nope.example": {"status": "blocked", "reason": "refused"}})
         pid = engine.register({"area": "Austin, TX", "sources": ["https://nope.example"]})
         while engine.run_next():
             pass
         snapshot = engine.snapshot(pid)
-        self.assertEqual((snapshot["state"], refresh.calls), ("error", []))
-        self.assertIn("none of the requested websites", snapshot["error"])
+        self.assertEqual((snapshot["state"], snapshot["error"], len(refresh.calls)), ("ready", None, 1))
         self.assertEqual(snapshot["report"][0]["status"], "blocked")
-
 
 if __name__ == "__main__":
     unittest.main()

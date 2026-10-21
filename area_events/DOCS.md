@@ -18,7 +18,7 @@ The first search for a new area can take a few minutes. A failed refresh never r
 
 ## Source websites
 
-A card may name websites to read: type an events page, an ICS calendar feed or an RSS/Atom feed into the card editor and save. The app looks for Schema.org event data, linked calendar feeds and event listings by itself (no JavaScript is run, robots.txt is respected, and private network addresses are refused). Addresses it cannot read are reported back to the card with the reason: unsupported format, blocked, unavailable or no events. Without named websites the app uses the built-in sources whose coverage overlaps the card's area; today those are in the San Diego, California area and at the University of Texas at Austin, so other areas will report that no source applies until adapters are added.
+A card may name additional websites to read (in addition to the automatic sources for its area, which always run): type an events page, an ICS calendar feed or an RSS/Atom feed into the card editor and save. The app looks for Schema.org event data, linked calendar feeds and event listings by itself (no JavaScript is run, robots.txt is respected, and private network addresses are refused). Addresses it cannot read are reported back to the card with the reason: unsupported format, blocked, unavailable or no events. Without named websites the app uses the built-in sources whose coverage overlaps the card's area; today those are in the San Diego, California area and at the University of Texas at Austin, so other areas will report that no source applies until adapters are added.
 
 ## Options
 

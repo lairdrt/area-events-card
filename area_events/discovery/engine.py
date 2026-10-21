@@ -182,6 +182,13 @@ class Engine:
                 record = self._profiles[pid] = {"id": pid, "profile": profile, "state": "pending", "error": None, "queued": False,
                                                 "attempt_at": None, "success_at": None, "report": [], "progress": None, "outcome": None}
                 record["requested_at"] = now
+                sibling = self._sibling(profile, pid)
+                if sibling and self._reuse(sibling, self._dir(pid)):
+                    # Only the added websites differ: keep showing the events already found while the difference is worked out.
+                    wanted = set(profile.get("sources") or [])
+                    record["report"] = [dict(item) for item in sibling.get("report", []) if item.get("url") in wanted and item.get("status") == "supported"]
+                    record["seeded"] = True
+                    record["success_at"] = sibling["success_at"]  # it already has events to show, so it is not an "initial" search
                 self._save(record)
                 self._enqueue(pid)
                 log.info("new profile %s: %s (%d in use)", pid, profile.get("area") or profile.get("name") or "home coordinates", len(self._profiles))
@@ -348,19 +355,33 @@ class Engine:
 
     # --- one run ------------------------------------------------------------------------------------
 
-    def _sources_for(self, profile, config, fetcher):
-        """(raw registry entries, explicit?, report) for the profile's requested websites."""
+    def _automatic(self, profile, config):
+        """(entries, report, other urls): every registry source (coverage decides which apply to the area), with the registered
+        sources a card names forced on, and the typed-in addresses that no registered source reads."""
         urls = profile.get("sources") or []
+        entries = list(config["sources"])
         if not urls:
-            return config["sources"], False, []
-        registered = registry.load_sources(config)
-        raw_by_id = {entry["id"]: entry for entry in config["sources"]}
-        matched, rest = match_registered(urls, registered)
-        entries, report = [], []
+            return entries, [], []
+        matched, rest = match_registered(urls, registry.load_sources(config))
+        report = []
         for url, source in matched:
-            entries.append(raw_by_id[source.id])
+            position = next(i for i, entry in enumerate(entries) if entry["id"] == source.id)
+            entries[position] = dict(entries[position], coverage={"type": "global"})  # named by the card: used wherever the card is
             report.append({"url": url, "status": "supported", "adapter": source.adapter, "name": source.name, "id": source.id})
-        for url in rest:
+        return entries, report, rest
+
+    @staticmethod
+    def _added_entry(adapter, url, name, ident):
+        """The registry entry for a website that was added to the card (read through the safe fetcher; applies wherever the card is)."""
+        if adapter == "localist":
+            return {"id": ident, "name": name, "adapter": "localist", "url": "/".join(url.split("/", 3)[:3]), "coverage": {"type": "global"}, "options": {"days": 14, "safe": True}}
+        return {"id": ident, "name": name, "adapter": "web", "url": url, "coverage": {"type": "global"}, "options": {"days": 60, "safe": True}}
+
+    def _probe_added(self, fetcher, urls):
+        """(entries, report) for typed-in addresses no registered source reads: Localist calendars, then the generic website reader.
+        An address that cannot be read is reported with its reason and contributes nothing; it never affects the other sources."""
+        entries, report = [], []
+        for url in urls:
             host = url.split("/")[2]
             try:
                 if not self.host_check(host):
@@ -370,21 +391,18 @@ class Engine:
                 report.append({"url": url, "status": "blocked", "reason": f"{error}"[:200]})
                 continue
             if is_localist:
-                digest = hashlib.sha1(host.encode()).hexdigest()[:8]
-                entries.append({"id": f"localist_{digest}", "name": host, "adapter": "localist", "url": "/".join(url.split("/", 3)[:3]),
-                                "coverage": {"type": "global"}, "options": {"days": 14, "safe": True}})
-                report.append({"url": url, "status": "supported", "adapter": "localist", "name": host, "id": f"localist_{digest}"})
+                ident, name = f"localist_{hashlib.sha1(host.encode()).hexdigest()[:8]}", host
+                entries.append(self._added_entry("localist", url, name, ident))
+                report.append({"url": url, "status": "supported", "adapter": "localist", "name": name, "id": ident})
                 continue
             found = self.web_probe(fetcher, url)
             if found["status"] != "supported":
                 report.append({"url": url, "status": found["status"], "reason": found.get("reason", "")})
                 continue
-            digest = hashlib.sha1(url.encode()).hexdigest()[:8]
-            name = (found.get("name") or host)[:60]
-            entries.append({"id": f"web_{digest}", "name": name, "adapter": "web", "url": url, "coverage": {"type": "global"}, "options": {"days": 60, "safe": True}})
-            report.append({"url": url, "status": "supported", "adapter": "web", "name": name, "id": f"web_{digest}", "format": found.get("format"),
-                           "found": found.get("events")})
-        return entries, True, report
+            ident, name = f"web_{hashlib.sha1(url.encode()).hexdigest()[:8]}", (found.get("name") or host)[:60]
+            entries.append(self._added_entry("web", url, name, ident))
+            report.append({"url": url, "status": "supported", "adapter": "web", "name": name, "id": ident, "format": found.get("format"), "found": found.get("events")})
+        return entries, report
 
     def _is_localist(self, fetcher, url):
         """Is `url` a Localist calendar? A site that cannot be read as one simply is not (the generic reader tries next)."""
@@ -392,6 +410,27 @@ class Engine:
             return bool(self.probe(fetcher, url))
         except (FetchError, ValueError):
             return False
+
+    @staticmethod
+    def _base(profile):
+        """A profile without its added websites: the same card edited only in its Source websites shares this."""
+        return {key: value for key, value in profile.items() if key != "sources"}
+
+    def _sibling(self, profile, exclude):
+        """The most recently refreshed other profile for the same place and settings (differing only in added websites) that has a feed."""
+        base = self._base(profile)
+        siblings = [r for r in self._profiles.values() if r["id"] != exclude and self._base(r["profile"]) == base and r.get("success_at") and self._feed(r["id"])]
+        return max(siblings, key=lambda r: r["success_at"], default=None)
+
+    @staticmethod
+    def _cached_ok(folder):
+        """Ids of the sources whose results in this profile's cache came from a successful read."""
+        try:
+            with open(os.path.join(folder, "source-cache.json"), encoding="utf-8") as handle:
+                cache = json.load(handle)
+        except (OSError, ValueError):
+            return set()
+        return {key for key, entry in cache.items() if isinstance(entry, dict) and entry.get("ok") and entry.get("events")}
 
     def _reuse(self, twin, folder):
         """Copy a twin's feed (and source cache) into `folder`; False, copying nothing, if that is not possible."""
@@ -409,7 +448,7 @@ class Engine:
     def _equivalent(self, record):
         """Another profile with results for exactly the same resolved place, radius and sources, if any."""
         for other in self._profiles.values():
-            if other is not record and other.get("place_key") == record.get("place_key") and other.get("success_at") and self._feed(other["id"]):
+            if other is not record and not other.get("seeded") and other.get("place_key") == record.get("place_key") and other.get("success_at") and self._feed(other["id"]):
                 return other
         return None
 
@@ -423,9 +462,15 @@ class Engine:
         try:
             config = load_config(self.sources_path)
             fetcher = self.fetcher_factory()
-            entries, explicit, report = self._sources_for(profile, config, fetcher)
-            if explicit and not entries:
-                raise EngineError(422, "none of the requested websites can be read by an available adapter")
+            auto, report, others = self._automatic(profile, config)
+            # Websites that were read successfully before are part of the regular run (so their events never drop out of the feed
+            # while others are being worked out); only addresses not yet known to work are probed, after the automatic sources.
+            carried = [item for item in record.get("report", []) if item.get("status") == "supported" and item.get("adapter") in ("web", "localist")
+                       and item.get("id") and item.get("url") in others]
+            known = [self._added_entry(item["adapter"], item["url"], item.get("name") or item["url"], item["id"]) for item in carried]
+            report += [dict(item) for item in carried]
+            pending = [url for url in others if url not in {item["url"] for item in carried}]
+            base_entries = auto + known
             # The place is resolved here, once, by the shared geocoder; the search below only ever sees coordinates.
             try:
                 place = self.geocode(location_spec(profile), fetcher, self._geocode_cache)
@@ -434,26 +479,48 @@ class Engine:
             location = {"latitude": place["latitude"], "longitude": place["longitude"], "radius_miles": profile["radius_miles"], "name": place["display_name"]}
             location.update({key: place[key] for key in ("country", "region", "timezone") if place.get(key)})
             run_config = {"retention_days": config.get("retention_days", 3), "verification": config.get("verification", {}),
-                          "location": location, "sources": entries}
+                          "location": location, "sources": base_entries}
             with self._lock:
                 record["place_key"] = [round(place["latitude"], 3), round(place["longitude"], 3), profile["radius_miles"], sorted(profile.get("sources") or [])]
                 twin = self._equivalent(record)
+            def run_refresh(config_to_run, **extra):
+                with self._lock:
+                    record["state"] = "discovering"
+                with contextlib.redirect_stdout(_LogWriter(logging.INFO)), contextlib.redirect_stderr(stderr):
+                    return self.refresh_fn(config_to_run, {"interval": 2.0, "progress": self._progress_callback(record), **extra}, fetcher=fetcher,
+                                           cache_path=os.path.join(folder, "source-cache.json"), output=os.path.join(folder, "events.json"),
+                                           lock_path=os.path.join(folder, ".refresh.lock"),
+                                           location_cache_path=os.path.join(folder, "location-cache.json"))
+
+            codes = []
             if twin and self._feed(pid) is None and self._reuse(twin, folder):
                 # A different spelling of a place already searched with the same radius and sources: reuse those results.
                 log.info("profile %s reuses the results of %s (same place, radius and sources)", pid, twin["id"])
                 reused = twin["success_at"]
+                report, pending = [dict(item) for item in twin.get("report", [])] or report, []
                 with self._lock:
                     record["progress"] = {**self._new_progress("complete", record), "phase": "complete", "finished_at": _iso(self.clock())}
-                code = 0
+                codes.append(0)
+            elif record.get("seeded") and self._feed(pid):
+                # The feed and source results of a sibling profile are already here: rebuild the feed for this exact set of
+                # websites from them (nothing is fetched), so an edit does not repeat the automatic discovery.
+                log.info("profile %s starts from its sibling's results; only new websites are read", pid)
+                codes.append(run_refresh(run_config, offline=True))
             else:
                 log.info("discovery starting for profile %s", pid)
+                codes.append(run_refresh(run_config))
+            record["seeded"] = False
+            if pending:
+                added, found = self._probe_added(fetcher, pending)
+                report += found
                 with self._lock:
-                    record["state"] = "discovering"
-                with contextlib.redirect_stdout(_LogWriter(logging.INFO)), contextlib.redirect_stderr(stderr):
-                    code = self.refresh_fn(run_config, {"interval": 2.0, "explicit_sources": explicit, "progress": self._progress_callback(record)}, fetcher=fetcher,
-                                           cache_path=os.path.join(folder, "source-cache.json"), output=os.path.join(folder, "events.json"),
-                                           lock_path=os.path.join(folder, ".refresh.lock"),
-                                           location_cache_path=os.path.join(folder, "location-cache.json"))
+                    record["report"] = report
+                fresh = [entry for entry in added if entry["id"] not in self._cached_ok(folder)]
+                if fresh:
+                    codes.append(run_refresh(dict(run_config, sources=base_entries + added), only=[entry["id"] for entry in fresh]))
+                elif added:
+                    codes.append(run_refresh(dict(run_config, sources=base_entries + added), offline=True))
+            code = 0 if all(c == 0 for c in codes) else 2 if any(c in (0, 2) for c in codes) else 1
             progress = record["progress"]
             if code not in (0, 2):
                 reasons = [line for line in stderr.lines if not line.startswith("No source refreshed")] or list(stderr.lines)
@@ -475,7 +542,7 @@ class Engine:
             record["report"] = report
             record["error"] = error
             record["outcome"] = outcome
-            record["permanent"] = permanent or any(line.startswith("Coverage error") for line in stderr.lines)
+            record["permanent"] = permanent or (not profile.get("sources") and any(line.startswith("Coverage error") for line in stderr.lines))
             record["progress"] = {**(record.get("progress") or self._new_progress("complete", record)), "phase": "complete", "current": None,
                                   "finished_at": _iso(self.clock())}
             feed = self._feed(pid)

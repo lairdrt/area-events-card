@@ -9,7 +9,7 @@
  * visual editor; the filter chips are the viewer's own choices, saved per card instance (see "Preferences").
  */
 
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-38a503db";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-2ee614c0";
 const CARD_TAG = "area-events-card";
 
 /*
@@ -316,8 +316,8 @@ function normalizePrefs(raw, extraIds = []) {
  *   title, id                  header text; `id` keeps saved filters apart for identical cards on one dashboard
  *   area, radius_miles         the place (a city, a ZIP code or "latitude, longitude") and the search radius;
  *                              without `area` the Home Assistant home location is used
- *   sources                    website addresses to read events from (an events page, an ICS calendar or an RSS/Atom
- *                              feed); the card reports the ones it cannot read and why
+ *   sources                    extra websites to read in addition to the automatic sources for the area (an events page,
+ *                              an ICS calendar or an RSS/Atom feed); the card reports the ones it cannot read and why
  *   categories                 limit events to these built-in categories (ids or names); omit for all
  *   interests                  extra topics: "Name: keyword, keyword" (or {name, keywords})
  *   exclude                    topics to hide (any event mentioning one is dropped)
@@ -1354,7 +1354,7 @@ const EDITOR_LABELS = {
 };
 const EDITOR_HELP = {
   area: "Leave empty to use the Home Assistant home location.",
-  sources: "Type a website address and press Enter: an events page, a calendar (ICS) feed or an RSS feed. The card says which addresses it cannot read and why.",
+  sources: "Optional extra websites, read in addition to the automatic sources for the area: an events page, a calendar (ICS) feed or an RSS feed. Type an address and press Enter; the card says which ones it cannot read and why.",
   interests: "Extra topics that become their own filters, for example Board games: board game, tabletop",
 };
 

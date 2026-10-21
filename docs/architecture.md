@@ -59,7 +59,7 @@ All requests under `/api/v1` carry `Authorization: Bearer <token>`; five wrong t
 
 ## Source websites
 
-`sources` lists website addresses. Resolution happens when the profile runs:
+`sources` lists **additional** website addresses; they never replace the automatic sources (every registry source whose coverage overlaps the area). Resolution happens when the profile runs:
 
 1. an address whose host matches a registered source (`area_events/discovery/sources.json`) uses that source's adapter, regardless of its declared coverage;
 2. any other address is probed once as a Localist calendar (`/api/2/events`); hosts that do not resolve to public addresses are refused without any request;
@@ -70,7 +70,7 @@ Every request for a typed-in address goes through `SafeFetcher` (`safe.py`): pub
 
 The report entries are `{"url", "status": "supported | unsupported | blocked | unavailable | no_events", "adapter", "name", "id", "format", "found", "reason"}`; `id` names the source in the feed's `sources` block so the card can show how many events a website produced.
 
-If none of the named addresses is supported the profile fails with that explanation instead of silently using other sources. Without `sources`, registered sources are chosen by the coverage each declares; a source with unknown coverage is never assumed to apply. Pacific-time handling exists only inside the San Diego adapters, which read local wall-clock times; Localist and web sources report UTC offsets, and a web event's wall-clock time without an offset takes the page's time zone (ICS `TZID`) or else the search area's, and is skipped when neither is known.
+Each run reads the automatic sources first (plus websites that worked on an earlier run, so their events never drop out of the feed), publishing progressively; only then are addresses not yet known to work probed, and the ones that turn out readable are read in a second pass (`only=` those sources). Addresses that cannot be read appear in the report as warnings and add no run. A registered source named in `sources` is forced on (coverage `global`) in place of its automatic entry, so it is never scanned twice. A profile that differs from an existing one only in `sources` (an editor change) is **seeded** with that sibling's feed, report and source cache when it is registered: the card keeps showing the events already found, the feed is rebuilt offline for the new set of websites (removed ones disappear without fetching anything) and only genuinely new websites are read. A source with unknown coverage is never assumed to apply. Pacific-time handling exists only inside the San Diego adapters, which read local wall-clock times; Localist and web sources report UTC offsets, and a web event's wall-clock time without an offset takes the page's time zone (ICS `TZID`) or else the search area's, and is skipped when neither is known.
 
 To support a new place with its own reader: add a Localist entry to `sources.json`, or write an adapter module (see `area_events/discovery/sources/__init__.py`) and register it with its coverage.
 

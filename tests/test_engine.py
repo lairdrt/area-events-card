@@ -421,9 +421,14 @@ class Sources(EngineCase):
         pid = self.engine.register(profile)
         self.drain()
         config, options, _ = self.refresh.calls[0]
-        self.assertTrue(options["explicit_sources"])
-        names = sorted(entry["adapter"] for entry in config["sources"])
-        self.assertEqual(names, ["kpbs", "localist", "localist"])  # kpbs and utexas from the registry, news.example probed as Localist
+        self.assertNotIn("explicit_sources", options)  # named websites are added to the automatic sources, not a replacement for them
+        automatic = {entry["id"]: entry for entry in config["sources"]}
+        self.assertEqual(sorted(automatic), ["dosd", "kpbs", "sandiego_gov", "sandiegoreader", "ut_austin"])
+        self.assertEqual(automatic["kpbs"]["coverage"], {"type": "global"})  # named by the card, so used wherever the card is
+        self.assertNotEqual(automatic["dosd"]["coverage"], {"type": "global"})  # not named: coverage still decides
+        added, options2, _ = self.refresh.calls[1]
+        self.assertEqual([e["adapter"] for e in added["sources"][len(automatic):]], ["localist"])  # news.example probed as Localist
+        self.assertEqual(options2["only"], [added["sources"][-1]["id"]])
         report = {item["url"]: item for item in self.engine.snapshot(pid)["report"]}
         self.assertEqual(report["https://www.kpbs.org/events"]["status"], "supported")
         self.assertEqual(report["https://news.example/localist"]["adapter"], "localist")
@@ -431,13 +436,12 @@ class Sources(EngineCase):
         self.assertIn("no event data", report["https://blog.example"]["reason"])
         self.assertIn("not a public website", report["https://intranet.example"]["reason"])
 
-    def test_only_unsupported_websites_is_an_honest_error_and_runs_nothing(self):
+    def test_only_unsupported_websites_leave_the_automatic_results_in_place(self):
         pid = self.engine.register({"area": "Austin, TX", "sources": ["https://blog.example"]})
         self.drain()
         snapshot = self.engine.snapshot(pid)
-        self.assertEqual(snapshot["state"], "error")
-        self.assertIn("none of the requested websites", snapshot["error"])
-        self.assertEqual(self.refresh.calls, [])
+        self.assertEqual((snapshot["state"], snapshot["error"]), ("ready", None))
+        self.assertEqual(len(self.refresh.calls), 1)  # the automatic sources ran; the unsupported website added no run
         self.assertEqual(snapshot["report"][0]["status"], "unsupported")
 
     def test_an_unreachable_website_is_unsupported_not_a_crash(self):
@@ -454,8 +458,9 @@ class Sources(EngineCase):
         self.engine.register(AUSTIN)
         self.drain()
         config, options, _ = self.refresh.calls[0]
-        self.assertFalse(options["explicit_sources"])
+        self.assertNotIn("only", options)
         self.assertGreater(len(config["sources"]), 1)
+        self.assertTrue(all(entry["coverage"]["type"] == "area" for entry in config["sources"]))
 
 
 class Http(EngineCase):
