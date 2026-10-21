@@ -9,7 +9,7 @@
  * visual editor; the filter chips are the viewer's own choices, saved per card instance (see "Preferences").
  */
 
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-6d3894de";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-3e2843d1";
 const CARD_TAG = "area-events-card";
 
 /*
@@ -1242,17 +1242,29 @@ function assertEditable(config) {
   }
 }
 
-if (!customElements.get(CARD_TAG)) {
+const registered = customElements.get(CARD_TAG);
+if (!registered) {
   customElements.define(CARD_TAG, AreaEventsCard);
+} else if (registered !== AreaEventsCard && typeof registered.getConfigForm !== "function") {
+  // A tag can only be defined once per page. An older Area Events card (the dashboard resource
+  // /local/area-events-card/loader.js of the pre-integration versions) that loaded first has no visual editor and
+  // none of the integration support, and this module can not replace it.
+  console.error(
+    "Area Events: an older Area Events card is already registered, so this card and its visual editor are not in use. " +
+    "Remove the dashboard resource /local/area-events-card/loader.js (Settings > Dashboards > Resources); " +
+    "the Area Events integration loads the card by itself."
+  );
 }
 
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: `custom:${CARD_TAG}`,
-  name: "Area Events Card",
-  description: "Local events for your area, found by the Area Events integration.",
-  preview: false,
-});
+if (!window.customCards.some((card) => card.type === `custom:${CARD_TAG}`)) {
+  window.customCards.push({
+    type: `custom:${CARD_TAG}`,
+    name: "Area Events Card",
+    description: "Local events for your area, found by the Area Events integration.",
+    preview: false,
+  });
+}
 
 console.info(
   `%c AREA-EVENTS-CARD %c ${AREA_EVENTS_CARD_BUILD} `,

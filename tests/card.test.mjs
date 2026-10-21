@@ -771,3 +771,47 @@ test("the card the integration serves is the current source, stamped", async () 
   const served = readFileSync(new URL("../custom_components/area_events/frontend/area-events-card.js", import.meta.url), "utf8");
   assert.equal(served, source.replaceAll("__AREA_EVENTS_CARD_BUILD__", identifier), "run npm run build and commit the result");
 });
+
+// --- visual editor availability ------------------------------------------------------------------
+
+test("ordinary configurations, including the Austin card, are editable visually", () => {
+  const { assertConfig, schema } = CardClass.getConfigForm();
+  for (const config of [
+    { type: "custom:area-events-card", title: "Austin Events", radius_miles: 25, area: "Austin, TX" },
+    { type: "custom:area-events-card", title: "Area Events", radius_miles: 25 },
+    { type: "custom:area-events-card" },
+    { type: "custom:area-events-card", area: "San Diego, CA", radius_miles: 40, sources: ["https://calendar.utexas.edu"], categories: ["music"], interests: ["Games: dice"], exclude: ["x"], days: 14, max_events: 20, sort: "title", columns: 2, show_images: false, show_filters: true },
+  ]) assert.doesNotThrow(() => assertConfig(config), JSON.stringify(config));
+  assert.ok(Array.isArray(schema) && schema.length > 0);
+  assert.equal(typeof CardClass.getConfigForm, "function");
+  assert.equal(CardClass.getConfigElement, undefined, "Home Assistant renders the form itself");
+  assert.equal(window.customCards.filter((card) => card.type === "custom:area-events-card").length, 1);
+});
+
+test("a card registered first by an older Area Events resource is reported, with the way out", async () => {
+  const realGet = customElements.get;
+  const realError = console.error;
+  const errors = [];
+  console.error = (...args) => errors.push(args.join(" "));
+  let defined = 0;
+  const realDefine = customElements.define;
+  customElements.define = () => { defined++; };
+  try {
+    class LegacyCard {} // no getConfigForm: the pre-integration card
+    customElements.get = () => LegacyCard;
+    await import("../src/area-events-card.js?legacy-first");
+    assert.equal(defined, 0, "the tag stays with the older card; it can not be replaced");
+    assert.match(errors.join("\n"), /an older Area Events card is already registered.*Remove the dashboard resource \/local\/area-events-card\/loader\.js/);
+
+    errors.length = 0;
+    class OtherCopy { static getConfigForm() { return {}; } } // a second load of a current card is not a problem
+    customElements.get = () => OtherCopy;
+    await import("../src/area-events-card.js?second-copy");
+    assert.deepEqual(errors, []);
+    assert.equal(window.customCards.filter((card) => card.type === "custom:area-events-card").length, 1, "the picker lists the card once");
+  } finally {
+    customElements.get = realGet;
+    customElements.define = realDefine;
+    console.error = realError;
+  }
+});
