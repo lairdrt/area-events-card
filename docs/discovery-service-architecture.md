@@ -178,6 +178,12 @@ worker locally or remotely; `events [--area ID] [--source KEY] [--limit N] | --e
 
 ---
 
+## 0d. As implemented (Milestone 2D: Home Assistant integration)
+
+The Home Assistant integration (`custom_components/area_events`) now reads events from this service instead of the legacy profile-driven app: one hub per config entry, one coordinated check of the change feed per interval, per-card WebSocket subscriptions (`area_events/subscribe`), administrator-only WebSocket commands for the control API, and a read / control / process token split (`api-read-token`, `api-token`, `api-process-token`). Home Assistant holds no event store. Setup, commands, the update and outage behaviour, secure transport and the on-device checklist: [ha-integration-2d.md](ha-integration-2d.md).
+
+---
+
 ## 1. Findings from the current code
 
 ### A. Reusable capabilities (EXISTING)

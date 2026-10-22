@@ -1,40 +1,51 @@
 {
   "config": {
     "step": {
-      "hassio_confirm": {
-        "title": "Area Events app",
-        "description": "Set up the Area Events integration with the {name} app? Home Assistant found it running and already has everything it needs."
-      },
       "user": {
-        "title": "Area Events app",
-        "description": "Only needed if the app was not found automatically. Enter its address (http:// + the Hostname on its Info tab + :8765) and a token you set in its Configuration tab.",
+        "title": "Discovery Service",
+        "description": "Enter the address of the Area Events Discovery Service and its tokens. The read token lets Home Assistant show events; the optional control token also lets administrators change shared discovery settings. {transport_note}",
         "data": {
-          "url": "App address",
-          "token": "Token"
+          "url": "Service address",
+          "read_token": "Read token",
+          "control_token": "Control token (optional)"
         },
         "data_description": {
-          "url": "For example http://abc12345-area-events:8765",
-          "token": "The token option of the app (32 or more characters)."
+          "url": "For example https://events.example:8780 (a TLS reverse proxy in front of the service) or http://localhost:8780 on the same computer.",
+          "read_token": "Created by the service for read-only clients.",
+          "control_token": "Leave empty to keep Home Assistant read-only. The token is stored only in Home Assistant's backend and is never sent to a dashboard."
         }
       },
       "reauth_confirm": {
-        "title": "Token rejected",
-        "description": "The Area Events app rejected the token. Restarting the app lets Home Assistant find it again; otherwise enter the app's token.",
+        "title": "Tokens rejected",
+        "description": "The Discovery Service rejected a token. Enter the current tokens.",
         "data": {
-          "token": "Token"
+          "read_token": "Read token",
+          "control_token": "Control token (optional)"
         }
       }
     },
     "error": {
-      "cannot_connect": "The app could not be reached. Check that it is running and that the address is correct.",
-      "invalid_auth": "The app rejected the token.",
-      "invalid_url": "Enter the address as http://hostname:8765."
+      "cannot_connect": "The Discovery Service could not be reached. Check that it is running and that the address is correct.",
+      "invalid_auth": "The Discovery Service rejected the read token.",
+      "invalid_control_token": "The Discovery Service does not allow that token to change settings.",
+      "invalid_url": "Enter the address as https://hostname:8780."
     },
     "abort": {
-      "already_configured": "Area Events is already set up.",
-      "cannot_connect": "The app could not be reached. Start it and try again.",
-      "invalid_discovery": "The app sent incomplete connection details. Restart the app.",
-      "reauth_successful": "The token was updated."
+      "already_configured": "This Discovery Service is already set up.",
+      "reauth_successful": "The tokens were updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Area Events",
+        "data": {
+          "scan_interval": "Seconds between checks for new events"
+        },
+        "data_description": {
+          "scan_interval": "One check serves every card. Between 5 and 300 seconds."
+        }
+      }
     }
   }
 }

@@ -1,3 +1,4 @@
-# The simplest card: events around the Home Assistant home location.
+# The simplest card: the events of one discovery area.
 type: custom:area-events-card
 title: Area Events
+area: San Diego

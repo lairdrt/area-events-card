@@ -1,3 +1,5 @@
+> **Superseded for the integration (Milestone 2D).** The integration no longer discovers events through a Home Assistant app; it reads them from the Discovery Service. Use [ha-integration-2d.md](ha-integration-2d.md). The steps below describe the earlier arrangement and are kept for reference.
+
 # Installing on Home Assistant OS
 
 Written for Home Assistant OS on a Raspberry Pi 4 (aarch64). Nothing here restarts Home Assistant for you, and nothing needs another machine once it is installed.

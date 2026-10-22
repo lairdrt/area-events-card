@@ -93,11 +93,13 @@ def build_api(app, tokens, clock=time.time, host="127.0.0.1", port=8780, allow_r
                               host, port, allow_remote)
 
 
-def load_tokens(directory, read_token=None, process_token=None):
-    """The control token kept in `<directory>/api-token` (mode 600, created on first use), a separate read-only token and, optionally, the
-    processing token kept in `<directory>/api-process-token` (the one a remote extraction worker uses). Returns (ApiTokens, control token path)."""
+def load_tokens(directory, read=False, process=False):
+    """The control token kept in `<directory>/api-token` (mode 600, created on first use) and, when asked for, a separate read-only token in
+    `api-read-token` (for Home Assistant) and the processing token in `api-process-token` (for a remote extraction worker). Each token has its
+    own scope and file. Returns (ApiTokens, control token path)."""
     path = _token_file(directory, "api-token")
-    return ApiTokens(_stored_token(path), read_token, _stored_token(_token_file(directory, "api-process-token")) if process_token else None), path
+    return ApiTokens(_stored_token(path), _stored_token(_token_file(directory, "api-read-token")) if read else None,
+                     _stored_token(_token_file(directory, "api-process-token")) if process else None), path
 
 
 def _token_file(directory, name):

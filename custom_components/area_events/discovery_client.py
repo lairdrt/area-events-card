@@ -8,7 +8,7 @@ Not wired into the integration yet (Milestone 2B): the Discovery Service has no 
 remaining Home Assistant wiring is described in docs/discovery-service-architecture.md.
 """
 import asyncio
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 try:
     import aiohttp
@@ -123,3 +123,25 @@ class DiscoveryControlClient:
 
     async def changes(self, after=0, limit=200):
         return await self._request("GET", f"/v1/changes?after={int(after)}&limit={int(limit)}")
+
+    async def events(self, area=None, source=None, starts_from=None, starts_to=None, after=None, limit=200):
+        """One page of normalized events (`discovery.events.v1`); `after` is the previous page's `next_cursor`."""
+        query = {"area": area, "source": source, "from": starts_from, "to": starts_to, "after": after, "limit": int(limit)}
+        return await self._request("GET", "/v1/events?" + urlencode({k: v for k, v in query.items() if v is not None}))
+
+    async def event(self, event_key):
+        """One event with its revision history and field evidence."""
+        return await self._request("GET", f"/v1/events/{quote(event_key, safe='')}")
+
+    async def processing(self):
+        """Extraction work counts (how much stored evidence is not yet an event)."""
+        return await self._request("GET", "/v1/processing/status")
+
+    async def check_control(self):
+        """Raises DiscoveryAuthError unless this token may change shared settings. Changes nothing: the probe asks to update an area
+        that cannot exist, and the service decides the token's scope before it looks for the area."""
+        try:
+            await self._request("PATCH", "/v1/areas/00000000", {"expected_revision": 1, "name": "probe"})
+        except DiscoveryRequestError as error:
+            if error.status != 404:
+                raise

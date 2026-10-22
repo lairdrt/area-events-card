@@ -1,15 +1,16 @@
 /**
  * Area Events Card - Home Assistant custom Lovelace card.
  *
- * Shows the events the Area Events integration discovers for this card's `area` and `radius_miles` (or, without
- * an area, for the Home Assistant home location). The card talks only to Home Assistant, over the signed-in
- * user's own WebSocket session (`area_events/events`); it holds no secret and contacts no other server.
+ * Shows the events the Discovery Service has found for the discovery area this card's `area` names. The card talks only to
+ * Home Assistant, over the signed-in user's own WebSocket session (`area_events/subscribe`: the current view of the area, then a
+ * new one whenever it changes); it holds no secret and contacts no other server. Which areas and sources exist is decided in the
+ * Discovery Service; this card only chooses what to show of one area.
  * `events` (an inline list) shows fixed events instead, for demonstrations; see examples/demo-card.yaml.
  * Everything about what is shown (categories, interests, exclusions, date range, sorting, layout) is YAML or the
  * visual editor; the filter chips are the viewer's own choices, saved per card instance (see "Preferences").
  */
 
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-8db615c7";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-4f33d828";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
@@ -253,19 +254,18 @@ const STYLES = `
 `;
 
 const POLL_READY_MS = 5 * 60 * 1000;
-const POLL_BUSY_MS = 5 * 1000;
 const POLL_RETRY_MS = 30 * 1000;
-const FEED_STALE_MS = 3 * 60 * 60 * 1000; // the app refreshes hourly by default
+const FEED_STALE_MS = 12 * 60 * 60 * 1000; // each source is read about hourly; quiet ones less often
 const SAVE_DEBOUNCE_MS = 300;
 const AGE_TICK_MS = 60 * 1000;
 const EDITOR_DEBOUNCE_MS = 700;
 // In the dashboard editor every keystroke rebuilds the preview card; wait until the settings stop changing before
 // asking for a search, so half-typed areas never become searches of their own.
 const PREVIEW_DELAY_MS = 1500;
-const WS_EVENTS = "area_events/events";
+const WS_SUBSCRIBE = "area_events/subscribe";
 // Errors the user must fix; polling faster would not help.
 const ACTIVE_PHASES = ["queued", "searching", "processing"];
-const PERMANENT_ERRORS = new Set(["invalid_profile", "rejected", "not_configured", "unauthorized"]);
+const PERMANENT_ERRORS = new Set(["invalid_profile", "rejected", "not_configured", "unauthorized", "unknown_area"]);
 
 /*
  * Categories. Defaults are fixed; users add custom ones. An event matches a
@@ -348,10 +348,8 @@ function normalizePrefs(raw, extraIds = []) {
  * Configuration. Everything is optional:
  *
  *   title, id                  header text; `id` keeps saved filters apart for identical cards on one dashboard
- *   area, radius_miles         the place (a city, a ZIP code or "latitude, longitude") and the search radius;
- *                              without `area` the Home Assistant home location is used
- *   sources                    extra websites to read in addition to the automatic sources for the area (an events page,
- *                              an ICS calendar or an RSS/Atom feed); the card reports the ones it cannot read and why
+ *   area                       the name (or key) of a discovery area configured in the Discovery Service; required
+ *   radius_miles, sources      no longer used (areas and their sources belong to the Discovery Service); accepted and ignored
  *   categories                 limit events to these built-in categories (ids or names); omit for all
  *   interests                  extra topics: "Name: keyword, keyword" (or {name, keywords})
  *   exclude                    topics to hide (any event mentioning one is dropped)
@@ -661,6 +659,7 @@ const MAP_CREDITS = [["OpenFreeMap", "https://openfreemap.org"], [" © OpenMapTi
 
 class AreaEventsCard extends HTMLElement {
   setConfig(config) {
+    this._stopFeed();
     this._settings = readSettings(config);
     this._config = config;
     this._feed = undefined;
@@ -727,7 +726,7 @@ class AreaEventsCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { title: "Area Events", radius_miles: 25 };
+    return { title: "Area Events" };
   }
 
   static get _internals() {
@@ -800,29 +799,53 @@ class AreaEventsCard extends HTMLElement {
     return Array.isArray(this._config.events);
   }
 
-  _profileRequest() {
-    const { area, radius, sources } = this._settings;
-    return { radius_miles: radius, ...(area ? { area } : {}), ...(sources.length ? { sources } : {}) };
-  }
-
   _stopFeed() {
     clearTimeout(this._feedTimer);
     this._feedTimer = undefined;
     this._feedRun = (this._feedRun || 0) + 1; // answers still in flight are ignored
+    const unsubscribe = this._unsubscribe;
+    this._unsubscribe = undefined;
+    if (typeof unsubscribe === "function") unsubscribe();
   }
 
+  /** Follow this card's area: Home Assistant sends the current view now and a new one whenever it changes (also after a reconnect). */
   _startFeed() {
     if (!this._config || this._usesInline() || !this._hass || !this.isConnected) return;
-    this._stopFeed();
+    if (this._unsubscribe !== undefined) return; // already following, or about to
     const run = this._feedRun;
+    const area = this._settings.area;
+    const connection = this._hass.connection;
+    if (!area) return this._onFeed(run, undefined, "Set 'area' to the name of a discovery area configured in the Discovery Service.", "invalid_profile");
+    if (!connection || typeof connection.subscribeMessage !== "function") {
+      return this._onFeed(run, undefined, "Home Assistant's connection is not available.", "unavailable");
+    }
+    this._unsubscribe = null; // subscribing
     this._feedTimer = setTimeout(() => {
       if (this.preview && !this._previewWaited) {
         this._previewWaited = true;
-        this._feedTimer = setTimeout(() => this._loadFeed(run), PREVIEW_DELAY_MS);
+        this._feedTimer = setTimeout(() => this._subscribeNow(run), PREVIEW_DELAY_MS);
         return;
       }
-      this._loadFeed(run);
+      this._subscribeNow(run);
     }, 0);
+  }
+
+  _subscribeNow(run) {
+    if (run !== this._feedRun || !this._hass) return;
+    const connection = this._hass.connection;
+    connection.subscribeMessage((reply) => this._onFeed(run, reply), { type: WS_SUBSCRIBE, area: this._settings.area }).then(
+      (unsubscribe) => {
+        if (run !== this._feedRun) unsubscribe();
+        else this._unsubscribe = unsubscribe;
+      },
+      (caught) => {
+        if (run !== this._feedRun) return;
+        this._unsubscribe = undefined;
+        const code = caught && caught.code;
+        this._onFeed(run, undefined, (caught && caught.message) || String(caught), code);
+        this._feedTimer = setTimeout(() => this._startFeed(), PERMANENT_ERRORS.has(code) ? POLL_READY_MS : POLL_RETRY_MS);
+      },
+    );
   }
 
   _startAgeTimer() {
@@ -830,31 +853,20 @@ class AreaEventsCard extends HTMLElement {
     this._ageTimer = setInterval(() => this._updateHeader(), AGE_TICK_MS);
   }
 
-  async _loadFeed(run) {
-    let reply;
-    let error;
-    let code;
-    try {
-      const since = this._feed && this._feed.key;
-      reply = await this._hass.callWS({ type: WS_EVENTS, ...this._profileRequest(), ...(since ? { since } : {}) });
-    } catch (caught) {
-      error = (caught && caught.message) || String(caught);
-      code = caught && caught.code;
-    }
+  _onFeed(run, reply, error, code) {
     if (run !== this._feedRun) return;
-
     const before = JSON.stringify([this._status, this._feedError, this._feed && this._feed.key]);
     if (reply) {
-      const events = Array.isArray(reply.events) ? reply.events : reply.unchanged && this._feed ? this._feed.events : undefined;
       this._status = {
         state: reply.state, message: reply.message, refreshing: Boolean(reply.refreshing), connected: reply.connected !== false,
         report: reply.report || [], initial: reply.initial !== false, outcome: reply.outcome || undefined, progress: reply.progress || undefined,
+        notice: reply.notice || undefined, service: reply.service,
       };
       this._feedError = this._feedErrorCode = undefined;
-      if (Array.isArray(events)) {
-        // `key` is what the next poll sends as `since`: the feed's time, plus the app's imagery revision once there is one
+      if (Array.isArray(reply.events)) {
+        // `key` changes whenever the area's view does, so an unchanged push changes nothing on screen
         const revision = Number(reply.revision) || 0;
-        this._feed = { events, generatedAt: reply.generated_at, revision, key: revision ? `${reply.generated_at}#${revision}` : reply.generated_at, sources: reply.sources, location: reply.location };
+        this._feed = { events: reply.events, generatedAt: reply.generated_at, revision, key: `${reply.generated_at || ""}#${revision}#${reply.events.length}`, sources: reply.sources, location: reply.location, area: reply.area };
       }
     } else {
       this._feedError = error;
@@ -866,16 +878,11 @@ class AreaEventsCard extends HTMLElement {
       this._updateHeader();
       if (reply && (this._tiles || []).some((tile) => this._retryable(tile))) this._applyData();
     } else this._applyData();
-
-    const state = reply && reply.state;
-    const busy = reply && (state === "pending" || state === "discovering" || state === "unavailable" || reply.refreshing || this._discovering());
-    const delay = reply ? (busy ? POLL_BUSY_MS : POLL_READY_MS) : PERMANENT_ERRORS.has(code) ? POLL_READY_MS : POLL_RETRY_MS;
-    this._feedTimer = setTimeout(() => this._loadFeed(run), delay);
   }
 
   /** The place being searched, for messages. */
   _placeLabel() {
-    return this._settings.area || "your Home Assistant home location";
+    return this._settings.area || "this card's area";
   }
 
   _events() {
@@ -937,6 +944,7 @@ class AreaEventsCard extends HTMLElement {
       media: safeMedia(event.media, event),
       url: event.url,
       sourceName: event.source && event.source.name,
+      locationStatus: event.location_status,
       verified: event.verified === true,
       status: verification.status,
       evidence: Array.isArray(verification.evidence) ? verification.evidence : [],
@@ -977,10 +985,7 @@ class AreaEventsCard extends HTMLElement {
     const updated = this._feed && this._feed.generatedAt ? this._formatDate(this._feed.generatedAt) : undefined;
     const status = this._status || {};
     const notes = [];
-    if (this._feedErrorCode === "capacity") {
-      // the app is busy with other areas: not an empty feed and not a bad configuration; the card keeps trying
-      notes.push(`Too many different areas are being searched right now; this card will try again shortly.${this._feed ? ` Showing earlier data${updated ? ` from ${updated}` : ""}.` : ""}`);
-    } else if (this._feedError) {
+    if (this._feedError) {
       notes.push(this._feed ? `Could not refresh events (${this._feedError}). Showing earlier data${updated ? ` from ${updated}` : ""}.` : `Events are not available: ${this._feedError}`);
     } else if (!this._status) {
       notes.push("Loading events...");
@@ -999,9 +1004,10 @@ class AreaEventsCard extends HTMLElement {
       const sources = this._feed && this._feed.sources && typeof this._feed.sources === "object" ? Object.values(this._feed.sources) : [];
       const failing = sources.filter((source) => source && source.ok === false).length;
       notes.push(`${failing || "Some"} of ${sources.length || "the"} sources could not be read; events they provided earlier are kept.`);
-    } else if (count === 0) {
+    } else if (count === 0 && !status.notice) {
       notes.push("No upcoming events match.");
     }
+    if (status.notice && !this._feedError) notes.push(status.notice);
     // Websites added to the card are extras: one short line says how many could not be read; the reasons sit behind a disclosure.
     const problems = [], provided = [];
     let providedEvents = 0;
@@ -1229,7 +1235,7 @@ class AreaEventsCard extends HTMLElement {
       meta.append(this._el("span", "badge error", this._feed ? "Update failed" : "Events unavailable"));
     }
     const place = this._feed && this._feed.location && this._feed.location.display_name;
-    if (place) meta.append(this._el("span", "place", `${place} · ${this._settings.radius} mi`));
+    if (place) meta.append(this._el("span", "place", this._feed.location.coverage === "sources" ? `${place} · by source` : `${place} · ${this._settings.radius} mi`));
 
     const total = this._tiles.length;
     const shown = this._visibleCount();
@@ -1543,6 +1549,9 @@ class AreaEventsCard extends HTMLElement {
     body.append(this._el("div", "title", event.title || "Untitled event"));
     if (event.start) body.append(this._meta("mdi:calendar-clock", this._formatDate(event.start)));
     if (event.location) body.append(this._meta("mdi:map-marker", event.location));
+    if (event.locationStatus === "description_only" || event.locationStatus === "unknown") {
+      body.append(this._meta("mdi:help-circle-outline", event.location ? "The location is the source's own description and is not verified." : "The source gave no location."));
+    }
     if (event.description) body.append(this._el("div", "description", event.description));
 
     // Only an explicit verified=true is "Verified"; a corroborated status means
@@ -1600,10 +1609,8 @@ const EDITOR_SCHEMA = [
   {
     type: "grid", name: "", schema: [
       { name: "area", selector: { text: {} } },
-      { name: "radius_miles", selector: { number: { min: 1, max: 250, mode: "box", unit_of_measurement: "mi" } } },
     ],
   },
-  { name: "sources", selector: FREE_LIST },
   {
     name: "categories",
     selector: { select: { multiple: true, mode: "dropdown", options: DEFAULT_CATEGORIES.map((c) => ({ value: c.id, label: c.name })) } },
@@ -1626,13 +1633,12 @@ const EDITOR_SCHEMA = [
   },
 ];
 const EDITOR_LABELS = {
-  title: "Title", area: "Area (city, ZIP code or latitude, longitude)", radius_miles: "Search radius", sources: "Source websites",
+  title: "Title", area: "Discovery area (name)",
   categories: "Only these categories", interests: "Interests (Name: keyword, keyword)", exclude: "Excluded topics",
   days: "Only the next days", max_events: "Maximum events", sort: "Sort by", columns: "Columns (at most)", show_images: "Show images", show_filters: "Show filters",
 };
 const EDITOR_HELP = {
-  area: "Leave empty to use the Home Assistant home location.",
-  sources: "Optional extra websites, read in addition to the automatic sources for the area: an events page, a calendar (ICS) feed or an RSS feed. Type an address and press Enter; the card says which ones it cannot read and why.",
+  area: "The name of an area configured in the Discovery Service, for example San Diego. Each card follows one area; the filters below are this card's own.",
   interests: "Extra topics that become their own filters, for example Board games: board game, tabletop",
 };
 

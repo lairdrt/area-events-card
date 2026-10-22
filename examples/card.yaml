@@ -1,10 +1,7 @@
-# A fully configured card. Every option is optional; see README.md.
+# A fully configured card. `area` is required; everything else is optional and private to this card. See README.md.
 type: custom:area-events-card
 title: Austin Events
-area: Austin, TX
-radius_miles: 25
-sources:
-  - https://calendar.utexas.edu
+area: Austin
 categories: [music, food-drink]
 interests:
   - "Board games: board game, tabletop"

@@ -234,10 +234,10 @@ class Preparation(unittest.TestCase):
 
 
 # the integration imports Home Assistant; the glue tests already load it against stand-ins
-from tests import test_ha_glue as glue  # noqa: E402
+from tests import test_ha_integration as glue  # noqa: E402
 
 init = glue.init
-photos = glue.importlib.import_module("area_events_glue.photos")
+photos = glue.importlib.import_module("area_events_ha.photos")
 
 if __name__ == "__main__":
     unittest.main()

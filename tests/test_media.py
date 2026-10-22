@@ -1,6 +1,5 @@
 """Location imagery: vector map drawing, the trust rules for a pin, venue-photograph verification, the background service and its cache,
 and how the result is served. Everything runs on fixtures; nothing contacts OpenFreeMap, Nominatim or Wikimedia."""
-import asyncio
 import gzip
 import json
 import os
@@ -763,87 +762,6 @@ class Background(unittest.TestCase):
         stop.wait = lambda timeout=None: (count.append(1), len(count) >= 3 and stop.set())[1]
         engine._media_loop(stop)
         self.assertGreaterEqual(len(count), 3)
-
-
-# --- the Home Assistant side -------------------------------------------------------------------------------------------
-
-from tests import test_ha_glue as glue  # noqa: E402
-
-media_view = glue.importlib.import_module("area_events_glue.media_view")
-client_module = glue.client
-
-
-class FakeResponse:
-    def __init__(self, status, body=b"", kind=""):
-        self.status, self._body, self.headers = status, body, {"Content-Type": kind}
-
-    async def read(self):
-        return self._body
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        return False
-
-
-class FakeSession:
-    def __init__(self, response=None, error=None):
-        self.response, self.error, self.urls = response, error, []
-
-    def get(self, url, headers=None):
-        self.urls.append((url, headers))
-        if self.error:
-            raise self.error
-        return self.response
-
-
-class HaServing(unittest.TestCase):
-    def run_async(self, coroutine):
-        return asyncio.run(coroutine)
-
-    def client(self, session):
-        return client_module.AreaEventsClient(session, "http://app:8765", "secret-token")
-
-    def test_the_client_fetches_with_the_token_and_maps_failures(self):
-        session = FakeSession(FakeResponse(200, b"<svg/>", "image/svg+xml"))
-        data, kind = self.run_async(self.client(session).get_media("mabcdef0123456789-dark.svg"))
-        self.assertEqual((data, kind), (b"<svg/>", "image/svg+xml"))
-        self.assertEqual(session.urls[0], ("http://app:8765/api/v1/media/mabcdef0123456789-dark.svg", {"Authorization": "Bearer secret-token"}))
-        for status, error in ((404, client_module.AreaEventsRequestError), (401, client_module.AreaEventsAuthError), (500, client_module.AreaEventsConnectionError)):
-            with self.subTest(status), self.assertRaises(error):
-                self.run_async(self.client(FakeSession(FakeResponse(status))).get_media("mabcdef0123456789-dark.svg"))
-        with self.assertRaises(client_module.AreaEventsConnectionError):
-            self.run_async(self.client(FakeSession(error=OSError("refused"))).get_media("mabcdef0123456789-dark.svg"))
-
-    def view(self, session=None):
-        entry = types.SimpleNamespace(state="loaded", runtime_data=types.SimpleNamespace(hub=types.SimpleNamespace(client=self.client(session or FakeSession(FakeResponse(200, b"<svg/>", "image/svg+xml"))))))
-        hass = types.SimpleNamespace(config_entries=types.SimpleNamespace(async_entries=lambda domain: [entry]))
-        return media_view.AreaEventsMediaView(hass)
-
-    def test_the_view_needs_no_login_serves_only_exact_names_and_forbids_active_content(self):
-        view = self.view()
-        self.assertFalse(view.requires_auth)
-        self.assertEqual(view.url, "/area_events/media/{name}")
-        ok = self.run_async(view.get(None, "mabcdef0123456789-dark.svg"))
-        self.assertEqual((ok.body, ok.content_type), (b"<svg/>", "image/svg+xml"))
-        self.assertIn("immutable", ok.headers["Cache-Control"])
-        self.assertIn("default-src 'none'", ok.headers["Content-Security-Policy"])
-        self.assertEqual(ok.headers["X-Content-Type-Options"], "nosniff")
-        for name in ("../secret.svg", "a.svg/../b", "x.png", "UPPER.svg", "a.svg%00", "m" * 70 + ".svg", ""):
-            with self.subTest(name):
-                self.assertEqual(self.run_async(view.get(None, name)).status, 404)
-
-    def test_the_view_reports_a_missing_image_and_an_unreachable_app(self):
-        self.assertEqual(self.run_async(self.view(FakeSession(FakeResponse(404))).get(None, "mabcdef0123456789-dark.svg")).status, 404)
-        self.assertEqual(self.run_async(self.view(FakeSession(error=OSError("down"))).get(None, "mabcdef0123456789-dark.svg")).status, 502)
-
-    def test_the_view_is_registered_once_in_setup(self):
-        views = []
-        hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=lambda configs: asyncio.sleep(0), register_view=views.append), data={},
-                                     async_add_executor_job=lambda func, *args: asyncio.sleep(0, func(*args)))
-        self.assertTrue(asyncio.run(glue.init.async_setup(hass, {})))
-        self.assertEqual([type(v).__name__ for v in views], ["AreaEventsMediaView"])
 
 
 if __name__ == "__main__":

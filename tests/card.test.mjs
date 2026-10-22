@@ -62,23 +62,30 @@ const chip = (root, name) => byClass(root, "chip").find((c) => text(c).includes(
 const visibleTitles = (root) => byClass(root, "event").filter((e) => !e.hidden).map((e) => text(byClass(e, "title")[0]));
 const openFilters = (root) => click(byClass(root, "filter-toggle")[0]);
 
-/** What the integration's area_events/events command answers for a feed. */
+/** What the integration's area_events/subscribe command sends for a feed (the first view, and again whenever the area changes). */
 const answer = (feed, extra = {}) => ({
   state: "ready", connected: true, refreshing: false, message: null, report: [],
   generated_at: feed.generated_at, location: feed.location || { display_name: "San Diego, CA" }, sources: feed.sources, events: feed.events, ...extra,
 });
 
-/** A Home Assistant stand-in: answers area_events/events, and the user-data commands the filters use. */
+/** A Home Assistant stand-in: area_events/subscribe through the websocket connection, and the user-data commands the filters use. */
 function fakeHass({ feed = makeFeed(), reply, onWS } = {}) {
   const hass = {
-    states: {}, config: {}, calls: [], eventsCalls: () => hass.calls.filter((m) => m.type === "area_events/events"),
+    states: {}, config: {}, calls: [], subscriptions: [],
+    eventsCalls: () => hass.calls.filter((m) => m.type === "area_events/subscribe"),
+    produce: (message) => (reply ? reply(message) : answer(feed)),
+    connection: {
+      subscribeMessage: async (callback, message) => {
+        hass.calls.push(message);
+        if (hass.fail) throw hass.fail;
+        const subscription = { callback, message, closed: false };
+        hass.subscriptions.push(subscription);
+        Promise.resolve().then(() => subscription.closed || callback(hass.produce(message)));
+        return () => { subscription.closed = true; };
+      },
+    },
     callWS: async (message) => {
       hass.calls.push(message);
-      if (message.type === "area_events/events") {
-        if (hass.fail) throw hass.fail;
-        if (reply) return reply(message);
-        return message.since && message.since === feed.generated_at ? answer(feed, { events: undefined, unchanged: true }) : answer(feed);
-      }
       if (onWS) {
         const result = await onWS(message);
         if (result !== undefined) return result;
@@ -91,13 +98,18 @@ function fakeHass({ feed = makeFeed(), reply, onWS } = {}) {
 
 async function make(config, { feed = makeFeed(), hass, reply } = {}) {
   globalThis.fetch = async () => { throw new Error("the card must not use fetch"); };
-  if (hass && !hass.eventsCalls) { // a custom hass from a persistence test: add the events command to it
-    const inner = hass.callWS;
-    hass.callWS = async (m) => (m.type === "area_events/events" ? answer(feed) : inner(m));
+  if (hass && !hass.eventsCalls) { // a custom hass from a persistence test: add the subscription to it
+    const plain = fakeHass({ feed });
+    hass.connection = plain.connection;
+    hass.calls = hass.calls || plain.calls;
+    hass.subscriptions = plain.subscriptions;
+    hass.produce = plain.produce;
+    hass.eventsCalls = () => hass.calls.filter((m) => m.type === "area_events/subscribe");
+    plain.calls = hass.calls;
   }
   hass = hass || fakeHass({ feed, reply });
   const card = new CardClass();
-  card.setConfig(config);
+  card.setConfig({ area: "San Diego", ...config });
   card.hass = hass;
   await wait();
   for (let i = 0; i < 60 && !(card._status || card._feedError || card._usesInline()); i++) await wait(5); // a slow machine may need longer
@@ -105,10 +117,11 @@ async function make(config, { feed = makeFeed(), hass, reply } = {}) {
   card.hassStub = hass;
   return card;
 }
-/** Poll once more, as the card's timer would, without leaving a timer behind. */
+/** The area changed (or Home Assistant resubscribed after a reconnect): the next view arrives, as a push would deliver it. */
 async function pollAgain(card) {
-  await card._loadFeed(card._feedRun);
-  card.disconnectedCallback();
+  const hass = card.hassStub;
+  if (hass.fail) card._onFeed(card._feedRun, undefined, hass.fail.message, hass.fail.code);
+  else card._onFeed(card._feedRun, hass.produce({ type: "area_events/subscribe", area: card._settings.area }));
 }
 test.beforeEach(() => { window.localStorage = new Storage(); created.img = 0; });
 
@@ -123,21 +136,38 @@ test("events render upcoming events with honest verification labels and source l
   assert.ok(byClass(root, "source").every((a) => a.href.startsWith("https://www.kpbs.org/")));
 });
 
-test("the card asks only Home Assistant, with its profile; later polls send `since`", async () => {
-  const card = await make({ area: "Austin, TX", radius_miles: 30, sources: ["https://calendar.utexas.edu"] });
-  const [first] = card.hassStub.eventsCalls();
-  assert.deepEqual(first, { type: "area_events/events", radius_miles: 30, area: "Austin, TX", sources: ["https://calendar.utexas.edu"] });
-  await pollAgain(card);
-  assert.equal(card.hassStub.eventsCalls()[1].since, card._feed.generatedAt);
-  assert.ok(card.hassStub.calls.every((m) => /^(area_events\/events|frontend\/)/.test(m.type)), "no other Home Assistant commands");
-  assert.equal(byClass(card.shadowRoot, "event").length, 3); // the unchanged answer kept the events
+test("the card follows its own area through one subscription and asks nothing else of Home Assistant", async () => {
+  const card = await make({ area: "Austin", radius_miles: 30, sources: ["https://calendar.utexas.edu"] }); // radius and sources are no longer the card's business
+  assert.deepEqual(card.hassStub.eventsCalls(), [{ type: "area_events/subscribe", area: "Austin" }]);
+  assert.ok(card.hassStub.calls.every((m) => /^(area_events\/subscribe|frontend\/)/.test(m.type)), "no other Home Assistant commands");
+  await pollAgain(card); // a push with the same view changes nothing
+  assert.equal(byClass(card.shadowRoot, "event").length, 3);
 });
 
-test("without an area the card asks for the Home Assistant home location", async () => {
-  const card = await make({});
-  assert.deepEqual(card.hassStub.eventsCalls()[0], { type: "area_events/events", radius_miles: 25 });
-  const pending = await make({}, { reply: () => ({ state: "pending", connected: true, report: [], sources: {} }) });
-  assert.match(text(byClass(pending.shadowRoot, "progress")[0]), /Discovering events near your Home Assistant home location/);
+test("a card without an area says so and subscribes to nothing", async () => {
+  const card = await make({ area: undefined });
+  assert.equal(card.hassStub.eventsCalls().length, 0);
+  assert.match(text(card.shadowRoot), /Set 'area' to the name of a discovery area/);
+  const pending = await make({ area: "Austin" }, { reply: () => ({ state: "unavailable", connected: false, message: "the Discovery Service is not reachable", report: [], sources: {} }) });
+  assert.match(text(byClass(pending.shadowRoot, "notice")[0]), /not reachable/);
+});
+
+test("the service's own notice is shown, so an area without live discoveries says so instead of implying nothing happens there", async () => {
+  const notice = "No events have been discovered for Austin from its attached sources. That does not mean nothing is happening there.";
+  const card = await make({ area: "Austin" }, { reply: () => answer(makeFeed({ events: [] }), { notice, outcome: "no_results" }) });
+  assert.match(text(byClass(card.shadowRoot, "notice")[0]), /does not mean nothing is happening there/);
+  assert.doesNotMatch(text(byClass(card.shadowRoot, "notice")[0]), /No upcoming events match/);
+});
+
+test("the place is shown as matched by source, never as a radius, and an unverified location is said to be unverified", async () => {
+  const events = [event("Block party", 1, { location_status: "description_only", venue: "Along Oak Street between 1st and 2nd." }), event("Hall night", 2, { location_status: "address", address: "1 Main St" })];
+  const card = await make({ area: "San Diego" }, { reply: () => answer(makeFeed({ events }), { location: { display_name: "San Diego", coverage: "sources" } }) });
+  const header = text(byClass(card.shadowRoot, "sticky-header")[0]);
+  assert.match(header, /San Diego · by source/);
+  assert.doesNotMatch(header, / mi\b/);
+  const [first, second] = byClass(card.shadowRoot, "event");
+  assert.match(text(first), /not verified/);
+  assert.doesNotMatch(text(second), /not verified/);
 });
 
 test("a failure shows an error, never demo events", async () => {
@@ -199,23 +229,22 @@ test("a refresh failure keeps the earlier events and says so", async () => {
   assert.match(text(byClass(card.shadowRoot, "notice")[0]), /Showing earlier data/);
 });
 
-test("polling is quick while discovering and relaxed once ready", async () => {
+test("a configuration error is retried slowly, not hammered", async () => {
   const delays = [];
   const realSetTimeout = globalThis.setTimeout;
   globalThis.setTimeout = (fn, ms, ...rest) => { delays.push(ms); return realSetTimeout(fn, 0 && ms, ...rest); };
   try {
-    const hass = fakeHass({ reply: () => ({ state: "discovering", connected: true, report: [], sources: {} }) });
+    const hass = fakeHass();
+    hass.fail = { code: "unknown_area", message: "no discovery area 'Nowhere'" };
     const card = new CardClass();
-    card.setConfig({});
+    card.setConfig({ area: "Nowhere" });
     card.hass = hass;
     await wait();
-    hass.fail = { code: "invalid_profile", message: "bad" };
-    await wait();
     card.disconnectedCallback();
+    assert.match(card._feedError, /no discovery area/);
   } finally {
     globalThis.setTimeout = realSetTimeout;
   }
-  assert.ok(delays.includes(5000), "5 s while discovering");
   assert.ok(delays.includes(300000), "5 min after a permanent error");
 });
 
@@ -302,21 +331,21 @@ test("the visual editor is Home Assistant's own form: schema, labels and what it
   const form = CardClass.getConfigForm();
   assert.equal(CardClass.getConfigElement, undefined); // no custom editor element to keep in sync with ha-form
   const names = EDITOR_SCHEMA.flatMap((item) => (item.schema ? item.schema.map((inner) => inner.name) : item.name));
-  for (const key of ["title", "area", "radius_miles", "sources", "categories", "interests", "exclude", "days", "max_events", "sort", "columns", "show_images", "show_filters"]) {
+  for (const key of ["title", "area", "categories", "interests", "exclude", "days", "max_events", "sort", "columns", "show_images", "show_filters"]) {
     assert.ok(names.includes(key), key);
     assert.ok(form.computeLabel({ name: key }) !== key, `${key} has a label`);
   }
   assert.equal(form.computeHelper({ name: "title" }), "");
   // list settings are free-text chip pickers that produce arrays, which is what the YAML takes
-  const lists = EDITOR_SCHEMA.filter((item) => ["sources", "interests", "exclude"].includes(item.name));
-  assert.equal(lists.length, 3);
+  const lists = EDITOR_SCHEMA.filter((item) => ["interests", "exclude"].includes(item.name));
+  assert.equal(lists.length, 2);
   assert.ok(lists.every((item) => item.selector.select.multiple && item.selector.select.custom_value));
   // what the form can edit is accepted; what it cannot, or what is invalid, makes Home Assistant show YAML instead
   form.assertConfig({ type: "custom:area-events-card", title: "T", area: "Austin, TX", sources: ["https://a.example"], interests: ["Games: dice"], exclude: ["x"] });
   assert.throws(() => form.assertConfig({ interests: [{ name: "Games", keywords: ["dice"] }] }), /only be edited in YAML/);
   assert.throws(() => form.assertConfig({ feed: "/f.json" }), /no longer supported/);
   assert.throws(() => form.assertConfig({ radius_miles: 999 }), /radius_miles/);
-  assert.deepEqual(CardClass.getStubConfig(), { title: "Area Events", radius_miles: 25 });
+  assert.deepEqual(CardClass.getStubConfig(), { title: "Area Events" });
   readSettings(CardClass.getStubConfig());
 });
 
@@ -401,7 +430,7 @@ test("filtering makes no requests", async () => {
   openFilters(card.shadowRoot);
   click(chip(card.shadowRoot, "Music"));
   click(chip(card.shadowRoot, "Markets"));
-  assert.equal(card.hassStub.calls.filter((m) => m.type === "area_events/events").length, 1);
+  assert.equal(card.hassStub.eventsCalls().length, 1);
   assert.ok(card.hassStub.calls.length >= before);
 });
 
@@ -533,7 +562,7 @@ test("preferences sync to Home Assistant user data and load from it", async () =
 });
 
 test("existing local preferences migrate to HA user data when none exist there", async () => {
-  const key = prefsKey({});
+  const key = prefsKey({ area: "San Diego" });
   window.localStorage.setItem(key, JSON.stringify({ v: 1, selected: ["music"], custom: [] }));
   const saved = [];
   const hass = fakeHass({ onWS: (m) => { if (m.type === "frontend/set_user_data") saved.push(m); return m.type === "frontend/get_user_data" ? { value: null } : null; } });
@@ -568,7 +597,7 @@ test("header time comes from generated_at, never the page-load time", async () =
 });
 
 test("header marks stale data and failing sources", async () => {
-  const stale = await make({}, { feed: makeFeed({ generated_at: iso(-4 * 3600 * 1000), sources: { a: { ok: true }, b: { ok: false } } }) });
+  const stale = await make({}, { feed: makeFeed({ generated_at: iso(-14 * 3600 * 1000), sources: { a: { ok: true }, b: { ok: false } } }) });
   const header = text(byClass(stale.shadowRoot, "sticky-header")[0]);
   assert.match(header, /Stale/);
   assert.match(header, /1 of 2 sources ok/);
@@ -757,29 +786,25 @@ test("a card on a dashboard asks right away, a preview only after its wait", asy
   preview.hass = hass;
   await wait(10);
   assert.equal(hass.eventsCalls().length, 0);
-  await preview._loadFeed(preview._feedRun); // what its timer does once the wait is over
+  preview._subscribeNow(preview._feedRun); // what its timer does once the wait is over
+  await wait(5);
   preview.disconnectedCallback();
   assert.equal(hass.eventsCalls().length, 1);
 });
 
-test("the app being at capacity is said so, keeps earlier events and is retried soon - it is not an empty feed", async () => {
-  const card = await make({ area: "San Diego, CA" });
-  card.hassStub.fail = { code: "capacity", message: "too many different areas are in use (at most 12)" };
+test("an unreachable service keeps the earlier events, says so, and the subscription is retried in 30 s", async () => {
+  const card = await make({ area: "San Diego" });
+  card.hassStub.fail = { code: "unavailable", message: "the Discovery Service is down" };
   await pollAgain(card);
   const notice = text(byClass(card.shadowRoot, "notice")[0]);
-  assert.match(notice, /Too many different areas are being searched right now; this card will try again shortly\. Showing earlier data/);
-  assert.doesNotMatch(notice, /No upcoming events/);
+  assert.match(notice, /Could not refresh events \(the Discovery Service is down\)\. Showing earlier data/);
   assert.equal(byClass(card.shadowRoot, "event").length, 3);
-
-  const first = await make({ area: "San Diego, CA" }, { hass: Object.assign(fakeHass(), { fail: { code: "capacity", message: "too many different areas" } }) });
-  assert.match(text(byClass(first.shadowRoot, "notice")[0]), /Too many different areas are being searched right now/);
-  assert.equal(byClass(first.shadowRoot, "event").length, 0);
 
   const delays = [];
   const realSetTimeout = globalThis.setTimeout;
   globalThis.setTimeout = (fn, ms, ...rest) => { delays.push(ms); return realSetTimeout(fn, 0 && ms, ...rest); };
   try {
-    await pollAgain(card);
+    await make({ area: "San Diego" }, { hass: Object.assign(fakeHass(), { fail: { code: "unavailable", message: "down" } }) });
   } finally {
     globalThis.setTimeout = realSetTimeout;
   }
@@ -1364,21 +1389,6 @@ test("show_images: false shows no photographs, no maps and no badges", async () 
   assert.equal(imgOf(tile), undefined);
   assert.equal(byClass(tile, "pin").length, 0);
   assert.equal(tagOf(tile).textContent, "Illustration");
-});
-
-test("imagery that arrives with a later answer reaches the tile: the poll key carries the app's revision", async () => {
-  const feed = makeFeed({ events: [event("Weezer", 2, { venue: "Viejas Arena", illustration: { category: "music" } })] });
-  let next = answer(feed, { revision: 0 });
-  const card = await make({}, { reply: () => next });
-  assert.equal(imgOf(tileFor(card, "Weezer")), undefined);
-  assert.equal(card._feed.key, feed.generated_at, "no revision: the key is the feed time, as before");
-  const withImagery = makeFeed({ generated_at: feed.generated_at, events: [{ ...feed.events[0], media: { map: MEDIA().map } }] });
-  next = answer(withImagery, { revision: 1792630000 });
-  await pollAgain(card);
-  assert.equal(card._feed.key, `${feed.generated_at}#1792630000`);
-  assert.ok(imgOf(tileFor(card, "Weezer")), "the map appears without waiting for the next discovery");
-  await pollAgain(card);
-  assert.equal(card.hassStub.eventsCalls().at(-1).since, `${feed.generated_at}#1792630000`, "the next poll asks since that key");
 });
 
 test("a venue photograph without a stated creator is credited to Wikimedia Commons, and links stay on Wikimedia and Creative Commons", async () => {

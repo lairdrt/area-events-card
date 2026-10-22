@@ -2,9 +2,15 @@
   "domain": "area_events",
   "name": "Area Events",
   "version": "0.2.0",
-  "codeowners": ["@lairdrt"],
+  "codeowners": [
+    "@lairdrt"
+  ],
   "config_flow": true,
-  "dependencies": ["frontend", "http", "websocket_api"],
+  "dependencies": [
+    "frontend",
+    "http",
+    "websocket_api"
+  ],
   "documentation": "https://github.com/lairdrt/area-events-card",
   "integration_type": "service",
   "iot_class": "local_polling",

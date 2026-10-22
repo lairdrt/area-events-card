@@ -99,10 +99,11 @@ def cmd_run(args):
 def cmd_serve(args):
     app = build(args.db)
     directory = os.path.dirname(os.path.abspath(args.db))
-    tokens, token_path = load_tokens(directory, process_token=True)
+    tokens, token_path = load_tokens(directory, read=True, process=True)
     app.register_known_sources()
     server = build_api(app, tokens, host=args.bind, port=args.port, allow_remote=args.allow_remote)
-    print(f"processing token for a remote extraction worker: {os.path.normpath(os.path.join(directory, 'api-process-token'))}", flush=True)
+    print(f"read token (for Home Assistant): {os.path.normpath(os.path.join(directory, 'api-read-token'))}; processing token (remote extraction worker): "
+          f"{os.path.normpath(os.path.join(directory, 'api-process-token'))}", flush=True)
     for name in ("SIGINT", "SIGTERM"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), lambda *_: app.host.request_stop())

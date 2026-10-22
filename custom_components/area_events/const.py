@@ -2,19 +2,24 @@
 
 DOMAIN = "area_events"
 CONF_URL = "url"
-CONF_TOKEN = "token"
+CONF_READ_TOKEN = "read_token"
+CONF_CONTROL_TOKEN = "control_token"   # optional: without it Home Assistant can read events but not change shared Discovery settings
+CONF_SCAN_INTERVAL = "scan_interval"   # seconds between change-feed checks: one per integration, however many cards there are
 
-WS_EVENTS = "area_events/events"
+DEFAULT_SCAN_INTERVAL = 10
+MIN_SCAN_INTERVAL = 5
+MAX_SCAN_INTERVAL = 300
+
+WS_AREAS = f"{DOMAIN}/areas"
+WS_STATUS = f"{DOMAIN}/status"
+WS_EVENTS = f"{DOMAIN}/events"          # one page, straight from the authoritative store
+WS_SUBSCRIBE = f"{DOMAIN}/subscribe"    # the live view of one area, pushed when it changes
+WS_EVENT = f"{DOMAIN}/event"
+WS_AREA_CREATE = f"{DOMAIN}/area_create"
+WS_AREA_UPDATE = f"{DOMAIN}/area_update"
+WS_SETTINGS = f"{DOMAIN}/settings"
+WS_PAUSE = f"{DOMAIN}/pause"
+WS_RESUME = f"{DOMAIN}/resume"
+
 CARD_URL = "/area_events/area-events-card.js"
 PHOTOS_KEY = f"{DOMAIN}_photos"  # hass.data: the validated category-photograph index, or None
-
-# How long the hub keeps refreshing a profile nobody has asked for. A card asks at least every five minutes,
-# so a profile unasked for twice that long has no card any more (a removed card, an editor preview).
-ACTIVE_SECONDS = 12 * 60
-# A profile without events yet is asked for every few seconds by a card that is waiting for it.
-UNPROVEN_SECONDS = 2 * 60
-# How often a registration is repeated, so an engine that restarted or dropped the profile hears of it again.
-REGISTER_TTL_SECONDS = 15 * 60
-# Poll intervals: quick while discovery is under way, relaxed otherwise.
-BUSY_INTERVAL_SECONDS = 5
-IDLE_INTERVAL_SECONDS = 5 * 60

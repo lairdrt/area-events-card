@@ -1,80 +1,77 @@
-"""Config flow: found automatically through the app's Supervisor discovery, or entered by hand."""
+"""Config flow: the Discovery Service's address and tokens are entered by hand (the service runs on its own host, not as a Home Assistant app)."""
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlsplit
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.service_info.hassio import HassioServiceInfo
 
-from .client import AreaEventsAuthError, AreaEventsClient, AreaEventsConnectionError, normalize_base_url
-from .const import CONF_TOKEN, CONF_URL, DOMAIN
+from .const import (CONF_CONTROL_TOKEN, CONF_READ_TOKEN, CONF_SCAN_INTERVAL, CONF_URL, DEFAULT_SCAN_INTERVAL, DOMAIN, MAX_SCAN_INTERVAL,
+                    MIN_SCAN_INTERVAL)
+from .discovery_client import DiscoveryAuthError, DiscoveryConnectionError, DiscoveryControlClient, DiscoveryRequestError, normalize_base_url
+
+LOOPBACK = ("localhost", "127.0.0.1", "::1")
+
+
+def transport_note(url: str) -> str:
+    """Tokens travel in every request: say so when the address is a plain-http one that leaves this computer."""
+    parts = urlsplit(url or "")
+    if parts.scheme == "https" or (parts.hostname or "") in LOOPBACK or not parts.hostname:
+        return ""
+    return "This address uses plain http, so the tokens cross the network unprotected. Use an https address (a TLS reverse proxy in front of the service) outside a fully trusted network."
 
 
 class AreaEventsConfigFlow(ConfigFlow, domain=DOMAIN):
-    VERSION = 1
+    VERSION = 2
 
-    _discovered: dict[str, str]
-    _app_name = "Area Events"
-
-    async def _check(self, url: str, token: str) -> str | None:
-        """None when the app answers and accepts the token, otherwise the error key."""
+    async def _check(self, url: str, read_token: str, control_token: str | None) -> str | None:
+        """None when the service answers and accepts the tokens, otherwise the error key."""
+        session = async_get_clientsession(self.hass)
         try:
-            await AreaEventsClient(async_get_clientsession(self.hass), url, token).status()
-        except AreaEventsAuthError:
-            return "invalid_auth"
-        except AreaEventsConnectionError:
+            await DiscoveryControlClient(session, url, read_token).status()
+            if control_token:
+                await DiscoveryControlClient(session, url, control_token).check_control()
+        except DiscoveryAuthError as error:
+            return "invalid_control_token" if control_token and error.status == 403 else "invalid_auth"
+        except DiscoveryConnectionError:
+            return "cannot_connect"
+        except DiscoveryRequestError:
             return "cannot_connect"
         return None
 
-    # --- the app announced itself (the normal way) ---------------------------------------------
-
-    async def async_step_hassio(self, discovery_info: HassioServiceInfo) -> ConfigFlowResult:
-        """The app sends its hostname, port and token through the Supervisor. There is one app, so one unique id."""
-        config = discovery_info.config
-        try:
-            url = normalize_base_url(f"http://{config['host']}:{int(config['port'])}")
-            token = str(config["token"])
-        except (KeyError, TypeError, ValueError):
-            return self.async_abort(reason="invalid_discovery")
-        await self.async_set_unique_id(DOMAIN)
-        # An app that restarted with a new hostname or token updates the existing entry without asking again.
-        self._abort_if_unique_id_configured(updates={CONF_URL: url, CONF_TOKEN: token})
-        self._discovered = {CONF_URL: url, CONF_TOKEN: token}
-        self._app_name = discovery_info.name
-        return await self.async_step_hassio_confirm()
-
-    async def async_step_hassio_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        if user_input is not None:
-            if await self._check(self._discovered[CONF_URL], self._discovered[CONF_TOKEN]):
-                return self.async_abort(reason="cannot_connect")
-            return self.async_create_entry(title="Area Events", data=self._discovered)
-        self._set_confirm_only()
-        return self.async_show_form(step_id="hassio_confirm", description_placeholders={"name": self._app_name})
-
-    # --- entered by hand (the app on another host, or a token chosen on purpose) ------------------
-
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
-        if user_input is not None:
+        user_input = user_input or {}
+        if user_input:
             try:
                 url = normalize_base_url(user_input[CONF_URL])
             except ValueError:
                 errors[CONF_URL] = "invalid_url"
             else:
-                await self.async_set_unique_id(DOMAIN)
+                await self.async_set_unique_id(url)
                 self._abort_if_unique_id_configured()
-                if error := await self._check(url, user_input[CONF_TOKEN]):
+                control = (user_input.get(CONF_CONTROL_TOKEN) or "").strip() or None
+                if error := await self._check(url, user_input[CONF_READ_TOKEN], control):
                     errors["base"] = error
                 else:
-                    return self.async_create_entry(title="Area Events", data={CONF_URL: url, CONF_TOKEN: user_input[CONF_TOKEN]})
-        schema = vol.Schema({vol.Required(CONF_URL, default=(user_input or {}).get(CONF_URL, "http://")): str, vol.Required(CONF_TOKEN): str})
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+                    data = {CONF_URL: url, CONF_READ_TOKEN: user_input[CONF_READ_TOKEN]}
+                    if control:
+                        data[CONF_CONTROL_TOKEN] = control
+                    return self.async_create_entry(title="Area Events", data=data)
+        schema = vol.Schema({
+            vol.Required(CONF_URL, default=user_input.get(CONF_URL, "https://")): str,
+            vol.Required(CONF_READ_TOKEN): str,
+            vol.Optional(CONF_CONTROL_TOKEN): str,
+        })
+        return self.async_show_form(step_id="user", data_schema=schema, errors=errors,
+                                    description_placeholders={"transport_note": transport_note(user_input.get(CONF_URL, ""))})
 
-    # --- the token stopped working ------------------------------------------------------------------
+    # --- a token stopped working ------------------------------------------------------------------------------------------
 
     async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
         return await self.async_step_reauth_confirm()
@@ -83,8 +80,25 @@ class AreaEventsConfigFlow(ConfigFlow, domain=DOMAIN):
         entry = self._get_reauth_entry()
         errors: dict[str, str] = {}
         if user_input is not None:
-            if error := await self._check(entry.data[CONF_URL], user_input[CONF_TOKEN]):
+            control = (user_input.get(CONF_CONTROL_TOKEN) or "").strip() or None
+            if error := await self._check(entry.data[CONF_URL], user_input[CONF_READ_TOKEN], control):
                 errors["base"] = error
             else:
-                return self.async_update_reload_and_abort(entry, data_updates={CONF_TOKEN: user_input[CONF_TOKEN]})
-        return self.async_show_form(step_id="reauth_confirm", data_schema=vol.Schema({vol.Required(CONF_TOKEN): str}), errors=errors)
+                updates = {CONF_READ_TOKEN: user_input[CONF_READ_TOKEN], CONF_CONTROL_TOKEN: control}
+                return self.async_update_reload_and_abort(entry, data_updates={k: v for k, v in updates.items() if v})
+        schema = vol.Schema({vol.Required(CONF_READ_TOKEN): str, vol.Optional(CONF_CONTROL_TOKEN): str})
+        return self.async_show_form(step_id="reauth_confirm", data_schema=schema, errors=errors)
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        return AreaEventsOptionsFlow()
+
+
+class AreaEventsOptionsFlow(OptionsFlow):
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+        current = self.config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+        schema = vol.Schema({vol.Required(CONF_SCAN_INTERVAL, default=current): vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL))})
+        return self.async_show_form(step_id="init", data_schema=schema)
