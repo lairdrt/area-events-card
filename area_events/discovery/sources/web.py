@@ -511,6 +511,8 @@ def discover(fetcher, previous, details=True, limit=None, days=60, source_id="we
         if c.get("geo"):
             event["geo"] = c["geo"]
         event["extraction"] = {"detail_page": bool(c.get("detail")), "method": c["kind"]}
+        if c.get("evidence_text"):
+            event["extraction"]["source_text"] = c["evidence_text"][:400]  # the exact text a text or PDF event was read from
         evidence = [f"start time stated by the {urlsplit(url).hostname} page ({c['kind']}: {c['start']})"]
         if c.get("geo"):
             evidence.append(f"venue coordinates from the page ({c['geo']['latitude']}, {c['geo']['longitude']})")

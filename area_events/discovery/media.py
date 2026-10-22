@@ -745,12 +745,13 @@ class MediaService:
         return {"lat": place["lat"], "lon": place["lon"], "precision": "intersection", "confidence": "intersection", "approximate": True, "wikidata": None, "name": "",
                 "provenance": f"intersection of {place['names'][0]} and {place['names'][1]}: OpenStreetMap node {place['node']} is shared by both streets{note}"}
 
-    def resolve(self, candidate):
-        """The record for a place: the first of the candidate and its `then` candidates that verifies, else a refusal giving every reason."""
+    def resolve(self, candidate, draw=True, photos=True):
+        """The record for a place: the first of the candidate and its `then` candidates that verifies, else a refusal giving every reason.
+        `draw` and `photos` may be switched off by a diagnostic that only needs the location decision; production always uses both."""
         reasons, first = [], None
         option = candidate
         while option:
-            record = self._resolve_one(option)
+            record = self._resolve_one(option, draw, photos)
             record["rv"] = RESOLVER
             if first is None:
                 first = record
@@ -765,7 +766,7 @@ class MediaService:
         first["reason"] = "; ".join(reasons)[:400] if len(reasons) > 1 else first.get("reason", "refused")
         return first
 
-    def _resolve_one(self, candidate):
+    def _resolve_one(self, candidate, draw=True, photos=True):
         now = self.clock()
         record = {"at": now, "ok": False, "kind": candidate["kind"], "venue": candidate.get("venue", "")}
         if candidate["kind"] == "source":
@@ -802,10 +803,10 @@ class MediaService:
                 record["reason"] = reason
                 self.stats["refused"] += 1
                 return record
-        files = self._draw_map(location)
+        files = self._draw_map(location) if draw else {}
         record.update(ok=True, location={k: location[k] for k in ("lat", "lon", "precision", "confidence", "approximate", "provenance")}, map={"files": files, "credit": MAP_CREDIT})
         try:
-            photo, why = find_venue_photo(candidate, location, self.get_json, self.get_bytes) if candidate.get("names") else (None, "no venue name")
+            photo, why = find_venue_photo(candidate, location, self.get_json, self.get_bytes) if candidate.get("names") and photos else (None, "no venue name" if photos else "not looked up")
         except (FetchError, ValueError, KeyError, TypeError, OSError) as error:
             photo, why = None, f"the lookup failed: {error}"
         if photo:

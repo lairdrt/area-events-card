@@ -139,7 +139,7 @@ def events_in(lines, today, source_url=None):
         seen.add(key)
         label = LABEL.search(block) or (LABEL.search(lines[index + 1]) if index + 1 < len(lines) else None)
         found.append({
-            "kind": "text", "title": title, "start": start.strftime("%Y-%m-%dT%H:%M"), "end": end.strftime("%Y-%m-%dT%H:%M") if end else None, "tz": None,
+            "kind": "text", "evidence_text": block, "title": title, "start": start.strftime("%Y-%m-%dT%H:%M"), "end": end.strftime("%Y-%m-%dT%H:%M") if end else None, "tz": None,
             "description": None, "venue": clean_text(label.group(1)).strip(" .") if label else None,
             "address": addresses[0]["address"] if len(addresses) == 1 else None, "url": source_url, "image": None, "image_source": None,
             "organizer": None, "geo": None, "categories": [], "price": None, "online": False, "cancelled": False, "uid": None,
