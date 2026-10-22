@@ -1494,3 +1494,29 @@ test("event text with markup is shown as text, never as HTML", async () => {
   assert.ok(walk(tile).every((el) => !/<(script|img)\b/i.test(el.innerHTML || "")), "nothing from the feed reaches innerHTML");
   assert.equal(walk(tile).filter((el) => el.tag === "script" || (el.tag === "img" && el.src && /x$/.test(el.src))).length, 0);
 });
+
+// --- metadata rows: icon and text share one layout --------------------------------------------------------------------
+
+test("every metadata row is an icon box and a text span, so wrapped text keeps the icon on its first line", async () => {
+  const feed = makeFeed({ events: [event("Aligned", 2, { location: "A very long address line that is certain to wrap onto a second line, Suite 100, San Diego, California", description: "text" })] });
+  const card = await make({}, { hass: themed(feed, false) });
+  const tile = tileFor(card, "Aligned");
+  const rows = [...byClass(tile, "meta"), ...byClass(tile, "verify")];
+  assert.ok(rows.length >= 3, "date, location and verification rows");
+  for (const row of rows) {
+    assert.deepEqual(row.children.map((c) => c.tag), ["ha-icon", "span"], `${row.className}: an icon, then its text in one element`);
+    assert.ok(row.children[0].attrs.icon.startsWith("mdi:"));
+  }
+  assert.match(text(byClass(tile, "verify")[0]), /Unverified$/);
+});
+
+test("the shared row styles centre each icon on the first line of its text at one size and spacing", () => {
+  const source = fs.readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  const styles = source.slice(source.indexOf("const STYLES = `"), source.indexOf("`;", source.indexOf("const STYLES = `")));
+  assert.match(styles, /\.meta \{[^}]*display: flex; align-items: flex-start; gap: 6px;[^}]*line-height: 1\.4;/);
+  assert.match(styles, /\.verify \{[^}]*display: flex; align-items: flex-start; gap: 6px; line-height: 1\.4;/);
+  assert.match(styles, /\.meta ha-icon, \.verify ha-icon \{[^}]*--mdc-icon-size: 16px; flex: none; width: 16px; height: 1\.4em; display: inline-flex; align-items: center; justify-content: center;/,
+    "the icon box is one text line tall and centres the glyph in it");
+  assert.doesNotMatch(styles, /vertical-align: -3px;\s*\}\s*\n\s*\.description/, "no per-row pixel nudges for the verification icon");
+  assert.match(styles, /\.meta > span, \.verify > span \{ min-width: 0; \}/, "long text wraps inside the row");
+});

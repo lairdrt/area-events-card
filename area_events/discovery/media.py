@@ -36,7 +36,7 @@ import threading
 import time
 from urllib.parse import urlencode
 
-from . import maps
+from . import maps, textloc
 from .core import FetchError
 
 log = logging.getLogger("area-events.media")
@@ -54,6 +54,7 @@ TILE_TTL = 14 * 86400
 RECORD_TTL = 60 * 86400
 REFUSAL_TTL = 14 * 86400
 MAX_NEW_PER_CYCLE = 8
+RESOLVER = 2  # bump when the rules for reading a place change: refusals recorded under older rules are tried again where the new rules differ
 NOMINATIM_INTERVAL = 15.0  # seconds between lookups: the public service allows long-running programs 4 requests a minute
 MAX_RECORDS = 2000
 MAX_PHOTO_BYTES = 700_000
@@ -147,12 +148,12 @@ def parse_intersection(text):
     (with or without a trailing locality); None for anything else. Both sides must look like streets (a street type word), so
     "Arts and Crafts" or a venue name with "and" in it is not an intersection."""
     text = html.unescape(str(text or "")).strip()
-    if not text or re.match(r"^\d", text):
+    if not text or re.match(r"^\d+(?!\d|st\b|nd\b|rd\b|th\b)", text):  # a house number: that is an address, not a corner
         return None
     segments = [p.strip() for p in text.split(",") if p.strip()]
     head = _LEAD.sub("", segments[0].strip(" .")).strip(" .")
     parts = _JOIN.split(head)
-    if len(parts) != 2:
+    if len(parts) != 2 or any(len(part.split()) > 5 for part in parts):  # a sentence that happens to contain "and" is not a pair of streets
         return None
     a, b = street_tokens(parts[0]), street_tokens(parts[1])
     if not (_is_street(a) and _is_street(b)) or a == b:
@@ -218,13 +219,49 @@ def make_key(kind, *parts):
     return kind + ":" + hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:20]
 
 
+def _known_cities(area):
+    first = str((area or {}).get("display_name") or (area or {}).get("name") or "").split(",")[0].strip()
+    return [first] if first else []
+
+
+def _text_address(text, area, found_in, venue_name=None):
+    """A candidate for the one full street address written in `text` (None when there is none, or more than one different one)."""
+    found = textloc.extract_addresses(text, _known_cities(area))
+    if len(found) != 1:
+        return None
+    item = found[0]
+    street = parse_street(item["address"])
+    if not street:
+        return None
+    number, tokens, locality = street
+    name = venue_name or item["name_before"] or ""
+    cities = [norm_name(c) for c in _known_cities(area)]
+    return {"kind": "address", "key": make_key("a", number, " ".join(tokens), locality or "", _area_key(area)), "venue": name, "address": item["address"],
+            "street": (number, tokens, locality or (cities[0] if cities else None)), "area": area, "names": place_names(name, area) if name else [],
+            "found_in": found_in, "retry_old": True}
+
+
+def _intersection(crossing, text, area, found_in=None):
+    cores = sorted(" ".join(t for t in side if t not in _NOT_CORE) for side in (crossing["a"], crossing["b"]))
+    return {"kind": "intersection", "key": make_key("x", *cores, crossing["locality"] or "", _area_key(area)), "venue": "", "address": text,
+            "intersection": crossing, "area": area, "names": [], "found_in": found_in, "retry_old": found_in is not None}
+
+
 def candidate_for(event, area):
     """A description of the place an event names, with a stable cache key, or None when it names nothing usable.
-    `area` is the feed's location ({latitude, longitude, radius_miles, name}) or None."""
+    `area` is the feed's location ({latitude, longitude, radius_miles, name}) or None.
+
+    The place is taken from the first kind of evidence the event has, in this order: coordinates the source supplied; a street address in the
+    address field; a corner of two streets in the address field; a full address written in the venue text (or, when the venue is empty or only a
+    sentence, in the description); a corner in the venue field; the venue's name; a park or centre named at the start of a venue sentence; a
+    full address in the description (when the venue is a name); a "corner of A and B" phrase in the text. The result carries the next
+    candidates as `then`, which are tried only if the one before it is refused (at most three in all)."""
     place = event.get("place") or {}
     geo = event.get("geo") or {}
-    venue = html.unescape(str(event.get("venue") or "")).strip()[:120]
+    raw_venue = html.unescape(str(event.get("venue") or "")).strip()
+    venue = raw_venue[:120]
     address = html.unescape(str(event.get("address") or "")).strip()[:200]
+    description = html.unescape(str(event.get("description") or ""))[:4000]
     try:
         lat, lon = float(geo["latitude"]), float(geo["longitude"])
     except (KeyError, TypeError, ValueError):
@@ -236,15 +273,47 @@ def candidate_for(event, area):
     if street:
         return {"kind": "address", "key": make_key("a", street[0], " ".join(street[1]), street[2] or "", _area_key(area)), "venue": venue, "address": address,
                 "street": street, "area": area, "names": place_names(venue, area)}
-    crossing = parse_intersection(address) or parse_intersection(venue)
+    options = []
+    crossing = parse_intersection(address)
     if crossing:
-        cores = sorted(" ".join(t for t in side if t not in _NOT_CORE) for side in (crossing["a"], crossing["b"]))
-        return {"kind": "intersection", "key": make_key("x", *cores, crossing["locality"] or "", _area_key(area)), "venue": "", "address": address or venue,
-                "intersection": crossing, "area": area, "names": []}
-    names = place_names(venue, area)
+        options.append(_intersection(crossing, address, area))
+    prose = textloc.is_prose(raw_venue)
+    in_venue = _text_address(raw_venue[:600], area, "venue text", None if prose else venue) if raw_venue else None
+    if in_venue:
+        options.append(in_venue)
+    in_description = _text_address(description, area, "description", None if prose or not raw_venue else venue) if description else None
+    if in_description and (prose or not raw_venue):
+        options.append(in_description)
+    crossing = parse_intersection(venue)
+    if crossing:
+        options.append(_intersection(crossing, venue, area))
+    names = [] if prose else place_names(venue, area)
+    variants = [] if prose else [v for v in textloc.without_rooms(raw_venue) if place_names(v, area)]
     if names and not re.match(r"^\s*\d", venue):
-        return {"kind": "venue", "key": make_key("v", names[0], _area_key(area)), "venue": venue, "address": address, "names": names, "area": area}
-    return None
+        options.append({"kind": "venue", "key": make_key("v", names[0], _area_key(area)), "venue": venue, "address": address,
+                        "names": names + [n for v in variants for n in place_names(v, area) if n not in names], "area": area, "variants": variants, "retry_old": bool(variants)})
+    elif prose:
+        named = textloc.named_place(raw_venue)
+        if named and place_names(named, area):
+            names = place_names(named, area)
+            options.append({"kind": "venue", "key": make_key("v", names[0], _area_key(area)), "venue": named, "address": "", "names": names, "area": area,
+                            "variants": [], "found_in": "venue text", "retry_old": True})
+    if in_description and in_description not in options:
+        options.append(in_description)
+    for text in (raw_venue, description):
+        for phrase in textloc.corner_phrases(text):
+            crossing = parse_intersection(phrase)
+            if crossing:
+                options.append(_intersection(crossing, phrase, area, "venue text" if text is raw_venue else "description"))
+                break
+    unique = []
+    for option in options:
+        if all(option["key"] != other["key"] for other in unique):
+            unique.append(option)
+    unique = unique[:3]
+    for first, second in zip(unique, unique[1:]):
+        first["then"] = second
+    return unique[0] if unique else None
 
 
 def _area_key(area):
@@ -352,6 +421,14 @@ def shared_nodes(elements, tokens_a, tokens_b, merge_m=100):
     return places
 
 
+def _without_city(name, area):
+    for city in _known_cities(area):
+        city = norm_name(city)
+        if city and name.endswith(" " + city) and len(name.split()) - len(city.split()) >= 2:
+            return name[:-len(city)].strip()
+    return name
+
+
 def accept_geocode(candidate, results):
     """(location dict, None) or (None, reason): applies the trust rules to Nominatim results (jsonv2 with addressdetails and extratags)."""
     kind, area = candidate["kind"], candidate["area"]
@@ -380,7 +457,10 @@ def accept_geocode(candidate, results):
         elif kind == "venue":
             names = candidate["names"]
             found = norm_name(r.get("name") or (r.get("namedetails") or {}).get("name") or "")
-            if r.get("category") not in PLACE_CLASSES or r.get("type") in NOT_PLACES or found not in names:
+            if r.get("category") not in PLACE_CLASSES or r.get("type") in NOT_PLACES:
+                continue
+            # the same name once the search area's own city is set aside ("Hard Rock Hotel" and "Hard Rock Hotel San Diego"), never a different name
+            if found not in names and _without_city(found, area) not in {_without_city(n, area) for n in names}:
                 continue
             if not _locality(r) and not address.get("road"):
                 continue
@@ -666,7 +746,26 @@ class MediaService:
                 "provenance": f"intersection of {place['names'][0]} and {place['names'][1]}: OpenStreetMap node {place['node']} is shared by both streets{note}"}
 
     def resolve(self, candidate):
-        """The record for a candidate place: a verified location with a map and perhaps a venue photograph, or a cached refusal."""
+        """The record for a place: the first of the candidate and its `then` candidates that verifies, else a refusal giving every reason."""
+        reasons, first = [], None
+        option = candidate
+        while option:
+            record = self._resolve_one(option)
+            record["rv"] = RESOLVER
+            if first is None:
+                first = record
+            if record["ok"]:
+                if option is not candidate:
+                    record["via"] = option["kind"]
+                    first_reason = "; ".join(reasons)
+                    record["earlier"] = first_reason[:300]
+                return record
+            reasons.append(f"{option['kind']}: {record.get('reason', 'refused')}")
+            option = option.get("then")
+        first["reason"] = "; ".join(reasons)[:400] if len(reasons) > 1 else first.get("reason", "refused")
+        return first
+
+    def _resolve_one(self, candidate):
         now = self.clock()
         record = {"at": now, "ok": False, "kind": candidate["kind"], "venue": candidate.get("venue", "")}
         if candidate["kind"] == "source":
@@ -680,10 +779,10 @@ class MediaService:
         else:
             where = (candidate["area"] or {}).get("display_name") or (candidate["area"] or {}).get("name") or ""
             if candidate["kind"] == "venue":
-                queries = [f"{candidate['venue']}, {where}"]
+                queries = [f"{candidate['venue']}, {where}"] + [f"{v}, {where}" for v in candidate.get("variants") or []][:2]
             else:
                 address = candidate["address"]
-                if where and not re.search(r"[A-Z]{2}|\d{5}", address):
+                if where and not re.search(r"\b[A-Z]{2}\b|\d{5}", address):
                     address = f"{address}, {where}"
                 # the venue and its address together find the place itself (with its OpenStreetMap links); the address alone is the fallback
                 queries = ([f"{candidate['venue']}, {address}"] if candidate.get("venue") and norm_name(candidate["venue"]) != norm_name(address) else []) + [address]
@@ -696,6 +795,8 @@ class MediaService:
                 results = self.get_json(NOMINATIM + "?" + urlencode(params))
                 location, reason = accept_geocode(candidate, results)
                 if location:
+                    if candidate.get("found_in"):
+                        location["provenance"] += f"; the address was taken from the event's {candidate['found_in']}"
                     break
             if not location:
                 record["reason"] = reason
@@ -740,7 +841,7 @@ class MediaService:
                     wanted[candidate["key"]][1] += 1
         records = self.store.index["records"]
         # a place is looked up again when it has no record, or when its stored files have gone missing (the record then cannot serve)
-        todo = [(count, c) for c, count in wanted.values() if c["key"] not in records or not self.store.intact(records[c["key"]])]
+        todo = [(count, c) for c, count in wanted.values() if self._needs_work(c, records)]
         todo.sort(key=lambda item: -item[0])
         done = 0
         for _, candidate in todo[:limit]:
@@ -758,13 +859,22 @@ class MediaService:
             self.store.save()
         return done
 
+    def _needs_work(self, candidate, records):
+        """No record yet, a record whose files are gone, or a refusal made under older rules for a place the newer rules read differently."""
+        record = records.get(candidate["key"])
+        if record is None or not self.store.intact(record):
+            return True
+        if record.get("ok") or record.get("rv", 1) >= RESOLVER:
+            return False
+        return bool(candidate.get("retry_old")) or str(record.get("reason", "")).startswith("no result matched")
+
     def pending(self, feeds):
         have = self.store.index["records"]
         keys = set()
         for area, events in feeds:
             for event in events:
                 candidate = candidate_for(event, area)
-                if candidate and (candidate["key"] not in have or not self.store.intact(have[candidate["key"]])):
+                if candidate and self._needs_work(candidate, have):
                     keys.add(candidate["key"])
         return len(keys)
 

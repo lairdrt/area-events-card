@@ -80,3 +80,24 @@ Sources sometimes leave HTML entities in what they publish ("Porto Vista Hotel &
 ## Staying put
 
 A map that has loaded stays across polls, filters and background updates (a tile whose event is unchanged keeps its image element). It goes only when the app stops listing it, which happens when the event's location evidence changes. If the other theme's variant fails to load after a map has loaded, the card keeps the variant that loaded and tries again at the next theme change. A tile whose images all failed (a busy or restarting app) tries again on later polls, at least a minute apart and three times at most. The app lists a map or photograph only while its files are stored, and draws a place again if its files have gone.
+
+## Places named in the event's own text
+
+Besides source coordinates, the address field and a venue name, a place is now also read from text the event already carries (no extra web requests: `discovery/textloc.py` only reads text, and every result is still verified by the geocoder before a pin is drawn). In order of preference:
+
+1. a full street address in the venue text (and, when the venue is empty or only a sentence, in the description): house number, street, optional unit, a city only when a state code follows it or it is the search city. "At 4325 Wightman" (no street type) counts only after the word "at". More than one different address in the text means none is used;
+2. a corner in the address field, then in the venue field (a house number first means it is an address, and each side may have at most five words, so a sentence containing "and" is not a corner);
+3. the venue name, with a room, suite or floor suffix removed as an additional query ("SEAY Library - Room 4.244"); a venue field that is a sentence is never searched as a name, but a park or centre named at its start ("De Anza Cove Park is a scenic…") is;
+4. an address in the description when the venue is a name (tried only if the name is refused), then a "corner of A and B" / "intersection of A and B" phrase.
+
+At most three candidates are chained; the next is tried only after the one before is refused, and the record keeps every reason. An address taken from text must match on house number and street name, in the search area's city when the text names none, and the pin says "the address was taken from the event's description / venue text". A result whose name differs from the venue's only by the search city ("Hard Rock Hotel San Diego" for "Hard Rock Hotel") is accepted; any other different name is not. Refusals recorded under the earlier rules are retried once, only for places the new rules read differently.
+
+### Measured on the saved San Diego and Austin feeds (557 events, 543 not virtual/online)
+
+| | before | after |
+|---|---|---|
+| events with a map | 231 (41.5%) | 241 (43.3%; 44.4% of the 543 eligible) |
+
+Gained: 4 by a street address (structured address fields that earlier rules had not looked up), 3 by an address read from the text (Hillcrest Farmers Market and two others), 2 by a venue name (one only because the city suffix is set aside), 1 by a corner. No event lost its map. Remaining 316 events: 160 geocoder found nothing (venue not in OpenStreetMap under that name), 91 no location text, 34 no close enough match, 14 virtual/online, 11 ambiguous names, 6 corners that do not meet in the map data. 0 pending, 2 temporary Overpass failures (retried).
+
+The named examples: Hillcrest Farmers Market is placed (1717 University Ave. in San Diego). South Clairemont Winter Carnival: "3605 Clairemont Drive" exists at three points in OpenStreetMap about 600 m apart, so it is refused as ambiguous. ASCENDKemet: OpenStreetMap has no house number 4325 on Wightman Street. VisionWalk: OpenStreetMap has "De Anza Cove" only as a natural bay, not a park. Haunted Trail of Balboa Park and North Park Farmers Market: the streets do not meet in OpenStreetMap. None of these is given a guessed pin.

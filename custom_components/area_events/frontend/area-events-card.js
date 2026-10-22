@@ -9,7 +9,7 @@
  * visual editor; the filter chips are the viewer's own choices, saved per card instance (see "Preferences").
  */
 
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-63f5f1e0";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-8b6aec65";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
@@ -186,18 +186,20 @@ const STYLES = `
     color: var(--primary-text-color); overflow-wrap: anywhere;
   }
   .meta {
-    display: flex; align-items: flex-start; gap: 6px; min-width: 0;
+    display: flex; align-items: flex-start; gap: 6px; min-width: 0; line-height: 1.4;
     font-size: 0.875rem; color: var(--secondary-text-color); overflow-wrap: anywhere;
   }
-  .meta ha-icon { --mdc-icon-size: 16px; flex: none; }
+  /* every icon sits in a box one text line tall, centred on that line: it stays centred on the first line when the text wraps */
+  .meta ha-icon, .verify ha-icon { --mdc-icon-size: 16px; flex: none; width: 16px; height: 1.4em; display: inline-flex; align-items: center; justify-content: center; }
+  .meta > span, .verify > span { min-width: 0; }
   .verify {
+    display: flex; align-items: flex-start; gap: 6px; line-height: 1.4;
     margin-top: 4px; font-size: 0.8125rem;
     font-weight: min(var(--ha-font-weight-medium, 500), 600);
   }
   .verify.verified { color: var(--success-color, var(--primary-text-color)); }
   .verify.corroborated { color: var(--secondary-text-color); }
   .verify.unverified { color: var(--secondary-text-color); }
-  .verify ha-icon { --mdc-icon-size: 16px; vertical-align: -3px; }
   .description {
     font-size: 0.875rem; color: var(--secondary-text-color); overflow-wrap: anywhere;
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
@@ -1505,7 +1507,7 @@ class AreaEventsCard extends HTMLElement {
     if (event.verified) [kind, label, icon] = ["verified", "Verified", "mdi:check-decagram"];
     else if (event.status === "corroborated") [kind, label, icon] = ["corroborated", "Source corroborated", "mdi:check-circle-outline"];
     const verify = this._el("div", `verify ${kind}`);
-    verify.append(this._icon(icon), document.createTextNode(` ${label}`));
+    verify.append(this._icon(icon), this._el("span", "", label));
     if (event.evidence.length) verify.title = event.evidence.join("\n");
     body.append(verify);
 
