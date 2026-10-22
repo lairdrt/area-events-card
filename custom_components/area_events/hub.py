@@ -66,6 +66,7 @@ class DiscoveryHub:
     def __init__(self, read, control=None, clock=time.time):
         self._read, self._control, self._clock = read, control, clock
         self._areas, self._status, self._processing = None, None, None
+        self._areas_stale = False   # the cached list is out of date but still the last known one (the cards keep being served from it)
         self._feeds, self._subs, self._ids = {}, {}, itertools.count(1)
         self.connected, self.last_error, self._closed = None, None, False
         self._sources = {}
@@ -82,8 +83,9 @@ class DiscoveryHub:
     # --- areas and status ---------------------------------------------------------------------------------------------
 
     async def areas(self, reload=False):
-        if self._areas is None or reload:
+        if self._areas is None or reload or self._areas_stale:
             self._areas = list(await self._read.areas())
+            self._areas_stale = False
         return [dict(a) for a in self._areas]
 
     async def resolve(self, reference):
@@ -174,7 +176,7 @@ class DiscoveryHub:
             raise
         self.connected, self.last_error = True, None
         try:
-            if dirty == "all" or any(key not in {a["area_key"] for a in self._areas or ()} for key in dirty):
+            if dirty == "all" or self._areas_stale or any(key not in {a["area_key"] for a in self._areas or ()} for key in dirty):
                 await self.areas(reload=True)
             by_key = {a["area_key"]: a for a in self._areas or ()}
             for key in (list(self._feeds) if dirty == "all" else sorted(dirty)):
@@ -198,7 +200,7 @@ class DiscoveryHub:
                 kind, seq = change["kind"], change["seq"]
                 newer = {k: f for k, f in self._feeds.items() if f.latest_seq < seq}
                 if kind in RELEVANT_KINDS:
-                    self._areas = None
+                    self._areas_stale = True
                     dirty |= set(newer)
                 elif kind == "event.created":
                     dirty |= set(newer)      # a new event may belong to any followed area; which one is not in the record
@@ -334,7 +336,7 @@ class DiscoveryHub:
     async def _changed(self, call):
         """Run a control command. Success means the service saved it; the next refresh brings the cards up to date."""
         result = await call
-        self._areas = None
+        self._areas_stale = True
         return result
 
     async def create_area(self, **fields):

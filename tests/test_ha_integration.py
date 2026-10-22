@@ -417,6 +417,21 @@ class Outages(Service):
         self.assertEqual((card.last["state"], card.last["connected"]), ("ready", True))
         self.assertEqual({e["revision"] for e in card.last["events"]}, {2}, "the revision committed during the outage was not missed")
 
+    def test_an_outage_after_an_administrator_change_still_reaches_the_cards(self):
+        """Found on the real Cubi: a successful change used to forget the area list, so a later outage told no card."""
+        async def scenario():
+            hub = self.hub()
+            card = Inbox()
+            await hub.subscribe("San Diego", card)
+            await hub.set_settings((await hub.status())["settings_revision"], intensity="high")
+            self.read.down = True
+            with self.assertRaises(client_module.DiscoveryConnectionError):
+                await hub.refresh()
+            return card
+
+        card = run(scenario())
+        self.assertEqual((card.last["state"], card.last["connected"], len(card.last["events"])), ("unavailable", False, 4))
+
     def test_nothing_is_reported_saved_while_the_service_cannot_be_reached(self):
         async def scenario():
             hub = self.hub()
@@ -572,9 +587,15 @@ class Transport(Service):
         with self.assertRaises(client_module.DiscoveryConnectionError) as caught:
             run(untrusting.status())
         self.assertNotIn(READ_TOKEN, str(caught.exception))
+        import contextlib
+        import io
         plain = client_module.DiscoveryControlClient(UrllibSession(), self.url.replace("https", "http"), READ_TOKEN)
-        with self.assertRaises(client_module.DiscoveryConnectionError):
+        noise = io.StringIO()
+        with contextlib.redirect_stderr(noise), self.assertRaises(client_module.DiscoveryConnectionError):
             run(plain.status())   # speaking plain http to the TLS port gets nothing
+        import time
+        time.sleep(0.3)
+        self.assertEqual(noise.getvalue(), "", "a protocol mismatch is not logged as a traceback")
 
     def test_the_setup_form_and_entry_use_the_certificate_file(self):
         hass = types.SimpleNamespace(async_add_executor_job=lambda func, *a: asyncio.sleep(0, func(*a)))

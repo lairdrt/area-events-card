@@ -26,6 +26,7 @@ import logging
 import re
 import secrets
 import ssl
+import sys
 import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -328,6 +329,17 @@ class _Handler(BaseHTTPRequestHandler):
         log.debug("http %s", fmt % args)
 
 
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        """A client that spoke the wrong protocol (plain http to the TLS port, a port scan) or went away is not a service fault: no traceback, no stderr."""
+        if isinstance(sys.exc_info()[1], (ssl.SSLError, ConnectionError, TimeoutError)):
+            log.debug("connection from %s dropped: %s", client_address[0], sys.exc_info()[1])
+        else:
+            log.exception("request from %s failed", client_address[0])
+
+
 class DiscoveryApiServer:
     """The HTTP server for a DiscoveryApi: explicit start and stop, loopback by default."""
 
@@ -351,7 +363,7 @@ class DiscoveryApiServer:
         return self._server.server_address if self._server else (self._host, self._port)
 
     def start(self):
-        server = ThreadingHTTPServer((self._host, self._port), _Handler)
+        server = _Server((self._host, self._port), _Handler)
         server.daemon_threads = True
         server.api = self._api
         if self._tls:

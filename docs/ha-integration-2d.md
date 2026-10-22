@@ -89,30 +89,32 @@ days: 30
 
 `python scripts/discovery.py serve` creates three tokens, each in a private file next to the database: `api-token` (control), `api-read-token` (read) and `api-process-token` (extraction workers only). A read token cannot change anything; a process token can only use the processing routes; neither of the others can submit extraction results. Enter the read token (and, only if administrators should change settings from Home Assistant, the control token) in the integration's setup form. They are stored in the config entry on the Home Assistant backend and are never sent to a dashboard.
 
-Tokens are sent in every request, so do not send them across a network in plain text. The service binds to loopback by default. For the Cubi-to-Pi link, terminate TLS in front of it with an authenticated reverse proxy on the Cubi, for example Caddy:
+Tokens are sent in every request, so they must never cross a network in plain text. The service therefore **refuses to bind beyond loopback without TLS** (`--allow-plain-remote` is the explicit, informed exception). The simplest secure setup needs no extra software: the service serves https itself with a certificate you make once on the Cubi, and Home Assistant trusts that one certificate file.
+
+On the Cubi, once (use the Cubi's real address in `subjectAltName`):
 
 ```
-events.example.lan {
-    tls internal                      # or a certificate your Home Assistant trusts
-    reverse_proxy 127.0.0.1:8780
-}
+mkdir -p certs && openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.pem -days 825     -subj "/CN=area-events-discovery" -addext "subjectAltName=IP:192.168.1.88"
+chmod 600 certs/key.pem
+python3 scripts/discovery.py serve --bind 192.168.1.88 --allow-remote --tls-cert certs/cert.pem --tls-key certs/key.pem
 ```
 
-and enter `https://events.example.lan` as the service address. (This milestone documents the configuration only; no proxy was installed or deployed.) The config flow warns when the address is plain http beyond this computer. Never share `discovery.db` over SMB or NFS: Home Assistant reaches it only through the API.
+Copy only the public `cert.pem` to Home Assistant (for example `/config/area_events_cert.pem`) and enter that path in the integration's **Certificate file** field with the address `https://192.168.1.88:8780`. The private key never leaves the Cubi. (A reverse proxy with a certificate Home Assistant already trusts, such as Caddy with a real domain, works too: leave the certificate field empty.) Never share `discovery.db` over SMB or NFS: Home Assistant reaches it only through the API.
 
 ## Verification on the device
 
-Nothing here was run on a real Home Assistant. In order:
+Runtime evidence so far (Milestone 2D acceptance, 2026-10-22): the Discovery Service ran on the real Cubi (Python 3.13, own directory, loopback and then TLS on the LAN) and was exercised from the laptop with the integration's real client and hub; Home Assistant itself was **not** changed or restarted. What remains is Home Assistant's side, in order:
 
-1. **Discovery host (Cubi).** `python scripts/discovery.py serve --bind 127.0.0.1 --port 8780` behind the TLS proxy (or `--bind` a trusted address with `--allow-remote` and accept plain http on a trusted link). `python scripts/discovery.py status` shows areas, jobs and `events N normalized`.
-2. **Areas.** `python scripts/discovery.py areas list` shows San Diego with source `sandiego_gov`. For Austin, create the area only if you accept that it has no live source (`areas create Austin 30.2672 -97.7431 35`); an area without sources shows a clear notice.
-3. **Copy the integration** (`scripts\deploy-ha.ps1 -AppsShare X:\` as before; never `-Force`) and **restart Home Assistant yourself**. Check the log for `area_events` errors.
-4. **Add the integration** (Settings, Devices & services, Add, Area Events): address, read token, and optionally the control token. Expected: it is created; a wrong token says "rejected"; a wrong address says "could not be reached".
-5. **Add two cards** (San Diego, Austin). Expected: San Diego lists real City events; Austin shows its notice (no live source, or demonstration data); neither lists the other's events; the browser console shows one `area_events/subscribe` per card and no repeating requests.
-6. **Update propagation.** Change something the service re-reads (or `python scripts/discovery.py run --now`), wait for extraction and one interval: the San Diego card updates without a reload; the Austin card does not change; the Discovery log shows no crawl caused by the card.
-7. **Disconnect.** Stop the Discovery service: cards show "Events unavailable"/"Update failed" with earlier events kept. Start it: the cards recover within one interval. Restart Home Assistant (or reload the integration) with Discovery running: cards reconnect and show the current events.
-8. **Shared settings.** As an administrator, call `area_events/settings` / `area_events/pause` from Developer Tools (WebSocket test via the browser console `hass.callWS`), check `python scripts/discovery.py status`; as a non-administrator the call must fail with `unauthorized`.
-9. **Security.** Search the Home Assistant log and a card's WebSocket traffic for the tokens: they must not appear.
+1. **Discovery host (Cubi)**, from `~/area-events-discovery` (already staged; start it as above). `python3 scripts/discovery.py status` shows areas, jobs and `events N normalized`. To keep it running across reboots, run it under a systemd user unit (`loginctl enable-linger`) or your usual supervisor; this was deliberately not installed.
+2. **Areas.** San Diego (source `sandiego_gov`) and Austin (no source) exist in the staged database. Austin has no live source; its card says so.
+3. **Remove the old Area Events entry** (Settings, Devices & services): it belongs to the earlier app (`source: hassio`) and the new integration refuses it with an instruction in the log.
+4. **Copy the integration** (`scripts\deploy-ha.ps1 -AppsShare X:\`, never `-Force`; it also rebuilds the now-unneeded legacy app) and **restart Home Assistant yourself**. Check the log for `area_events` errors.
+5. **Add the integration**: `https://192.168.1.88:8780`, the read token, optionally the control token, and the certificate path. A wrong token says "rejected"; an untrusted certificate says "could not be reached".
+6. **Add two cards** (San Diego, Austin). Expected: San Diego lists real City events; Austin shows "No event sources are attached"; neither lists the other's events; the browser console shows one `area_events/subscribe` per card and no repeating requests.
+7. **Update propagation.** `python3 scripts/discovery.py run --now` on the Cubi (or wait for the hourly crawl), then one interval: a changed event reaches only its area's card; the Discovery log shows no crawl caused by a card.
+8. **Disconnect.** Stop the service: cards show "Events unavailable" with earlier events kept. Start it: they recover within one interval. Restart Home Assistant or reload the entry with Discovery running: cards reconnect.
+9. **Shared settings.** As an administrator, `hass.callWS({type: "area_events/pause"})` from the browser console; check `status` on the Cubi; as a non-administrator the call must fail with `unauthorized`. Resume afterwards.
+10. **Security.** Search the Home Assistant log and a card's WebSocket traffic for the tokens: they must not appear.
 
 ## Known limits
 
