@@ -9,7 +9,7 @@
  * visual editor; the filter chips are the viewer's own choices, saved per card instance (see "Preferences").
  */
 
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-3859aae2";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-1274c935";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
@@ -555,31 +555,6 @@ function artFor(event) {
 }
 
 /*
- * Category photographs (optional, private). When the integration was given a folder of photographs it tells the card which
- * exist (reply.photos: {base, sets: {<set>: [{file, alt, v}]}}); an event without a usable photograph of its own then shows
- * one chosen by what the engine classified it as, labelled "Category photo" so it is never mistaken for the event. Without
- * that folder, or if a photograph cannot be loaded, the illustration above is shown, exactly as before.
- * Food has three sets, picked by the engine's subject (see discovery/photo_subject.py); with no subject the restaurant set
- * is used. The choice is a pure function of the event's id, so it is the same on every refresh, device and filter.
- */
-const FOOD_SETS = { restaurant: "food-restaurant", "farmers-market": "food-farmers-market", "food-truck": "food-truck" };
-const PHOTO_FILE = /^[a-z0-9][a-z0-9-]*\.webp$/;
-function categoryPhotoFor(event, photos) {
-  if (!photos || typeof photos.base !== "string" || !photos.base.startsWith("/") || photos.base.startsWith("//") || !photos.sets) return null;
-  const category = artFor(event);
-  const subject = event && event.illustration && event.illustration.subject;
-  const wanted = category === "food" ? FOOD_SETS[subject] || "food-restaurant" : category;
-  const usable = (key) => (Array.isArray(photos.sets[key]) ? photos.sets[key].filter((item) => item && PHOTO_FILE.test(item.file) && typeof item.alt === "string") : []);
-  const set = [wanted, "general"].find((key) => usable(key).length);
-  if (!set) return null;
-  const pool = usable(set);
-  const seed = (event && event.id) || `${event && event.title}|${event && event.start}`;
-  const pick = pool[parseInt(hashString(String(seed)), 36) % pool.length];
-  const version = typeof pick.v === "string" && /^[0-9a-f]{4,16}$/.test(pick.v) ? `?v=${pick.v}` : "";
-  return { url: `${photos.base}${pick.file}${version}`, alt: `Category photo, not from this event: ${pick.alt}`, set };
-}
-
-/*
  * Location imagery from the Area Events app (event.media): a verified photograph of the venue and/or a map. Everything is
  * validated here as data from outside: addresses must be this integration's own /area_events/media/ files, links must be
  * https addresses on the expected sites, and every text is shown as text. The card draws the pin, badges, venue name and
@@ -615,14 +590,13 @@ function safeMedia(raw, event) {
 
 const PIN_SVG = '<svg viewBox="0 0 30 40" aria-hidden="true" focusable="false"><path d="M15 39 L5 23 A13 13 0 1 1 25 23 Z" fill="#f08a24" stroke="#fff" stroke-width="2.4" stroke-linejoin="round"/>' +
   '<circle cx="15" cy="14" r="5.2" fill="#25282d"/></svg>';
-const MEDIA_BADGES = { venue: "VENUE", map: "MAP", category: "CATEGORY PHOTO" };
+const MEDIA_BADGES = { venue: "VENUE", map: "MAP" };
 
 class AreaEventsCard extends HTMLElement {
   setConfig(config) {
     this._settings = readSettings(config);
     this._config = config;
     this._feed = undefined;
-    this._photos = undefined;
     this._status = undefined;
     this._feedError = undefined;
     this._feedErrorCode = undefined;
@@ -690,7 +664,7 @@ class AreaEventsCard extends HTMLElement {
   }
 
   static get _internals() {
-    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, readSettings, assertEditable, EDITOR_SCHEMA, ART, ART_LABELS, artFor, categoryPhotoFor, safeMedia };
+    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, readSettings, assertEditable, EDITOR_SCHEMA, ART, ART_LABELS, artFor, safeMedia };
   }
 
   // --- preferences ------------------------------------------------------------
@@ -802,7 +776,7 @@ class AreaEventsCard extends HTMLElement {
     }
     if (run !== this._feedRun) return;
 
-    const before = JSON.stringify([this._status, this._feedError, this._feed && this._feed.key, this._photos]);
+    const before = JSON.stringify([this._status, this._feedError, this._feed && this._feed.key]);
     if (reply) {
       const events = Array.isArray(reply.events) ? reply.events : reply.unchanged && this._feed ? this._feed.events : undefined;
       this._status = {
@@ -810,7 +784,6 @@ class AreaEventsCard extends HTMLElement {
         report: reply.report || [], initial: reply.initial !== false, outcome: reply.outcome || undefined, progress: reply.progress || undefined,
       };
       this._feedError = this._feedErrorCode = undefined;
-      this._photos = reply.photos && typeof reply.photos === "object" ? reply.photos : undefined;
       if (Array.isArray(events)) {
         // `key` is what the next poll sends as `since`: the feed's time, plus the app's imagery revision once there is one
         const revision = Number(reply.revision) || 0;
@@ -820,7 +793,7 @@ class AreaEventsCard extends HTMLElement {
       this._feedError = error;
       this._feedErrorCode = code;
     }
-    const after = JSON.stringify([this._status, this._feedError, this._feed && this._feed.key, this._photos]);
+    const after = JSON.stringify([this._status, this._feedError, this._feed && this._feed.key]);
     // Nothing new changes nothing on screen; new events are merged into the existing tiles in place.
     if (before === after && this._els) this._updateHeader();
     else this._applyData();
@@ -1083,11 +1056,10 @@ class AreaEventsCard extends HTMLElement {
       let key = event.id || `${event.title}|${event.start}`;
       if (used.has(key)) key = `${key}#${index}`;
       used.add(key);
-      const photo = this._settings.showImages ? categoryPhotoFor(event, this._photos) : null;
-      const signature = JSON.stringify([event, photo && photo.url]);
+      const signature = JSON.stringify(event);
       const old = previous.get(key);
       if (old && old.signature === signature) return old;
-      return { event, key, signature, el: this._renderEvent(event, photo), matches: categoriesFor(event, extra) };
+      return { event, key, signature, el: this._renderEvent(event), matches: categoriesFor(event, extra) };
     });
     this._tiles = tiles;
 
@@ -1351,7 +1323,7 @@ class AreaEventsCard extends HTMLElement {
     this._setPrefs({ ...this._prefs, custom });
   }
 
-  _renderEvent(event, categoryPhoto) {
+  _renderEvent(event) {
     const item = this._el("div", "event");
 
     const image = this._el("div", "image");
@@ -1364,9 +1336,9 @@ class AreaEventsCard extends HTMLElement {
     const tag = this._el("span", "art-tag", "Illustration");
     image.append(art, tag);
     // Image priority: the event's own photos (the engine put its best first, then verified ones from other matched records), a
-    // verified photograph of the venue, a map of the event's location, the category photograph (when this installation has
-    // them), and finally the illustration, which is always underneath. An image that fails to load hands over to the next
-    // one. Only the event's own photos are ever shown without a label: VENUE, MAP and CATEGORY PHOTO say what the rest are.
+    // verified photograph of the venue, a map of the event's location, and finally the category illustration, which is always
+    // underneath. An image that fails to load hands over to the next one. Only the event's own photos are ever shown without
+    // a label: VENUE and MAP say what the rest are.
     const media = event.media;
     const place = media && media.map && media.map.venue;
     const candidates = [];
@@ -1377,7 +1349,6 @@ class AreaEventsCard extends HTMLElement {
         candidates.push({ kind: "map", url: () => (this._isDark() ? media.map.dark : media.map.light), map: media.map,
           alt: `Map of the event location${place ? `: ${place}` : ""}${media.map.approximate ? " (approximate position)" : ""}` });
       }
-      if (categoryPhoto) candidates.push({ kind: "category", url: () => categoryPhoto.url, alt: categoryPhoto.alt });
     }
     if (candidates.length) {
       let current = candidates.shift();
