@@ -35,7 +35,7 @@ class Subjects(unittest.TestCase):
             "Neighborhood volunteer cleanup": "community",
             "Guided hike through the canyon": "outdoors",
             "Family storytime for toddlers": "family",
-            "Fall street festival and parade": "festival",
+            "Fall street festival and parade": "street_festival",
             "Wine tasting and cheese pairing": "food",
             "Saturday morning 5k fun run": "sports",
         }
@@ -112,7 +112,7 @@ class Corrections(unittest.TestCase):
         return classify.classify(self.LISTINGS[key])
 
     def test_the_listings_now_get_the_category_their_content_supports(self):
-        expected = {"gulls": "sports", "affairs": "community", "assembly": "community", "mannerism": "arts", "trail": "festival", "popsicle": "food"}
+        expected = {"gulls": "sports", "affairs": "community", "assembly": "community", "mannerism": "arts", "trail": "halloween", "popsicle": "food"}
         for key, category in expected.items():
             result = self.category(key)
             self.assertEqual((result["category"], result["fallback"]), (category, False), key)
@@ -142,9 +142,9 @@ class Corrections(unittest.TestCase):
         self.assertEqual(pick("Student Union")["category"], "general")
 
     def test_the_haunted_attraction_is_not_an_outdoor_trail_but_a_real_trail_still_is(self):
-        self.assertEqual(pick("Haunted Trail", "A scary walk.")["category"], "festival")
+        self.assertEqual(pick("Haunted Trail", "A scary walk.")["category"], "halloween")
         self.assertEqual(pick("Wildflower Trail Hike", "Walk the trail.")["category"], "outdoors")
-        self.assertEqual(pick("Haunted House at the old mill")["category"], "festival")
+        self.assertEqual(pick("Haunted House at the old mill")["category"], "halloween")
 
 
 class Uncertainty(unittest.TestCase):
@@ -203,16 +203,17 @@ class Packaging(unittest.TestCase):
         with open(os.path.join(ROOT, "src", "area-events-card.js"), encoding="utf-8") as handle:
             source = handle.read()
         art = source[source.index("const ART = {"):source.index("const ART_LABELS")]
-        card_keys = set(re.findall(r"^  ([a-z]+): SVG_HEAD", art, re.M))
-        self.assertEqual(card_keys, set(classify.CATEGORIES))
+        card_keys = set(re.findall(r"^  ([a-z_]+): SVG_HEAD", art, re.M))
+        catalog = set(classify.CATEGORIES)
+        self.assertEqual(card_keys, catalog)
         labels = source[source.index("const ART_LABELS"):source.index("/** The illustration for an event")]
-        self.assertEqual(set(re.findall(r"\b([a-z]+): \"", labels)), set(classify.CATEGORIES))
+        self.assertEqual(set(re.findall(r"\b([a-z_]+): \"", labels)), catalog)
         self.assertEqual(set(classify.LEXICON), set(classify.CATEGORIES) - {"general"})
 
     def test_lexicon_is_well_formed(self):
         for category, terms in classify.LEXICON.items():
             for term, weight in terms.items():
-                self.assertTrue(0 < weight <= 4, (category, term))
+                self.assertTrue(0 < weight <= 6, (category, term))
                 self.assertEqual(term, term.lower())
         for category, tags in classify.TAGS.items():
             self.assertIn(category, classify.LEXICON)
@@ -256,7 +257,7 @@ class RealEvents(unittest.TestCase):
         expect = {
             "Austin Tech Week": ("festival", "science"),            # a tech conference was drawn as a festival
             "Postdoc Zumba Wellness Session!": ("theater", "sports"),
-            "Car Show": ("sports", "general"),                     # not a sport; nothing better is known
+            "Car Show": ("sports", "car_show"),                    # not a sport
             "Mitchell Sustainability Symposium": ("arts", "general"),
         }
         for title, (was, now) in expect.items():
@@ -265,7 +266,7 @@ class RealEvents(unittest.TestCase):
         rooftop = [r for r in self.rows if "Rooftop Cinema Club" in r["title"]]
         self.assertTrue(rooftop and all(r["before"] == "festival" and r["after"] == "general" for r in rooftop))
         market = next(r for r in self.rows if r["title"].startswith("ASCENDKemet"))
-        self.assertEqual((market["before"], market["after"]), ("arts", "food"))
+        self.assertEqual((market["before"], market["after"]), ("arts", "farmers_market"))
 
 
 class InTheFeed(unittest.TestCase):

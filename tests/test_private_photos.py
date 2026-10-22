@@ -30,7 +30,7 @@ class Subjects(unittest.TestCase):
 
     def test_food_events_get_the_subject_their_listing_states(self):
         farmers, truck, dinner, plain = self.annotated(food("Hillcrest Farmers Market"), food("Taco Tuesday Food Truck Rally"), food("Wine Tasting Dinner"), food("Restaurant Week Brunch"))
-        self.assertEqual([e["illustration"]["category"] for e in (farmers, truck, dinner, plain)], ["food"] * 4)
+        self.assertEqual([e["illustration"]["category"] for e in (farmers, truck, dinner, plain)], ["farmers_market", "food", "food", "food"])
         self.assertEqual(farmers["illustration"]["subject"], "farmers-market")
         self.assertEqual(truck["illustration"]["subject"], "food-truck")
         self.assertEqual(dinner["illustration"]["subject"], "restaurant")
@@ -70,7 +70,7 @@ class Pipeline(unittest.TestCase):
         selected = registry.load_sources(config)
         document = refresh.build_document(config, {"web_t": {"events": [event], "ok": True, "last_success_at": datetime.now(timezone.utc).isoformat()}}, datetime.now(timezone.utc), selected)
         decision = document["events"][0]["illustration"]
-        self.assertEqual((decision["category"], decision["subject"]), ("food", "farmers-market"))
+        self.assertEqual((decision["category"], decision["subject"]), ("farmers_market", "farmers-market"))
 
 
 class Index(unittest.TestCase):

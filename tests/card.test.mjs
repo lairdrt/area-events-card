@@ -795,7 +795,8 @@ const tagOf = (tile) => byClass(tile, "art-tag")[0];
 const withImages = (title, images, extra = {}) => event(title, 2, { images, image_url: images[0], ...extra });
 
 test("the packaged artwork is complete, themed, offline and well-formed", () => {
-  const kinds = ["music", "theater", "festival", "food", "sports", "arts", "science", "family", "community", "outdoors", "general"];
+  const kinds = ["music", "theater", "festival", "food", "sports", "arts", "science", "family", "community", "outdoors", "general",
+    "farmers_market", "carnival", "car_show", "halloween", "christmas", "street_festival"];
   assert.deepEqual(Object.keys(ART).sort(), [...kinds].sort());
   assert.deepEqual(Object.keys(ART_LABELS).sort(), [...kinds].sort());
   for (const kind of kinds) {
@@ -816,7 +817,7 @@ test("the packaged artwork is complete, themed, offline and well-formed", () => 
 test("the artwork is shipped inside the card the integration serves, so it needs no extra request", async () => {
   const { readFileSync } = await import("node:fs");
   const served = readFileSync(new URL("../custom_components/area_events/frontend/area-events-card.js", import.meta.url), "utf8");
-  assert.equal((served.match(/: SVG_HEAD \+/g) || []).length, 11, "eleven illustrations in the served file");
+  assert.equal((served.match(/: SVG_HEAD \+/g) || []).length, 17, "seventeen illustrations in the served file");
   assert.match(served, /Illustration/);
 });
 
@@ -826,6 +827,24 @@ test("the card draws the illustration category the engine resolved, and falls ba
     { illustration: { category: "constructor" } }, { illustration: { category: 7 } }, { illustration: { category: "__proto__" } }]) {
     assert.equal(artFor(unknown), "general", JSON.stringify(unknown));
   }
+});
+
+test("the six added illustrations render through the existing illustration path, and the earlier ones are unchanged", async () => {
+  const added = ["farmers_market", "carnival", "car_show", "halloween", "christmas", "street_festival"];
+  const feed = makeFeed({ events: added.map((kind) => event(`Event ${kind}`, 2, { illustration: { category: kind } })) });
+  const card = await make({}, { hass: themed(feed, false) });
+  for (const kind of added) {
+    const tile = tileFor(card, `Event ${kind}`);
+    assert.match(artOf(tile).className, new RegExp(`art ${kind}`));
+    assert.equal(artOf(tile).innerHTML, ART[kind]);
+    assert.equal(artOf(tile).attrs["aria-label"], `Illustration: ${ART_LABELS[kind]}`);
+    assert.equal(tagOf(tile).textContent, "Illustration");
+  }
+  assert.equal(artFor({ illustration: { category: "music" } }), "music");
+  assert.equal(artFor({ illustration: { category: "festival" } }), "festival");
+  assert.equal(artFor({ illustration: { category: "street_festival" } }), "street_festival");
+  const source = fs.readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  for (const kind of added) assert.ok(source.includes(`.art.${kind} { --ae-accent: hsl(`), `${kind} has a theme accent`);
 });
 
 test("the card does not classify events itself: the title never changes the illustration", async () => {
@@ -1519,4 +1538,21 @@ test("the shared row styles centre each icon on the first line of its text at on
     "the icon box is one text line tall and centres the glyph in it");
   assert.doesNotMatch(styles, /vertical-align: -3px;\s*\}\s*\n\s*\.description/, "no per-row pixel nudges for the verification icon");
   assert.match(styles, /\.meta > span, \.verify > span \{ min-width: 0; \}/, "long text wraps inside the row");
+});
+
+test("the new illustrations are only the last fallback: event photo, venue photo and map still come first", async () => {
+  const feed = makeFeed({ events: [withMedia("Carnival night", MEDIA(), { images: ["https://a.example/1.jpg"], image_url: "https://a.example/1.jpg", illustration: { category: "carnival" } })] });
+  const card = await make({}, { hass: themed(feed, false) });
+  const tile = tileFor(card, "Carnival night");
+  const img = imgOf(tile);
+  assert.equal(img.src, "https://a.example/1.jpg", "the event's own photograph first");
+  assert.equal(artOf(tile).innerHTML, ART.carnival, "the illustration is only the layer underneath");
+  img.listeners.error({});
+  assert.equal(img.src, "/area_events/media/pabc123def4567890.jpg", "then the verified venue photograph");
+  img.listeners.error({});
+  assert.equal(img.src, "/area_events/media/m0123456789abcdef-light.svg", "then the map");
+  img.listeners.error({});
+  assert.equal(img.removed, true);
+  assert.equal(artOf(tile).hidden, false, "only then the carnival illustration");
+  assert.match(artOf(tile).className, /art carnival/);
 });

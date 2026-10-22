@@ -145,6 +145,8 @@ const STYLES = `
   .art.food { --ae-accent: hsl(12 74% 56%); } .art.sports { --ae-accent: hsl(150 52% 42%); } .art.arts { --ae-accent: hsl(262 52% 60%); }
   .art.science { --ae-accent: hsl(195 70% 46%); } .art.family { --ae-accent: hsl(42 88% 50%); } .art.community { --ae-accent: hsl(172 52% 42%); }
   .art.outdoors { --ae-accent: hsl(128 46% 42%); } .art.general { --ae-accent: hsl(220 52% 58%); }
+  .art.farmers_market { --ae-accent: hsl(100 46% 42%); } .art.carnival { --ae-accent: hsl(340 70% 55%); } .art.car_show { --ae-accent: hsl(358 68% 50%); }
+  .art.halloween { --ae-accent: hsl(26 90% 52%); } .art.christmas { --ae-accent: hsl(145 48% 38%); } .art.street_festival { --ae-accent: hsl(318 58% 54%); }
   .pin { position: absolute; left: 50%; top: 50%; width: 30px; height: 40px; transform: translate(-50%, -100%); pointer-events: none; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.45)); }
   .pin svg { width: 100%; height: 100%; display: block; }
   .venue-chip {
@@ -552,6 +554,48 @@ const ART = {
     '<circle class="b" cx="244" cy="46" r="24"/><path class="b" d="M0 150 L90 58 L150 122 L212 68 L320 150 V180 H0 Z"/>' +
     '<path class="a" d="M0 180 V152 L60 112 L110 152 L172 122 L232 162 L282 132 L320 160 V180 Z"/>' +
     '<path class="c" d="M236 166 L254 120 L272 166 Z"/><path class="c" d="M262 166 L276 130 L290 166 Z"/></svg>',
+  farmers_market: SVG_HEAD +
+    '<path class="b" d="M0 150 Q80 120 160 140 T320 132 V180 H0 Z"/>' +
+    '<path class="a" d="M60 62 H260 L276 100 H44 Z"/><g class="e"><path d="M92 62 L84 100 H116 L120 62 Z"/><path d="M152 62 L152 100 H184 L188 62 Z"/><path d="M220 62 L224 100 H252 L244 62 Z"/></g>' +
+    '<path class="c" d="M48 100 H272 V112 H48 Z"/><rect class="c" x="54" y="112" width="7" height="46" rx="3"/><rect class="c" x="259" y="112" width="7" height="46" rx="3"/>' +
+    '<rect class="a" x="72" y="126" width="176" height="14" rx="4"/>' +
+    '<circle class="p1" cx="96" cy="120" r="9"/><circle class="p2" cx="118" cy="121" r="9"/><circle class="p4" cx="142" cy="120" r="9"/>' +
+    '<circle class="p3" cx="168" cy="121" r="8"/><circle class="p1" cx="192" cy="120" r="9"/><circle class="p2" cx="216" cy="121" r="9"/></svg>',
+  carnival: SVG_HEAD +
+    '<circle class="b" cx="48" cy="40" r="3"/><circle class="b" cx="276" cy="36" r="4"/><circle class="b" cx="30" cy="96" r="3"/>' +
+    '<circle class="s" cx="160" cy="92" r="62"/><circle class="a" cx="160" cy="92" r="9"/>' +
+    '<g class="sb"><path d="M160 30 V154 M98 92 H222 M116 48 L204 136 M204 48 L116 136"/></g>' +
+    '<circle class="p1" cx="160" cy="30" r="8"/><circle class="p2" cx="204" cy="48" r="8"/><circle class="p3" cx="222" cy="92" r="8"/><circle class="p4" cx="204" cy="136" r="8"/>' +
+    '<circle class="p1" cx="160" cy="154" r="8"/><circle class="p2" cx="116" cy="136" r="8"/><circle class="p3" cx="98" cy="92" r="8"/><circle class="p4" cx="116" cy="48" r="8"/>' +
+    '<path class="c" d="M160 98 L120 170 H134 L160 122 L186 170 H200 Z"/><path class="b" d="M0 168 H320 V180 H0 Z"/></svg>',
+  car_show: SVG_HEAD +
+    '<path class="b" d="M0 142 H320 V180 H0 Z"/><g class="sb"><path d="M20 160 H70 M120 160 H160 M220 160 H280"/></g>' +
+    '<path class="a" d="M44 130 L52 108 Q56 100 66 98 L108 94 L132 70 Q138 64 148 64 H186 Q196 64 202 70 L226 94 L262 100 Q276 102 278 116 V130 Q278 136 272 136 H50 Q44 136 44 130 Z"/>' +
+    '<path class="e" d="M122 94 L142 74 H188 L208 94 Z"/><path class="se" d="M165 76 V94"/>' +
+    '<circle class="c" cx="96" cy="136" r="19"/><circle class="e" cx="96" cy="136" r="8"/><circle class="c" cx="226" cy="136" r="19"/><circle class="e" cx="226" cy="136" r="8"/>' +
+    '<circle class="a" cx="268" cy="114" r="5"/><path class="c" d="M268 40 L274 54 L290 56 L278 66 L282 82 L268 74 L254 82 L258 66 L246 56 L262 54 Z"/></svg>',
+  halloween: SVG_HEAD +
+    '<circle class="b" cx="250" cy="48" r="26"/><circle class="e" cx="260" cy="42" r="22"/>' +
+    '<path class="c" d="M30 64 q8 -10 16 0 q8 -10 16 0 q-4 12 -16 14 q-12 -2 -16 -14 Z"/><path class="c" d="M268 112 q6 -8 12 0 q6 -8 12 0 q-3 9 -12 10 q-9 -1 -12 -10 Z"/>' +
+    '<path class="b" d="M0 152 Q80 132 160 148 T320 140 V180 H0 Z"/>' +
+    '<ellipse class="a" cx="160" cy="108" rx="62" ry="50"/><path class="b" d="M160 58 Q150 48 160 40 Q170 48 160 58 Z"/><rect class="c" x="154" y="40" width="12" height="16" rx="4"/>' +
+    '<path class="e" d="M120 94 L142 94 L131 74 Z"/><path class="e" d="M178 94 L200 94 L189 74 Z"/><path class="e" d="M144 110 L160 122 L176 110 Z"/>' +
+    '<path class="e" d="M116 126 L128 134 L140 126 L152 136 L164 126 L176 136 L188 126 L200 134 L204 126 L204 142 H116 Z"/></svg>',
+  christmas: SVG_HEAD +
+    '<circle class="b" cx="44" cy="38" r="3"/><circle class="b" cx="90" cy="22" r="2.5"/><circle class="b" cx="262" cy="30" r="3"/><circle class="b" cx="292" cy="64" r="2.5"/><circle class="b" cx="60" cy="86" r="2.5"/><circle class="b" cx="250" cy="96" r="3"/>' +
+    '<path class="b" d="M0 150 Q80 134 160 148 T320 140 V180 H0 Z"/>' +
+    '<path class="a" d="M160 26 L198 78 H178 L212 120 H186 L226 160 H94 L134 120 H108 L142 78 H122 Z"/>' +
+    '<rect class="c" x="148" y="160" width="24" height="16" rx="3"/>' +
+    '<polygon class="p2" points="160,10 164,21 176,21 166,28 170,40 160,33 150,40 154,28 144,21 156,21"/>' +
+    '<circle class="p1" cx="140" cy="106" r="7"/><circle class="p3" cx="176" cy="84" r="7"/><circle class="p2" cx="182" cy="134" r="7"/><circle class="p1" cx="122" cy="146" r="7"/><circle class="p3" cx="158" cy="60" r="6"/></svg>',
+  street_festival: SVG_HEAD +
+    '<path class="sc" d="M0 26 Q80 62 160 36 T320 30"/>' +
+    '<path class="p1" d="M30 44 L52 46 L38 68 Z"/><path class="p2" d="M76 54 L98 54 L88 76 Z"/><path class="p3" d="M122 52 L144 48 L136 72 Z"/><path class="p4" d="M178 46 L200 50 L186 70 Z"/><path class="p1" d="M224 50 L246 54 L232 74 Z"/><path class="p2" d="M270 44 L292 40 L284 64 Z"/>' +
+    '<path class="b" d="M0 150 H320 V180 H0 Z"/>' +
+    '<path class="a" d="M36 148 V104 Q36 84 56 84 H92 Q112 84 112 104 V148 Z"/><path class="e" d="M48 148 V108 H100 V148 Z"/>' +
+    '<path class="c" d="M120 148 V96 Q120 76 140 76 H180 Q200 76 200 96 V148 Z"/><path class="e" d="M132 148 V100 H188 V148 Z"/>' +
+    '<path class="a" d="M208 148 V108 Q208 88 228 88 H264 Q284 88 284 108 V148 Z"/><path class="e" d="M220 148 V112 H272 V148 Z"/>' +
+    '<circle class="p2" cx="74" cy="124" r="9"/><circle class="p1" cx="160" cy="122" r="10"/><circle class="p4" cx="246" cy="130" r="9"/></svg>',
   general: SVG_HEAD +
     '<circle class="b" cx="52" cy="46" r="3"/><circle class="b" cx="268" cy="44" r="4"/><circle class="b" cx="262" cy="146" r="3"/><circle class="b" cx="60" cy="138" r="4"/>' +
     '<rect class="a" x="96" y="46" width="128" height="104" rx="14"/><rect class="e" x="106" y="72" width="108" height="68" rx="8"/>' +
@@ -562,6 +606,8 @@ const ART_LABELS = {
   music: "Music and concerts", theater: "Theater and performing arts", festival: "Festivals", food: "Food and drink", sports: "Sports",
   arts: "Arts and exhibitions", science: "Science and technology", family: "Family activities", community: "Community events",
   outdoors: "Outdoors and recreation", general: "Events",
+  farmers_market: "Farmers markets", carnival: "Carnivals and fairs", car_show: "Car shows", halloween: "Halloween",
+  christmas: "Christmas and holiday events", street_festival: "Street festivals",
 };
 /** The illustration for an event: the category the engine resolved (see discovery/classify.py), else the general one. */
 function artFor(event) {

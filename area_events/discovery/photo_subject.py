@@ -36,7 +36,7 @@ def annotate(events):
     """Add the subject to the illustration decision of every food event. Never changes the category or the photo choice."""
     for event in events:
         decision = event.get("illustration")
-        if not isinstance(decision, dict) or decision.get("category") != "food":
+        if not isinstance(decision, dict) or decision.get("category") not in ("food", "farmers_market"):
             continue
         subject = subject_of(event)
         if subject:

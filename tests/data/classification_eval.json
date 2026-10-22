@@ -34,7 +34,7 @@
    "tags": [],
    "venue": "This event will take place between 43rd and Fairmount at 4325 Wightman",
    "before": "arts",
-   "after": "food",
+   "after": "farmers_market",
    "review": "better"
   },
   {
@@ -164,7 +164,8 @@
    "tags": [],
    "venue": "Frontwave Arena",
    "before": "family",
-   "after": "family"
+   "after": "halloween",
+   "review": "better"
   },
   {
    "id": "sandiegoreader:367454",
@@ -290,7 +291,8 @@
    "tags": [],
    "venue": "The event is located in the street and utilizes the entire length of the 4900 block of Newport Avenue.",
    "before": "food",
-   "after": "food"
+   "after": "farmers_market",
+   "review": "better"
   },
   {
    "id": "sandiego_gov:little-italy-mercato-saturday-40@2026-10-24",
@@ -301,7 +303,8 @@
    "tags": [],
    "venue": "The Little Italy Mercato operates on West Date Street from the cul de sac west of Kettner Boulevard to Kettner Blvd, from Kettner Blvd to India Street, on the Piazza from India to Columbia Street, from Columbia to State Street, from State to Union Street, and from Union to Front Street. Those East/West blocks are closed and barricaded; all North/South Streets remain open to through traffic.",
    "before": "food",
-   "after": "food"
+   "after": "farmers_market",
+   "review": "better"
   },
   {
    "id": "ut_austin:53989420156577:53989420157603",
@@ -528,7 +531,8 @@
    "tags": [],
    "venue": "Birch Aquarium at Scripps",
    "before": "science",
-   "after": "science"
+   "after": "halloween",
+   "review": "better"
   },
   {
    "id": "sandiegoreader:366336",
@@ -539,7 +543,7 @@
    "tags": [],
    "venue": "Mount Helix Park",
    "before": "science",
-   "after": "festival",
+   "after": "halloween",
    "review": "better"
   },
   {
@@ -602,7 +606,7 @@
    "tags": [],
    "venue": "St. Augustine High School",
    "before": "sports",
-   "after": "general",
+   "after": "car_show",
    "review": "better"
   },
   {
@@ -672,7 +676,7 @@
    ],
    "venue": "Hilton San Diego Gaslamp Quarter",
    "before": "theater",
-   "after": "family",
+   "after": "halloween",
    "review": "neutral"
   },
   {

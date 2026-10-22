@@ -1,7 +1,8 @@
 """What is an event about? Picks the illustration category for events that have no usable photo.
 
-The card has eleven illustrations (music, theater, festival, food, sports, arts, science, family, community, outdoors,
-general). This module decides which one an event gets, in the engine, from the evidence the listing itself gives:
+The card has seventeen illustrations (music, theater, festival, food, sports, arts, science, family, community, outdoors,
+general, and the specific farmers_market, carnival, car_show, halloween, christmas, street_festival). This module
+decides which one an event gets, in the engine, from the evidence the listing itself gives:
 
     1. the title (the subject of the event)          full weight
     2. the description                                 reduced weight, capped (descriptions are noisy)
@@ -18,7 +19,13 @@ Only the standard library is used (see docs/images.md for why no machine-learnin
 import re
 import unicodedata
 
-CATEGORIES = ("music", "theater", "festival", "food", "sports", "arts", "science", "family", "community", "outdoors", "general")
+# The last six are specific subjects chosen before the general ones: their terms are weighted to win, and the terms they own were taken out of
+# the broader categories (festival, food) so that nothing competes with them.
+CATEGORIES = ("music", "theater", "festival", "food", "sports", "arts", "science", "family", "community", "outdoors", "general",
+              "farmers_market", "carnival", "car_show", "halloween", "christmas", "street_festival")
+
+SPECIFIC = CATEGORIES[11:]   # the specific subjects
+BROAD = ("festival", "food", "family", "community", "outdoors")   # categories a specific subject in the title takes precedence over
 
 TITLE_FACTOR = 1.0
 DESCRIPTION_FACTOR = 0.45
@@ -50,13 +57,13 @@ LEXICON = {
         "screening": 0.5, "stage": 1, "cast": 1, "live podcast": 2.5,
     },
     "festival": {
-        "festival": 4, "carnival": 4, "parade": 3.5, "fiesta": 4, "block party": 3.5, "street fair": 3.5, "fireworks": 3.5, "oktoberfest": 4,
-        "mardi gras": 4, "day of the dead": 3.5, "haunt": 2.5, "haunted trail": 4, "haunted house": 4, "haunted maze": 4, "haunted attraction": 4,
-        "halloween": 1.5, "celebration": 1, "fair": 1.5, "fair and": 1, "flea market": 3, "night market": 3, "artisan market": 3,
-        "holiday market": 3, "tailgate": 2.5, "pride": 1.5, "fest": 3.5, "palooza": 3, "pumpkin": 1, "lantern": 2.5,
+        "festival": 4, "parade": 3.5, "fiesta": 4, "fireworks": 3.5, "oktoberfest": 4,
+        "mardi gras": 4, "day of the dead": 3.5,
+        "celebration": 1, "fair": 1.5, "fair and": 1, "flea market": 3, "night market": 3, "artisan market": 3,
+        "tailgate": 2.5, "pride": 1.5, "fest": 3.5, "palooza": 3, "lantern": 2.5,
     },
     "food": {
-        "food": 3, "farmers market": 4, "dinner": 2.5, "brunch": 3.5, "lunch": 2, "tasting": 3.5, "wine": 3, "beer": 3,
+        "food": 3, "dinner": 2.5, "brunch": 3.5, "lunch": 2, "tasting": 3.5, "wine": 3, "beer": 3,
         "brewery": 3, "brew": 2, "cocktail": 3.5, "happy hour": 3.5, "yappy hour": 3.5, "chef": 3.5, "cooking": 3.5, "culinary": 4,
         "restaurant": 0.5, "taco": 3.5, "pizza": 3.5, "bbq": 3.5, "barbecue": 3.5, "food truck": 4, "coffee": 2, "bake": 3, "bakery": 3,
         "ice cream": 3.5, "popsicle": 3.5, "paleta": 3.5, "gelato": 3.5, "dessert": 3, "sushi": 3, "supper club": 4, "distillery": 3, "cider": 3, "spirits": 1.5,
@@ -97,6 +104,30 @@ LEXICON = {
         "advocacy": 3, "student government": 3, "student affair": 1.5, "assembly": 2.5, "public assembly": 3.5, "summit": 1.5, "housing": 1.5, "council": 2, "caucus": 3, "memorial": 2, "vigil": 3, "walk": 0.5, "rally": 2, "forum": 1.5, "mutual aid": 3.5,
         "veterans": 2, "orientation": 2, "open house": 2, "workshop": 0.5, "drop in": 1, "peer led": 2, "wellness": 1.5,
     },
+    "farmers_market": {
+        "farmers market": 6, "growers market": 5, "greenmarket": 5, "mercato": 3.5, "farm stand": 4, "produce market": 4, "fresh produce": 1.5,
+    },
+    "carnival": {
+        "carnival": 6, "midway": 4.5, "ferris wheel": 4.5, "carnival rides": 5, "funfair": 5, "fun fair": 5, "county fair": 4, "state fair": 4,
+        "amusement rides": 3, "carousel": 2, "cotton candy": 1.5,
+    },
+    "car_show": {
+        "car show": 6, "auto show": 6, "motor show": 5, "classic car": 5, "car meet": 5, "cars and coffee": 5, "hot rod": 5, "lowrider": 5,
+        "muscle car": 4.5, "vintage car": 4.5, "concours": 5, "custom car": 4, "cruise night": 4, "car club": 3, "car enthusiast": 3.5, "automobile": 2,
+    },
+    "halloween": {
+        "halloween": 5, "haunt": 4, "haunted house": 6, "haunted trail": 6, "haunted maze": 6, "haunted attraction": 6, "haunted manor": 6,
+        "spooky": 3, "trick or treat": 4.5, "trunk or treat": 5, "costume contest": 3, "costume party": 3, "pumpkin patch": 3.5, "pumpkin": 2,
+        "ghost": 2, "zombie": 3, "fright": 3, "witch": 2.5, "corn maze": 3.5, "jack o lantern": 4, "nightmare before christmas": 5,
+    },
+    "christmas": {
+        "christmas": 6, "xmas": 6, "christmas market": 6, "christkindlmarket": 6, "holiday market": 5, "santa claus": 5, "meet santa": 5, "visit santa": 5, "santa photo": 4, "letters to santa": 4, "tree lighting": 5, "holiday lights": 4,
+        "nutcracker": 5, "winter wonderland": 4, "reindeer": 4, "yuletide": 5, "holiday parade": 4.5, "holiday event": 3, "holiday show": 3,
+        "caroling": 4.5, "polar express": 5, "gingerbread": 4, "ugly sweater": 4, "holiday": 1.5,
+    },
+    "street_festival": {
+        "street festival": 6, "street fair": 5.5, "block party": 5, "street party": 5, "open streets": 4.5, "ciclovia": 4.5, "street market": 3.5,
+    },
     "outdoors": {
         "hike": 4, "trail": 2.5, "camping": 4, "campover": 4, "campout": 4, "kayak": 4, "paddle": 3, "paddleboard": 4, "surf": 3.5,
         "beach": 2.5, "garden": 2.5, "nature": 3, "wildlife": 3.5, "birding": 3.5, "nature walk": 4, "bike ride": 3.5,
@@ -110,13 +141,19 @@ LEXICON = {
 TAGS = {
     "music": {"music": 3, "concerts": 3, "concert": 3, "live music": 3, "jazz": 3},
     "theater": {"theater": 3, "theatre": 3, "comedy": 3, "dance": 2, "performing arts": 3, "performance": 2, "stand up": 3},
-    "festival": {"festivals": 3, "festival": 3, "holidays": 1, "halloween": 1.5, "fairs": 2},
+    "festival": {"festivals": 3, "festival": 3, "holidays": 1, "fairs": 2},
     "food": {"food drinks": 3, "food": 3, "drink": 2.5, "drinks": 2.5, "food and drink": 3, "dining": 3, "wine": 2.5, "beer": 2.5},
     "sports": {"sports": 2.5, "fitness": 3, "athletics": 3, "sports recreation": 0.8, "recreation": 0.3},
     "arts": {"arts": 3, "art": 3, "exhibits": 3, "museums": 2, "galleries": 3, "literature": 2.5, "arts humanities": 1, "photography": 3},
     "science": {"science": 3, "technology": 3, "science technology": 3, "stem": 3},
     "family": {"family": 3, "kids": 3, "children": 3, "kids family": 3},
     "community": {"community": 0.3, "campus community": 0.3, "volunteer": 3, "civic": 3, "nonprofit": 3, "health wellness": 0.5},
+    "farmers_market": {"farmers market": 3, "farmers markets": 3},
+    "carnival": {"carnival": 3, "carnivals": 3},
+    "car_show": {"car show": 3, "car shows": 3, "auto show": 3},
+    "halloween": {"halloween": 3, "haunted house": 3},
+    "christmas": {"christmas": 3, "holiday market": 3},
+    "street_festival": {"street fair": 3, "street festival": 3, "block party": 3},
     "outdoors": {"outdoors": 3, "nature": 3, "hiking": 3, "environment": 2, "animals": 1.5, "parks": 2},
 }
 
@@ -249,6 +286,13 @@ def classify(event):
     # not at any other) the description and venue cannot overturn it, as in "Jazz Night at Giuseppe's Restaurant".
     by_title = sorted(in_title.items(), key=lambda item: -item[1])
     titled = by_title[0][1] >= MIN_SCORE and by_title[0][1] - by_title[1][1] >= TITLE_LEAD and by_title[0][0] == best
+    # A specific subject named in the title (a haunted trail, a carnival) is drawn as itself rather than as the broad category it belongs to.
+    if best in BROAD:
+        specific = max(SPECIFIC, key=lambda category: in_title[category])
+        if in_title[specific] >= MIN_SCORE and scores[specific] >= MIN_SCORE:
+            best, top = specific, scores[specific]
+            second = max(score for category, score in scores.items() if category != best)
+            titled = True
     clear = top >= MIN_SCORE and (top - second >= MIN_MARGIN or top >= MIN_RATIO * second or titled)
     if not clear:
         if top < MIN_SCORE:
