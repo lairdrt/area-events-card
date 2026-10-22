@@ -8,7 +8,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
 
 from .client import AreaEventsAuthError, AreaEventsRequestError
-from .const import DOMAIN, WS_EVENTS
+from .const import DOMAIN, PHOTOS_KEY, WS_EVENTS
 from .profile import ProfileInputError, build_profile
 
 
@@ -56,4 +56,4 @@ async def ws_events(hass: HomeAssistant, connection: websocket_api.ActiveConnect
         entries[0].async_start_reauth(hass)
         connection.send_error(msg["id"], "unauthorized", "The Area Events app rejected the integration's token; reauthenticate it in Settings.")
         return
-    connection.send_result(msg["id"], result)
+    connection.send_result(msg["id"], {**result, "photos": hass.data.get(PHOTOS_KEY)})

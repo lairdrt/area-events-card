@@ -93,6 +93,16 @@ Integration is on hold. Findings from the official pages:
 
 Resolution options: (1) ask Pexels support for written permission for this exact use; (2) replace with CC0/public-domain photographs (Wikimedia Commons, or Pexels/Unsplash images individually marked CC0); (3) keep the SVG illustrations. Nothing was integrated, bundled or committed.
 
+## Private local preview (not a distribution)
+
+The licensing question above is unresolved, so the approved photographs are used **only** as a private, local visual trial; no photograph is committed, embedded, packaged or published.
+
+- **Where they live:** `custom_components/area_events/frontend/photos/` (Git-ignored, as is `review/`): about 640 px WebP files named `<set>-<n>.webp` plus `index.json` (set, alt text, content hash and the original Pexels id). Generate them from the local review copies with `python scripts/prepare-category-photos.py` (needs Pillow; `--check` writes nothing). The review originals are never modified. The script holds the final approved selection, including the five replacements (theater-2 20898292, festival-2 39967166, festival-3 27036324, farmers-market-2 27052301, food-truck-2 16782204).
+- **Serving:** if that folder holds a valid index, the integration serves it at `/area_events/photos/` (cacheable; file URLs carry a content hash) and sends the card the validated index with each answer. Without the folder nothing is served and the card keeps its illustrations. `install-ha.ps1` and `deploy-ha.ps1` copy whatever the integration folder contains, so the photographs reach your own Home Assistant on a normal deploy and are absent for everyone else.
+- **Priority (unchanged order):** the event's own photograph, then verified alternatives from other matched records, then the category photograph (labelled "Category photo", alt text says it is not from the event), then the SVG illustration. A photograph that fails to load falls through to the next step; `show_images: false` shows no photographs of any kind.
+- **Choice:** by the engine's category; for Food & Drink by the engine's subject (`discovery/photo_subject.py`: farmers market, food truck, restaurant; no stated subject means the restaurant set). Within a set the photograph is a pure function of the event id, so it is stable across refreshes and devices; variety between neighbours is statistical, not order-dependent. A category with no photographs uses the general set.
+- **Remaining licensing limits:** Pexels redistribution inside a public repository is not cleared, so nothing here may be committed, published or released with the photographs. This preview is for the owner's own Home Assistant only.
+
 ## Recommended integration approach (not implemented)
 
 1. **Keep the engine's category as the first key.** Photography is only a final tier: real event photo, then category photo, then the existing SVG illustration. The card still draws the illustration if the photo fails to load.

@@ -161,5 +161,25 @@ Check "the restart is requested from exactly one place, with the recovery timeou
   if ($text -notmatch "CoreRecoveryTimeoutSeconds = 180") { throw "default timeout is not 180" }
 }
 
+Check "private category photographs are copied with the integration only when they exist (and are never special-cased)" {
+  $root = Join-Path ([IO.Path]::GetTempPath()) ("aed-photos-" + [guid]::NewGuid().ToString("N"))
+  $integration = Join-Path $root "area_events"
+  New-Item -ItemType Directory -Force -Path (Join-Path $integration "frontend") | Out-Null
+  try {
+    [IO.File]::WriteAllText((Join-Path $integration "__init__.py"), "x")
+    [IO.File]::WriteAllText((Join-Path (Join-Path $integration "frontend") "area-events-card.js"), "x")
+    $without = @(Get-FolderFiles $integration)
+    if ($without -match "photos") { throw "photographs listed although there are none" }
+    New-Item -ItemType Directory -Force -Path (Join-Path $integration "frontend\photos") | Out-Null
+    [IO.File]::WriteAllText((Join-Path $integration "frontend\photos\music-1.webp"), "x")
+    [IO.File]::WriteAllText((Join-Path $integration "frontend\photos\index.json"), "{}")
+    $with = @(Get-FolderFiles $integration)
+    if (-not ($with -contains "frontend\photos\music-1.webp" -and $with -contains "frontend\photos\index.json")) { throw "present photographs are not part of the copy" }
+    if ((Test-FolderCurrent $integration (Join-Path $root "share"))) { throw "an empty share is current" }
+  } finally { Remove-Item -Recurse -Force $root }
+  $installer = Get-Content -Raw (Join-Path $PSScriptRoot "install-ha.ps1")
+  if ($installer -match "photos|webp") { throw "the installer must stay generic: it copies whatever the integration folder contains" }
+}
+
 if ($failures) { Write-Host "$failures check(s) failed." -ForegroundColor Red; exit 1 }
 Write-Host "All checks passed."

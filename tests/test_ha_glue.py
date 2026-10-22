@@ -257,7 +257,7 @@ class Setup(unittest.TestCase):
         async def register(configs):
             paths.extend(configs)
 
-        hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=register), async_add_executor_job=lambda func: asyncio.sleep(0, func()))
+        hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=register), async_add_executor_job=lambda func, *args: asyncio.sleep(0, func(*args)), data={})
         self.assertTrue(run(init.async_setup(hass, {})))
         self.assertEqual(paths[0][0][0], "/area_events/area-events-card.js")
         self.assertTrue(paths[0][0][1].endswith("area-events-card.js"))
@@ -274,7 +274,7 @@ class Setup(unittest.TestCase):
             order.append(("static", configs))
 
         announce = lambda hass, url: (order.append(("script", url)), urls.append(url))
-        hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=register), async_add_executor_job=lambda func: asyncio.sleep(0, func()))
+        hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=register), async_add_executor_job=lambda func, *args: asyncio.sleep(0, func(*args)), data={})
         with tempfile.TemporaryDirectory() as folder:
             card = pathlib.Path(folder, "area-events-card.js")
             card.write_text("// v1")
@@ -372,9 +372,10 @@ class WebSocket(unittest.TestCase):
         self.connection = types.SimpleNamespace(send_result=lambda i, result: self.sent.append(("result", i, result)),
                                                 send_error=lambda i, code, message: self.sent.append(("error", i, code, message)))
 
-    def hass(self, entry, home=(30.26715, -97.74306)):
+    def hass(self, entry, home=(30.26715, -97.74306), data=None):
         entries = [entry] if entry else []
         return types.SimpleNamespace(
+            data={} if data is None else data,
             config_entries=types.SimpleNamespace(async_entries=lambda domain: entries),
             config=types.SimpleNamespace(latitude=home[0], longitude=home[1], location_name="Home", time_zone="America/Chicago", country="US"))
 
@@ -402,8 +403,14 @@ class WebSocket(unittest.TestCase):
 
     def test_the_card_gets_an_answer_for_the_profile_it_described(self):
         entry = self.entry_with_hub()
-        self.assertEqual(self.call(self.hass(entry), {"area": "Austin, TX", "radius_miles": 30.0, "since": "s"}), ("result", 7, {"state": "ready", "events": []}))
+        self.assertEqual(self.call(self.hass(entry), {"area": "Austin, TX", "radius_miles": 30.0, "since": "s"}), ("result", 7, {"state": "ready", "events": [], "photos": None}))
         self.assertEqual(entry.requests, [({"radius_miles": 30.0, "area": "Austin, TX"}, "s")])
+
+    def test_the_photograph_index_rides_along_when_the_installation_has_one(self):
+        index = {"base": "/area_events/photos/", "sets": {"music": [{"file": "music-1.webp", "alt": "A band", "v": "abcd1234"}]}}
+        answer = self.call(self.hass(self.entry_with_hub(), data={"area_events_photos": index}), {"area": "Austin, TX"})
+        self.assertEqual(answer[2]["photos"], index)
+        self.assertIsNone(self.call(self.hass(self.entry_with_hub()), {})[2]["photos"])  # no photographs: the card keeps its illustrations
 
     def test_without_an_area_the_home_location_is_the_profile(self):
         entry = self.entry_with_hub()

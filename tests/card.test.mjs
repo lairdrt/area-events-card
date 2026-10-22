@@ -1105,3 +1105,123 @@ test("events already shown stay while a later answer adds source status", async 
   assert.equal(after.length, before.length);
   assert.ok(after.every((el, i) => el === before[i]), "tiles are reused, not rebuilt or blanked");
 });
+
+// --- private category photographs (optional; see docs/category-photography.md) ---------------------------------------
+
+const { categoryPhotoFor } = CardClass._internals;
+const PHOTO_INDEX = () => ({
+  base: "/area_events/photos/",
+  sets: {
+    music: [1, 2, 3].map((n) => ({ file: `music-${n}.webp`, alt: `Band ${n}`, v: `a0${n}b0c0d` })),
+    "food-restaurant": [1, 2, 3].map((n) => ({ file: `food-restaurant-${n}.webp`, alt: `Dining room ${n}`, v: `b0${n}b0c0d` })),
+    "food-farmers-market": [1, 2, 3].map((n) => ({ file: `food-farmers-market-${n}.webp`, alt: `Market stall ${n}`, v: `c0${n}b0c0d` })),
+    "food-truck": [1, 2].map((n) => ({ file: `food-truck-${n}.webp`, alt: `Truck ${n}`, v: `d0${n}b0c0d` })),
+    general: [1, 2, 3].map((n) => ({ file: `general-${n}.webp`, alt: `Crowd ${n}`, v: `e0${n}b0c0d` })),
+  },
+});
+const ev = (id, category, subject) => ({ id, title: id, start: iso(day), illustration: { category, ...(subject ? { subject } : {}) } });
+
+test("a category photograph is chosen by the engine's category and, for food, its subject", () => {
+  const photos = PHOTO_INDEX();
+  assert.match(categoryPhotoFor(ev("a", "music"), photos).url, /^\/area_events\/photos\/music-[123]\.webp\?v=[0-9a-f]+$/);
+  assert.equal(categoryPhotoFor(ev("a", "music"), photos).set, "music");
+  assert.equal(categoryPhotoFor(ev("b", "food", "farmers-market"), photos).set, "food-farmers-market");
+  assert.equal(categoryPhotoFor(ev("b", "food", "food-truck"), photos).set, "food-truck");
+  assert.equal(categoryPhotoFor(ev("b", "food", "restaurant"), photos).set, "food-restaurant");
+  assert.equal(categoryPhotoFor(ev("b", "food"), photos).set, "food-restaurant", "food with no stated subject uses the primary food set");
+  assert.equal(categoryPhotoFor(ev("b", "food", "something-else"), photos).set, "food-restaurant");
+  assert.equal(categoryPhotoFor(ev("c", "theater"), photos).set, "general", "a category without photographs uses the general set");
+  assert.equal(categoryPhotoFor({ id: "d", title: "No classification" }, photos).set, "general", "unclassified events use the general set");
+  assert.equal(categoryPhotoFor({ id: "d", illustration: { category: "nonsense" } }, photos).set, "general");
+  assert.match(categoryPhotoFor(ev("a", "music"), photos).alt, /^Category photo, not from this event: Band \d$/);
+});
+
+test("the choice is deterministic, stable across refreshes, and varies between events", () => {
+  const photos = PHOTO_INDEX();
+  const first = categoryPhotoFor(ev("event-1", "music"), photos).url;
+  for (let i = 0; i < 5; i++) assert.equal(categoryPhotoFor(ev("event-1", "music"), photos).url, first);
+  assert.equal(categoryPhotoFor({ ...ev("event-1", "music"), title: "Renamed", start: iso(5 * day) }, photos).url, first, "keyed by the event id, not by details that change");
+  const used = new Set(Array.from({ length: 40 }, (_, i) => categoryPhotoFor(ev(`music-${i}`, "music"), photos).url));
+  assert.equal(used.size, 3, "every photograph of the set is used across many events");
+});
+
+test("unsafe or missing photograph data never produces a URL", () => {
+  assert.equal(categoryPhotoFor(ev("a", "music"), undefined), null);
+  assert.equal(categoryPhotoFor(ev("a", "music"), null), null);
+  assert.equal(categoryPhotoFor(ev("a", "music"), { base: "/x/", sets: {} }), null, "no photographs in any set");
+  assert.equal(categoryPhotoFor(ev("a", "music"), { ...PHOTO_INDEX(), base: "https://tracker.example/" }), null, "only local addresses");
+  assert.equal(categoryPhotoFor(ev("a", "music"), { ...PHOTO_INDEX(), base: "//tracker.example/" }), null);
+  const hostile = { base: "/area_events/photos/", sets: { music: [{ file: "../../etc/passwd", alt: "x" }, { file: "a.jpg", alt: "x" }, { file: "ok.webp" }], general: [] } };
+  assert.equal(categoryPhotoFor(ev("a", "music"), hostile), null);
+});
+
+test("an event without a photograph shows its category photograph, labelled, and the illustration stays underneath", async () => {
+  const feed = makeFeed({ events: [event("Jazz Night", 2, { illustration: { category: "music" } }), event("Taco Rally", 3, { illustration: { category: "food", subject: "food-truck" } })] });
+  const card = await make({}, { reply: () => answer(feed, { photos: PHOTO_INDEX() }) });
+  const jazz = tileFor(card, "Jazz Night");
+  const img = imgOf(jazz);
+  assert.match(img.src, /^\/area_events\/photos\/music-\d\.webp\?v=/);
+  assert.match(img.alt, /^Category photo, not from this event/);
+  assert.equal(artOf(jazz).hidden, false, "the illustration is there while the photograph loads: no empty box");
+  img.listeners.load({});
+  assert.equal(artOf(jazz).hidden, true);
+  assert.equal(tagOf(jazz).hidden, false);
+  assert.equal(tagOf(jazz).textContent, "Category photo", "never presented as a photograph of the event");
+  assert.match(imgOf(tileFor(card, "Taco Rally")).src, /^\/area_events\/photos\/food-truck-\d\.webp/);
+});
+
+test("image priority: the event's own photograph first, the category photograph only as the last resort, then the illustration", async () => {
+  const feed = makeFeed({ events: [withImages("Folk Band", ["https://a.example/1.jpg", "https://b.example/2.jpg"], { illustration: { category: "music" } })] });
+  const card = await make({}, { reply: () => answer(feed, { photos: PHOTO_INDEX() }) });
+  const tile = tileFor(card, "Folk Band");
+  const img = imgOf(tile);
+  assert.equal(img.src, "https://a.example/1.jpg", "a genuine event photograph is never replaced by a generic one");
+  img.listeners.error({});
+  assert.equal(img.src, "https://b.example/2.jpg", "then the alternative from another matched record");
+  img.listeners.error({});
+  assert.match(img.src, /^\/area_events\/photos\/music-\d\.webp/, "then the category photograph");
+  assert.match(img.alt, /^Category photo/);
+  img.listeners.error({});
+  assert.equal(img.removed, true, "then no broken image");
+  assert.equal(artOf(tile).hidden, false);
+  assert.equal(tagOf(tile).textContent, "Illustration");
+  assert.equal(tagOf(tile).hidden, false, "the original illustration, labelled as one");
+});
+
+test("a real event photograph that loads carries no label", async () => {
+  const feed = makeFeed({ events: [withImages("Jazz Night", ["https://img.example/jazz.jpg"], { illustration: { category: "music" } })] });
+  const card = await make({}, { reply: () => answer(feed, { photos: PHOTO_INDEX() }) });
+  const tile = tileFor(card, "Jazz Night");
+  const img = imgOf(tile);
+  img.listeners.load({});
+  assert.equal(tagOf(tile).hidden, true);
+  assert.equal(img.src, "https://img.example/jazz.jpg");
+});
+
+test("without local photographs, or with show_images off, the original illustrations are used unchanged", async () => {
+  const feed = makeFeed({ events: [event("Jazz Night", 2, { illustration: { category: "music" } })] });
+  const none = await make({}, { reply: () => answer(feed, { photos: null }) });
+  assert.equal(imgOf(tileFor(none, "Jazz Night")), undefined);
+  assert.equal(artOf(tileFor(none, "Jazz Night")).hidden, false);
+  assert.equal(tagOf(tileFor(none, "Jazz Night")).textContent, "Illustration");
+  const absent = await make({}, { reply: () => answer(feed) });
+  assert.equal(imgOf(tileFor(absent, "Jazz Night")), undefined);
+  const off = await make({ show_images: false }, { reply: () => answer(feed, { photos: PHOTO_INDEX() }) });
+  assert.equal(imgOf(tileFor(off, "Jazz Night")), undefined, "show_images: false means no photographs of any kind");
+});
+
+test("photographs arriving later replace the illustration, and a refresh with the same index changes nothing", async () => {
+  const feed = makeFeed({ events: [event("Jazz Night", 2, { illustration: { category: "music" } }), event("Mystery", 3)] });
+  let next = answer(feed);
+  const card = await make({}, { reply: () => next });
+  const before = byClass(card.shadowRoot, "event");
+  assert.equal(imgOf(before[0]), undefined);
+  next = answer(feed, { photos: PHOTO_INDEX() });
+  await pollAgain(card);
+  const after = byClass(card.shadowRoot, "event");
+  assert.ok(imgOf(after[0]), "the tile now has its category photograph");
+  const urls = after.map((tile) => imgOf(tile).src);
+  await pollAgain(card);
+  assert.deepEqual(byClass(card.shadowRoot, "event").map((tile) => imgOf(tile).src), urls, "a refresh with the same index keeps every URL");
+  assert.ok(byClass(card.shadowRoot, "event").every((tile, i) => tile === after[i]), "and every tile element");
+});

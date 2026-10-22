@@ -5,7 +5,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-from . import classify, images, registry
+from . import classify, images, photo_subject, registry
 from .place import CityResolver, locate_events
 from .core import FetchError, Fetcher, save_events
 from .location import LocationError, PROVIDERS, resolve_location
@@ -92,6 +92,7 @@ def build_document(config, cache, now, selected, location=None):
     merged = merge_events(records, publishers, minimum)
     images.drop_overused(merged)
     classify.annotate(merged)  # which illustration an event gets when it has no photo; never touches the photo choice
+    photo_subject.annotate(merged)  # for food events: farmers market, food truck or restaurant, for the card's category photographs
     document = {"generated_at": now.isoformat(timespec="seconds"), "sources": status, "events": merged}
     if location:
         document["location"] = location

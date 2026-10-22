@@ -9,7 +9,7 @@
  * visual editor; the filter chips are the viewer's own choices, saved per card instance (see "Preferences").
  */
 
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-b50af579";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-626e7096";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
@@ -544,11 +544,37 @@ function artFor(event) {
   return typeof resolved === "string" && Object.prototype.hasOwnProperty.call(ART, resolved) ? resolved : "general";
 }
 
+/*
+ * Category photographs (optional, private). When the integration was given a folder of photographs it tells the card which
+ * exist (reply.photos: {base, sets: {<set>: [{file, alt, v}]}}); an event without a usable photograph of its own then shows
+ * one chosen by what the engine classified it as, labelled "Category photo" so it is never mistaken for the event. Without
+ * that folder, or if a photograph cannot be loaded, the illustration above is shown, exactly as before.
+ * Food has three sets, picked by the engine's subject (see discovery/photo_subject.py); with no subject the restaurant set
+ * is used. The choice is a pure function of the event's id, so it is the same on every refresh, device and filter.
+ */
+const FOOD_SETS = { restaurant: "food-restaurant", "farmers-market": "food-farmers-market", "food-truck": "food-truck" };
+const PHOTO_FILE = /^[a-z0-9][a-z0-9-]*\.webp$/;
+function categoryPhotoFor(event, photos) {
+  if (!photos || typeof photos.base !== "string" || !photos.base.startsWith("/") || photos.base.startsWith("//") || !photos.sets) return null;
+  const category = artFor(event);
+  const subject = event && event.illustration && event.illustration.subject;
+  const wanted = category === "food" ? FOOD_SETS[subject] || "food-restaurant" : category;
+  const usable = (key) => (Array.isArray(photos.sets[key]) ? photos.sets[key].filter((item) => item && PHOTO_FILE.test(item.file) && typeof item.alt === "string") : []);
+  const set = [wanted, "general"].find((key) => usable(key).length);
+  if (!set) return null;
+  const pool = usable(set);
+  const seed = (event && event.id) || `${event && event.title}|${event && event.start}`;
+  const pick = pool[parseInt(hashString(String(seed)), 36) % pool.length];
+  const version = typeof pick.v === "string" && /^[0-9a-f]{4,16}$/.test(pick.v) ? `?v=${pick.v}` : "";
+  return { url: `${photos.base}${pick.file}${version}`, alt: `Category photo, not from this event: ${pick.alt}`, set };
+}
+
 class AreaEventsCard extends HTMLElement {
   setConfig(config) {
     this._settings = readSettings(config);
     this._config = config;
     this._feed = undefined;
+    this._photos = undefined;
     this._status = undefined;
     this._feedError = undefined;
     this._feedErrorCode = undefined;
@@ -602,7 +628,7 @@ class AreaEventsCard extends HTMLElement {
   }
 
   static get _internals() {
-    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, readSettings, assertEditable, EDITOR_SCHEMA, ART, ART_LABELS, artFor };
+    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, readSettings, assertEditable, EDITOR_SCHEMA, ART, ART_LABELS, artFor, categoryPhotoFor };
   }
 
   // --- preferences ------------------------------------------------------------
@@ -714,7 +740,7 @@ class AreaEventsCard extends HTMLElement {
     }
     if (run !== this._feedRun) return;
 
-    const before = JSON.stringify([this._status, this._feedError, this._feed && this._feed.generatedAt]);
+    const before = JSON.stringify([this._status, this._feedError, this._feed && this._feed.generatedAt, this._photos]);
     if (reply) {
       const events = Array.isArray(reply.events) ? reply.events : reply.unchanged && this._feed ? this._feed.events : undefined;
       this._status = {
@@ -722,12 +748,13 @@ class AreaEventsCard extends HTMLElement {
         report: reply.report || [], initial: reply.initial !== false, outcome: reply.outcome || undefined, progress: reply.progress || undefined,
       };
       this._feedError = this._feedErrorCode = undefined;
+      this._photos = reply.photos && typeof reply.photos === "object" ? reply.photos : undefined;
       if (Array.isArray(events)) this._feed = { events, generatedAt: reply.generated_at, sources: reply.sources, location: reply.location };
     } else {
       this._feedError = error;
       this._feedErrorCode = code;
     }
-    const after = JSON.stringify([this._status, this._feedError, this._feed && this._feed.generatedAt]);
+    const after = JSON.stringify([this._status, this._feedError, this._feed && this._feed.generatedAt, this._photos]);
     // Nothing new changes nothing on screen; new events are merged into the existing tiles in place.
     if (before === after && this._els) this._updateHeader();
     else this._applyData();
@@ -988,10 +1015,11 @@ class AreaEventsCard extends HTMLElement {
       let key = event.id || `${event.title}|${event.start}`;
       if (used.has(key)) key = `${key}#${index}`;
       used.add(key);
-      const signature = JSON.stringify(event);
+      const photo = this._settings.showImages ? categoryPhotoFor(event, this._photos) : null;
+      const signature = JSON.stringify([event, photo && photo.url]);
       const old = previous.get(key);
       if (old && old.signature === signature) return old;
-      return { event, key, signature, el: this._renderEvent(event), matches: categoriesFor(event, extra) };
+      return { event, key, signature, el: this._renderEvent(event, photo), matches: categoriesFor(event, extra) };
     });
     this._tiles = tiles;
 
@@ -1255,7 +1283,7 @@ class AreaEventsCard extends HTMLElement {
     this._setPrefs({ ...this._prefs, custom });
   }
 
-  _renderEvent(event) {
+  _renderEvent(event, categoryPhoto) {
     const item = this._el("div", "event");
 
     const image = this._el("div", "image");
@@ -1267,26 +1295,34 @@ class AreaEventsCard extends HTMLElement {
     art.setAttribute("aria-label", `Illustration: ${ART_LABELS[artKind]}`);
     const tag = this._el("span", "art-tag", "Illustration");
     image.append(art, tag);
-    // A photo, if the event has any, fades in over it. If one fails to load the next address is tried; if all fail the
-    // illustration simply stays. Illustrations are labelled so they are never mistaken for a photo of the event.
-    const photos = this._settings.showImages ? [...event.images] : [];
-    if (photos.length) {
+    // The event's own photos come first (the engine put its best first, then verified ones from other matched records). If
+    // the event has none, or every one fails to load, the category photograph (when this installation has one) is tried last;
+    // if that fails too the illustration simply stays. Only the event's own photos are ever presented without a label.
+    const candidates = this._settings.showImages ? event.images.map((url) => ({ url, alt: `Image for ${event.title || "this event"}` })) : [];
+    if (candidates.length || (this._settings.showImages && categoryPhoto)) {
+      if (this._settings.showImages && categoryPhoto) candidates.push({ url: categoryPhoto.url, alt: categoryPhoto.alt, category: true });
+      let current = candidates.shift();
       const img = document.createElement("img");
-      img.alt = `Image for ${event.title || "this event"}`;
+      img.alt = current.alt;
       img.loading = "lazy";
       img.decoding = "async";
       img.referrerPolicy = "no-referrer";
       img.addEventListener("load", () => {
         img.className = "loaded";
         art.hidden = true;
-        tag.hidden = true;
+        tag.textContent = "Category photo";
+        tag.hidden = !current.category;
       });
       img.addEventListener("error", () => {
-        const next = photos.shift();
-        if (next) img.src = next;
-        else img.remove();
+        current = candidates.shift();
+        if (current) {
+          img.alt = current.alt;
+          img.src = current.url;
+        } else {
+          img.remove();
+        }
       });
-      img.src = photos.shift();
+      img.src = current.url;
       image.append(img);
     }
     if (event.category) image.append(this._el("span", "category", event.category));

@@ -6,6 +6,7 @@ CONF_TOKEN = "token"
 
 WS_EVENTS = "area_events/events"
 CARD_URL = "/area_events/area-events-card.js"
+PHOTOS_KEY = f"{DOMAIN}_photos"  # hass.data: the validated category-photograph index, or None
 
 # How long the hub keeps refreshing a profile nobody has asked for. A card asks at least every five minutes,
 # so a profile unasked for twice that long has no card any more (a removed card, an editor preview).

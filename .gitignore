@@ -14,3 +14,6 @@ __pycache__/
 
 # local review assets (photo candidates, contact sheets); not committed
 /review/
+
+# private category photographs for a local preview (Pexels redistribution is not cleared); never commit
+/custom_components/area_events/frontend/photos/

@@ -13,11 +13,13 @@ from homeassistant.helpers.typing import ConfigType
 
 from . import websocket_api
 from .client import AreaEventsAuthError, AreaEventsClient, AreaEventsConnectionError
-from .const import CARD_URL, CONF_TOKEN, CONF_URL, DOMAIN
+from .const import CARD_URL, CONF_TOKEN, CONF_URL, DOMAIN, PHOTOS_KEY
 from .coordinator import AreaEventsConfigEntry, AreaEventsCoordinator
 from .hub import Hub
+from .photos import PHOTOS_URL, load_index
 
 CARD_FILE = Path(__file__).parent / "frontend" / "area-events-card.js"
+PHOTOS_FOLDER = Path(__file__).parent / "frontend" / "photos"  # optional, private, not in Git (see photos.py)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
@@ -28,6 +30,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     # The card loads on every dashboard without a Lovelace resource; the query changes with the file so browsers refetch it.
     version = await hass.async_add_executor_job(lambda: CARD_FILE.stat().st_mtime_ns)
     add_extra_js_url(hass, f"{CARD_URL}?v={version}")
+    # Category photographs exist only on installations that were given them; without them the card keeps its illustrations.
+    index = await hass.async_add_executor_job(load_index, PHOTOS_FOLDER)
+    hass.data[PHOTOS_KEY] = index
+    if index:
+        await hass.http.async_register_static_paths([StaticPathConfig(PHOTOS_URL, str(PHOTOS_FOLDER), cache_headers=True)])
     return True
 
 
