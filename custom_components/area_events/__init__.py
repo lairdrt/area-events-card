@@ -1,6 +1,8 @@
 """Area Events: local events for dashboard cards, read from the Discovery Service."""
 from __future__ import annotations
 
+import logging
+import ssl
 from pathlib import Path
 
 from homeassistant.components.frontend import add_extra_js_url
@@ -12,7 +14,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
 from . import websocket_api
-from .const import CARD_URL, CONF_CONTROL_TOKEN, CONF_READ_TOKEN, CONF_SCAN_INTERVAL, CONF_URL, DEFAULT_SCAN_INTERVAL, DOMAIN, PHOTOS_KEY
+from .const import CARD_URL, CONF_CA_FILE, CONF_CONTROL_TOKEN, CONF_READ_TOKEN, CONF_SCAN_INTERVAL, CONF_URL, DEFAULT_SCAN_INTERVAL, DOMAIN, PHOTOS_KEY
 from .coordinator import AreaEventsConfigEntry, DiscoveryCoordinator, RuntimeData
 from .discovery_client import DiscoveryAuthError, DiscoveryConnectionError, DiscoveryControlClient
 from .hub import DiscoveryHub
@@ -21,6 +23,21 @@ from .photos import PHOTOS_URL, load_index
 CARD_FILE = Path(__file__).parent / "frontend" / "area-events-card.js"
 PHOTOS_FOLDER = Path(__file__).parent / "frontend" / "photos"  # optional, private, not in Git (see photos.py)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+_LOGGER = logging.getLogger(__name__)
+
+
+def load_trust(path: str) -> ssl.SSLContext:
+    """The system's certificate authorities plus the one file given. Reads a file: call it off the event loop."""
+    return ssl.create_default_context(cafile=path)
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: AreaEventsConfigEntry) -> bool:
+    """Entries made for the earlier Area Events app hold that app's address and one token: they cannot become Discovery Service entries."""
+    if entry.version < 2:
+        _LOGGER.error("This Area Events entry was made for the earlier Area Events app and cannot be converted. Remove it in Settings > Devices & services and add "
+                      "Area Events again with the Discovery Service's address and tokens.")
+        return False
+    return True
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -40,8 +57,14 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: AreaEventsConfigEntry) -> bool:
     session = async_get_clientsession(hass)   # Home Assistant's own session: asynchronous, with its own connection handling
-    read = DiscoveryControlClient(session, entry.data[CONF_URL], entry.data[CONF_READ_TOKEN])
-    control = DiscoveryControlClient(session, entry.data[CONF_URL], entry.data[CONF_CONTROL_TOKEN]) if entry.data.get(CONF_CONTROL_TOKEN) else None
+    trust = None
+    if entry.data.get(CONF_CA_FILE):
+        try:
+            trust = await hass.async_add_executor_job(load_trust, entry.data[CONF_CA_FILE])
+        except (OSError, ssl.SSLError) as error:
+            raise ConfigEntryNotReady(f"cannot read the certificate file {entry.data[CONF_CA_FILE]}: {error}") from error
+    read = DiscoveryControlClient(session, entry.data[CONF_URL], entry.data[CONF_READ_TOKEN], trust)
+    control = DiscoveryControlClient(session, entry.data[CONF_URL], entry.data[CONF_CONTROL_TOKEN], trust) if entry.data.get(CONF_CONTROL_TOKEN) else None
     hub = DiscoveryHub(read, control)
     try:
         await hub.status()

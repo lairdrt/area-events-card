@@ -60,13 +60,14 @@ def normalize_base_url(value):
 
 
 class DiscoveryControlClient:
-    def __init__(self, session, base_url, token):
-        self._session, self._base, self._token = session, normalize_base_url(base_url), token
+    def __init__(self, session, base_url, token, ssl_context=None):
+        self._session, self._base, self._token, self._ssl = session, normalize_base_url(base_url), token, ssl_context
 
     async def _request(self, method, path, body=None):
         try:
             async with asyncio.timeout(TIMEOUT_SECONDS):
-                async with self._session.request(method, self._base + path, json=body, headers={"Authorization": f"Bearer {self._token}"}) as response:
+                async with self._session.request(method, self._base + path, json=body, headers={"Authorization": f"Bearer {self._token}"},
+                                                 **({"ssl": self._ssl} if self._ssl is not None else {})) as response:
                     status = response.status
                     try:
                         payload = await response.json(content_type=None)

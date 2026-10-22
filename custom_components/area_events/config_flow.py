@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+import ssl
 from urllib.parse import urlsplit
 
 import voluptuous as vol
@@ -11,7 +12,7 @@ from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResu
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import (CONF_CONTROL_TOKEN, CONF_READ_TOKEN, CONF_SCAN_INTERVAL, CONF_URL, DEFAULT_SCAN_INTERVAL, DOMAIN, MAX_SCAN_INTERVAL,
+from .const import (CONF_CA_FILE, CONF_CONTROL_TOKEN, CONF_READ_TOKEN, CONF_SCAN_INTERVAL, CONF_URL, DEFAULT_SCAN_INTERVAL, DOMAIN, MAX_SCAN_INTERVAL,
                     MIN_SCAN_INTERVAL)
 from .discovery_client import DiscoveryAuthError, DiscoveryConnectionError, DiscoveryControlClient, DiscoveryRequestError, normalize_base_url
 
@@ -29,13 +30,19 @@ def transport_note(url: str) -> str:
 class AreaEventsConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 2
 
-    async def _check(self, url: str, read_token: str, control_token: str | None) -> str | None:
+    async def _check(self, url: str, read_token: str, control_token: str | None, ca_file: str | None = None) -> str | None:
         """None when the service answers and accepts the tokens, otherwise the error key."""
         session = async_get_clientsession(self.hass)
+        trust = None
+        if ca_file:
+            try:
+                trust = await self.hass.async_add_executor_job(lambda: ssl.create_default_context(cafile=ca_file))
+            except (OSError, ssl.SSLError):
+                return "invalid_ca_file"
         try:
-            await DiscoveryControlClient(session, url, read_token).status()
+            await DiscoveryControlClient(session, url, read_token, trust).status()
             if control_token:
-                await DiscoveryControlClient(session, url, control_token).check_control()
+                await DiscoveryControlClient(session, url, control_token, trust).check_control()
         except DiscoveryAuthError as error:
             return "invalid_control_token" if control_token and error.status == 403 else "invalid_auth"
         except DiscoveryConnectionError:
@@ -56,17 +63,21 @@ class AreaEventsConfigFlow(ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(url)
                 self._abort_if_unique_id_configured()
                 control = (user_input.get(CONF_CONTROL_TOKEN) or "").strip() or None
-                if error := await self._check(url, user_input[CONF_READ_TOKEN], control):
+                ca_file = (user_input.get(CONF_CA_FILE) or "").strip() or None
+                if error := await self._check(url, user_input[CONF_READ_TOKEN], control, ca_file):
                     errors["base"] = error
                 else:
                     data = {CONF_URL: url, CONF_READ_TOKEN: user_input[CONF_READ_TOKEN]}
                     if control:
                         data[CONF_CONTROL_TOKEN] = control
+                    if ca_file:
+                        data[CONF_CA_FILE] = ca_file
                     return self.async_create_entry(title="Area Events", data=data)
         schema = vol.Schema({
             vol.Required(CONF_URL, default=user_input.get(CONF_URL, "https://")): str,
             vol.Required(CONF_READ_TOKEN): str,
             vol.Optional(CONF_CONTROL_TOKEN): str,
+            vol.Optional(CONF_CA_FILE): str,
         })
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors,
                                     description_placeholders={"transport_note": transport_note(user_input.get(CONF_URL, ""))})
@@ -81,7 +92,7 @@ class AreaEventsConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             control = (user_input.get(CONF_CONTROL_TOKEN) or "").strip() or None
-            if error := await self._check(entry.data[CONF_URL], user_input[CONF_READ_TOKEN], control):
+            if error := await self._check(entry.data[CONF_URL], user_input[CONF_READ_TOKEN], control, entry.data.get(CONF_CA_FILE)):
                 errors["base"] = error
             else:
                 updates = {CONF_READ_TOKEN: user_input[CONF_READ_TOKEN], CONF_CONTROL_TOKEN: control}

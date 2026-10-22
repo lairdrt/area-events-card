@@ -7,12 +7,14 @@
         "data": {
           "url": "Service address",
           "read_token": "Read token",
-          "control_token": "Control token (optional)"
+          "control_token": "Control token (optional)",
+          "ca_file": "Certificate file (optional)"
         },
         "data_description": {
           "url": "For example https://events.example:8780 (a TLS reverse proxy in front of the service) or http://localhost:8780 on the same computer.",
           "read_token": "Created by the service for read-only clients.",
-          "control_token": "Leave empty to keep Home Assistant read-only. The token is stored only in Home Assistant's backend and is never sent to a dashboard."
+          "control_token": "Leave empty to keep Home Assistant read-only. The token is stored only in Home Assistant's backend and is never sent to a dashboard.",
+          "ca_file": "For an https address with a private (self-signed) certificate: the path of the certificate file on Home Assistant, for example /config/area_events_cert.pem."
         }
       },
       "reauth_confirm": {
@@ -27,6 +29,7 @@
     "error": {
       "cannot_connect": "The Discovery Service could not be reached. Check that it is running and that the address is correct.",
       "invalid_auth": "The Discovery Service rejected the read token.",
+      "invalid_ca_file": "The certificate file could not be read. Check the path and that it is a PEM certificate.",
       "invalid_control_token": "The Discovery Service does not allow that token to change settings.",
       "invalid_url": "Enter the address as https://hostname:8780."
     },

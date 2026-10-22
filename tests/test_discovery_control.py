@@ -465,7 +465,10 @@ class Api(ApiFixture):
         api = DiscoveryApi(self.built.control, self.built.reader, ApiTokens(CONTROL_TOKEN), self.clock)
         with self.assertRaises(ValueError):
             DiscoveryApiServer(api, host="0.0.0.0")
-        DiscoveryApiServer(api, host="0.0.0.0", allow_remote=True)  # allowed only on request; the tokens still apply
+        with self.assertRaises(ValueError):
+            DiscoveryApiServer(api, host="0.0.0.0", allow_remote=True)   # remote without TLS is refused: tokens must not cross a network in plain text
+        DiscoveryApiServer(api, host="0.0.0.0", allow_remote=True, allow_plain=True)   # the explicit, informed exception; the tokens still apply
+        DiscoveryApiServer(api, host="0.0.0.0", allow_remote=True, tls=("cert.pem", "key.pem"))
         self.assertEqual(self.server.address[0], "127.0.0.1")
         for tokens in (("short",), (CONTROL_TOKEN, CONTROL_TOKEN), (None,)):
             with self.assertRaises((ValueError, AttributeError)):
@@ -520,13 +523,13 @@ class Api(ApiFixture):
 class UrllibSession:
     """An aiohttp-like session for the HA client tests that talks to the real loopback server (the work runs in a thread, off the event loop)."""
 
-    def request(self, method, url, json=None, headers=None):
-        return _Call(method, url, json, headers)
+    def request(self, method, url, json=None, headers=None, ssl=None):
+        return _Call(method, url, json, headers, ssl)
 
 
 class _Call:
-    def __init__(self, method, url, body, headers):
-        self.method, self.url, self.body, self.headers = method, url, body, headers or {}
+    def __init__(self, method, url, body, headers, ssl=None):
+        self.method, self.url, self.body, self.headers, self.ssl = method, url, body, headers or {}, ssl
 
     async def __aenter__(self):
         import urllib.error
@@ -536,7 +539,7 @@ class _Call:
             data = None if self.body is None else __import__("json").dumps(self.body).encode()
             req = urllib.request.Request(self.url, data=data, method=self.method, headers={**self.headers, **({"Content-Type": "application/json"} if data else {})})
             try:
-                with urllib.request.urlopen(req, timeout=10) as response:
+                with urllib.request.urlopen(req, timeout=10, **({"context": self.ssl} if self.ssl else {})) as response:
                     return response.status, response.read()
             except urllib.error.HTTPError as error:
                 return error.code, error.read()

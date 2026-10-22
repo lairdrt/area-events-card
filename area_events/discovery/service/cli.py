@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import signal
+import ssl
 import sys
 import threading
 import time
@@ -101,7 +102,15 @@ def cmd_serve(args):
     directory = os.path.dirname(os.path.abspath(args.db))
     tokens, token_path = load_tokens(directory, read=True, process=True)
     app.register_known_sources()
-    server = build_api(app, tokens, host=args.bind, port=args.port, allow_remote=args.allow_remote)
+    if bool(args.tls_cert) != bool(args.tls_key):
+        print("--tls-cert and --tls-key go together", file=sys.stderr)
+        return 2
+    try:
+        server = build_api(app, tokens, host=args.bind, port=args.port, allow_remote=args.allow_remote, tls=(args.tls_cert, args.tls_key) if args.tls_cert else None,
+                           allow_plain=args.allow_plain_remote)
+    except ValueError as error:
+        print(f"refused: {error}", file=sys.stderr)
+        return 2
     print(f"read token (for Home Assistant): {os.path.normpath(os.path.join(directory, 'api-read-token'))}; processing token (remote extraction worker): "
           f"{os.path.normpath(os.path.join(directory, 'api-process-token'))}", flush=True)
     for name in ("SIGINT", "SIGTERM"):
@@ -115,7 +124,7 @@ def cmd_serve(args):
             app.extraction.start()
         host, port = server.address[:2]
         print(f"discovery service running: database {os.path.normpath(args.db)}", flush=True)
-        print(f"control API http://{host}:{port}/v1/  (bearer token in {os.path.normpath(token_path)})" + (f"; recovered {recovered} expired lease(s)" if recovered else ""), flush=True)
+        print(f"control API {server.scheme}://{host}:{port}/v1/  (bearer token in {os.path.normpath(token_path)})" + (f"; recovered {recovered} expired lease(s)" if recovered else ""), flush=True)
         while not app.host.wait(1.0):
             pass
         print("stopping: finishing the current job...", flush=True)
@@ -146,7 +155,7 @@ def cmd_extract(args):
         except (OSError, TypeError):
             print("--token-file must name the file holding the processing token", file=sys.stderr)
             return 1
-        service, where = ExtractionService(HttpProcessingClient(args.url, token), extractor, time.time, worker_id=args.worker), args.url
+        service, where = ExtractionService(HttpProcessingClient(args.url, token, cafile=args.ca_file), extractor, time.time, worker_id=args.worker), args.url
     else:
         app = build(args.db, service_gate=False)
         service, where = app.extraction, os.path.normpath(args.db)
@@ -218,9 +227,11 @@ def cmd_stop(args):
     except OSError:
         print("no token file next to the database: is this the service's database?", file=sys.stderr)
         return 1
-    request = urllib.request.Request(f"http://{args.bind}:{args.port}/v1/service/stop", method="POST", data=b"", headers={"Authorization": f"Bearer {token}"})
+    secure = bool(args.tls_cert)
+    request = urllib.request.Request(f"{'https' if secure else 'http'}://{args.bind}:{args.port}/v1/service/stop", method="POST", data=b"",
+                                     headers={"Authorization": f"Bearer {token}"})
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with urllib.request.urlopen(request, timeout=10, **({"context": ssl.create_default_context(cafile=args.tls_cert)} if secure else {})) as response:
             print(f"stop requested (HTTP {response.status}); the service finishes its current job and exits")
     except (urllib.error.URLError, OSError) as error:
         print(f"could not reach the service: {getattr(error, 'reason', error)}", file=sys.stderr)
@@ -388,10 +399,14 @@ def main(argv=None):
     serve.add_argument("--bind", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8780)
     serve.add_argument("--allow-remote", action="store_true", help="allow a bind address other than loopback (the API always needs its token)")
+    serve.add_argument("--tls-cert", help="certificate file: serve https (required beyond loopback)")
+    serve.add_argument("--tls-key", help="private key file for --tls-cert")
+    serve.add_argument("--allow-plain-remote", action="store_true", help="allow a non-loopback bind WITHOUT TLS (tokens cross the network in plain text)")
     serve.add_argument("--no-extract", action="store_true", help="do not run the local extraction worker (run `extract` separately or remotely)")
     stop = add("stop", "ask a running service to stop gracefully")
     stop.add_argument("--bind", default="127.0.0.1")
     stop.add_argument("--port", type=int, default=8780)
+    stop.add_argument("--tls-cert", help="the service's certificate (trusted as the CA) when it serves https")
     run = add("run", "run the source's due discovery job once, outside the scheduler")
     run.add_argument("--source", choices=sorted(KNOWN_SOURCES), default="san-diego-city")
     run.add_argument("--pages", type=int)
@@ -427,6 +442,7 @@ def main(argv=None):
     extract.add_argument("--url", help="the Discovery Service address; the worker then uses only the API")
     extract.add_argument("--token-file", help="the file holding the processing token (with --url)")
     extract.add_argument("--worker", default="extractor-cli")
+    extract.add_argument("--ca-file", help="certificate to trust for an https --url with a private certificate")
     extract.add_argument("--once", action="store_true", help="process what is pending, then exit")
     events = add("events", "normalized events, or one event's detail with --event")
     events.add_argument("--area")

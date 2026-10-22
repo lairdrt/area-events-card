@@ -87,10 +87,10 @@ def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None,
     return DiscoveryApp(store, policy, service, reader, control, scheduler, host, processing, events, extraction)
 
 
-def build_api(app, tokens, clock=time.time, host="127.0.0.1", port=8780, allow_remote=False):
+def build_api(app, tokens, clock=time.time, host="127.0.0.1", port=8780, allow_remote=False, tls=None, allow_plain=False):
     """The authenticated HTTP API over an app's control and reader contracts (not started)."""
     return DiscoveryApiServer(DiscoveryApi(app.control, app.reader, tokens, clock, on_stop=app.host.request_stop, processing=app.processing, events=app.events),
-                              host, port, allow_remote)
+                              host, port, allow_remote, tls, allow_plain)
 
 
 def load_tokens(directory, read=False, process=False):

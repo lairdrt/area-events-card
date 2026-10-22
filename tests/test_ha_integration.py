@@ -535,6 +535,86 @@ class Tokens(unittest.TestCase):
             self.assertEqual(os.path.basename(path), "api-token")
 
 
+def make_certificate(folder, address="127.0.0.1"):
+    """A throwaway self-signed certificate for the loopback address (made with the openssl command line; None when it is not installed)."""
+    import shutil
+    import subprocess
+    if not shutil.which("openssl"):
+        return None
+    cert, key = os.path.join(folder, "cert.pem"), os.path.join(folder, "key.pem")
+    done = subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "2", "-subj", "/CN=area-events-test",
+                           "-addext", f"subjectAltName=IP:{address}"], capture_output=True, timeout=60)
+    return (cert, key) if done.returncode == 0 else None
+
+
+class Transport(Service):
+    """Bearer tokens only travel over TLS beyond this computer; a private certificate is trusted explicitly."""
+
+    def setUp(self):
+        super().setUp()
+        import tempfile
+        self.certs = tempfile.TemporaryDirectory()
+        self.addCleanup(self.certs.cleanup)
+        self.pair = make_certificate(self.certs.name)
+        if not self.pair:
+            self.skipTest("openssl is not available to make a test certificate")
+        self.server.stop()
+        self.server = app_module.build_api(self.built, ApiTokens(CONTROL_TOKEN, READ_TOKEN, PROCESS_TOKEN), clock=self.clock, port=0, tls=self.pair).start()
+        self.addCleanup(self.server.stop)
+        self.url = "https://%s:%s" % self.server.address[:2]
+
+    def test_an_https_service_is_read_with_the_trusted_certificate_and_refused_without_it(self):
+        import ssl
+        trust = ssl.create_default_context(cafile=self.pair[0])
+        trusted = client_module.DiscoveryControlClient(UrllibSession(), self.url, READ_TOKEN, trust)
+        self.assertIn("settings", run(trusted.status()))
+        untrusting = client_module.DiscoveryControlClient(UrllibSession(), self.url, READ_TOKEN, ssl.create_default_context())
+        with self.assertRaises(client_module.DiscoveryConnectionError) as caught:
+            run(untrusting.status())
+        self.assertNotIn(READ_TOKEN, str(caught.exception))
+        plain = client_module.DiscoveryControlClient(UrllibSession(), self.url.replace("https", "http"), READ_TOKEN)
+        with self.assertRaises(client_module.DiscoveryConnectionError):
+            run(plain.status())   # speaking plain http to the TLS port gets nothing
+
+    def test_the_setup_form_and_entry_use_the_certificate_file(self):
+        hass = types.SimpleNamespace(async_add_executor_job=lambda func, *a: asyncio.sleep(0, func(*a)))
+
+        def flow():
+            created = flow_module.AreaEventsConfigFlow()
+            created.hass = hass
+            return created
+
+        with mock.patch.object(flow_module, "async_get_clientsession", lambda hass: UrllibSession()):
+            created = run(flow().async_step_user({"url": self.url, "read_token": READ_TOKEN, "control_token": CONTROL_TOKEN, "ca_file": self.pair[0]}))
+            self.assertEqual((created["type"], created["data"]["ca_file"]), ("create_entry", self.pair[0]))
+            bad = run(flow().async_step_user({"url": self.url, "read_token": READ_TOKEN, "ca_file": os.path.join(self.certs.name, "none.pem")}))
+            self.assertEqual(bad["errors"], {"base": "invalid_ca_file"})
+            untrusted = run(flow().async_step_user({"url": self.url, "read_token": READ_TOKEN}))
+            self.assertEqual(untrusted["errors"], {"base": "cannot_connect"}, "without the certificate the private https address is not trusted")
+        entry = Entry({"url": self.url, "read_token": READ_TOKEN, "control_token": CONTROL_TOKEN, "ca_file": self.pair[0]})
+        with mock.patch.object(init, "async_get_clientsession", lambda hass: UrllibSession()):
+            self.assertTrue(run(init.async_setup_entry(hass, entry)))
+            self.assertTrue(run(entry.runtime_data.hub.status())["connected"])
+            broken = Entry({"url": self.url, "read_token": READ_TOKEN, "ca_file": os.path.join(self.certs.name, "none.pem")})
+            with self.assertRaises(ConfigEntryNotReady):
+                run(init.async_setup_entry(hass, broken))
+
+    def test_a_remote_extraction_worker_trusts_the_same_certificate(self):
+        from discovery.service.extraction import HttpProcessingClient
+        worker = HttpProcessingClient(self.url, PROCESS_TOKEN, cafile=self.pair[0])
+        self.assertIn("pending", worker.status("stored-candidate", 1))
+
+
+class Migration(unittest.TestCase):
+    def test_an_entry_of_the_earlier_app_is_refused_with_instructions_and_a_current_one_is_kept(self):
+        old, current = Entry({"url": "http://app:8765", "token": "t"}), Entry({"url": "https://h:1", "read_token": "r"})
+        old.version, current.version = 1, 2
+        with self.assertLogs(init._LOGGER, "ERROR") as logged:
+            self.assertFalse(run(init.async_migrate_entry(Hass(), old)))
+        self.assertIn("Remove it", logged.output[0])
+        self.assertTrue(run(init.async_migrate_entry(Hass(), current)))
+
+
 class Feed(unittest.TestCase):
     def test_the_adapter_adds_nothing_the_service_did_not_say(self):
         record = {"event_key": "ev-1", "title": "T", "starts_at": 1_800_000_000, "ends_at": None, "timezone": "America/Los_Angeles", "venue_name": None,
@@ -590,7 +670,7 @@ class Flow(unittest.TestCase):
         calls = []
 
         class Client:
-            def __init__(self, session, url, token):
+            def __init__(self, session, url, token, trust=None):
                 self.url, self.token = url, token
                 calls.append((url, token))
 
@@ -602,7 +682,9 @@ class Flow(unittest.TestCase):
                 if control_error:
                     raise control_error
 
-        flow_module.DiscoveryControlClient = Client
+        patcher = mock.patch.object(flow_module, "DiscoveryControlClient", Client)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         flow.calls = calls
         return flow
 

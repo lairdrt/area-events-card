@@ -3,6 +3,7 @@
 DOMAIN = "area_events"
 CONF_URL = "url"
 CONF_READ_TOKEN = "read_token"
+CONF_CA_FILE = "ca_file"               # optional: a certificate file to trust for an https address with a private certificate
 CONF_CONTROL_TOKEN = "control_token"   # optional: without it Home Assistant can read events but not change shared Discovery settings
 CONF_SCAN_INTERVAL = "scan_interval"   # seconds between change-feed checks: one per integration, however many cards there are
 

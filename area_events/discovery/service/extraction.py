@@ -11,6 +11,7 @@ listed as missing by the service), and a quote exists only where the text was fo
 import dataclasses
 import json
 import re
+import ssl
 import threading
 import urllib.error
 import urllib.request
@@ -167,11 +168,12 @@ class HttpProcessingClient:
     """The Processing contract over the authenticated API, for a worker on another computer. Synchronous: it runs on the worker's own thread,
     never on a Home Assistant event loop. The token is sent only in the Authorization header and never appears in an error."""
 
-    def __init__(self, base_url, token, timeout=30, open_url=urllib.request.urlopen):
+    def __init__(self, base_url, token, timeout=30, open_url=urllib.request.urlopen, cafile=None):
         parts = urlsplit(base_url.strip())
         if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.query or parts.fragment:
             raise ValueError("enter the Discovery Service address as http://hostname:8780")
         self._base, self._token, self._timeout, self._open = f"{parts.scheme}://{parts.netloc}{parts.path.rstrip('/')}", token, timeout, open_url
+        self._context = ssl.create_default_context(cafile=cafile) if cafile else None   # a private certificate to trust, in addition to the system's
 
     def claim(self, worker, extractor, version, limit, lease_s):
         return self._call("POST", "/v1/processing/claim", {"worker": worker, "extractor": extractor, "version": version, "limit": limit, "lease_s": lease_s})["items"]
@@ -191,7 +193,7 @@ class HttpProcessingClient:
         request = urllib.request.Request(self._base + path, data=data, method=method,
                                          headers={"Authorization": f"Bearer {self._token}", **({"Content-Type": "application/json"} if data else {})})
         try:
-            with self._open(request, timeout=self._timeout) as response:
+            with self._open(request, timeout=self._timeout, **({"context": self._context} if self._context else {})) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             try:

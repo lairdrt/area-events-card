@@ -25,6 +25,7 @@ import json
 import logging
 import re
 import secrets
+import ssl
 import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -330,11 +331,20 @@ class _Handler(BaseHTTPRequestHandler):
 class DiscoveryApiServer:
     """The HTTP server for a DiscoveryApi: explicit start and stop, loopback by default."""
 
-    def __init__(self, api: DiscoveryApi, host="127.0.0.1", port=8780, allow_remote=False):
-        if host not in ("127.0.0.1", "::1", "localhost") and not allow_remote:
-            raise ValueError("binding beyond the loopback address needs allow_remote=True")
-        self._api, self._host, self._port = api, host, port
+    def __init__(self, api: DiscoveryApi, host="127.0.0.1", port=8780, allow_remote=False, tls=None, allow_plain=False):
+        """`tls`: (certificate file, private key file) to serve https. Beyond the loopback address the service refuses to start without it,
+        because every request carries a bearer token; `allow_plain=True` is the explicit, informed exception (a trusted link or a proxy)."""
+        if host not in ("127.0.0.1", "::1", "localhost"):
+            if not allow_remote:
+                raise ValueError("binding beyond the loopback address needs allow_remote=True")
+            if tls is None and not allow_plain:
+                raise ValueError("binding beyond the loopback address needs TLS (tls=(certificate, key)); bearer tokens must not cross a network in plain text")
+        self._api, self._host, self._port, self._tls = api, host, port, tls
         self._server = self._thread = None
+
+    @property
+    def scheme(self):
+        return "https" if self._tls else "http"
 
     @property
     def address(self):
@@ -344,6 +354,12 @@ class DiscoveryApiServer:
         server = ThreadingHTTPServer((self._host, self._port), _Handler)
         server.daemon_threads = True
         server.api = self._api
+        if self._tls:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context.load_cert_chain(*self._tls)
+            # the handshake happens on the first read, in the request's own thread and under its timeout, not in the accepting loop
+            server.socket = context.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
         self._server = server
         self._thread = threading.Thread(target=server.serve_forever, name="discovery-api", daemon=True)
         self._thread.start()
