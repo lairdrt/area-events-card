@@ -50,3 +50,11 @@ def locate(needle, sources):
             return {"source_url": url, "found_in": found_in, "quote": text[start:end][:MAX_QUOTE],
                     "context": ("…" if start > WINDOW else "") + text[max(0, start - WINDOW):end + WINDOW] + ("…" if end + WINDOW < len(text) else "")}
     return None
+
+
+def visible_text(markup):
+    """The readable text of an HTML page, squeezed (scripts and styles removed, inline tags joined, blocks separated)."""
+    markup = re.sub(r"(?is)<(script|style|noscript)\b.*?</\1>", " ", markup or "")
+    markup = re.sub(r"(?i)</?(?:a|b|strong|em|i|u|span|font|small|sup|sub|mark|abbr|code)\b[^>]*>", "", markup)
+    markup = re.sub(r"(?i)</?(p|div|li|ul|ol|tr|td|th|h[1-6]|br|section|article|header|footer|nav|table|dd|dt)\b[^>]*>", "\n", markup)
+    return squeeze(re.sub(r"<[^>]+>", " ", markup))

@@ -1,8 +1,57 @@
-# Discovery Service architecture (Phase A: design for review)
+# Discovery Service architecture
 
-Status: **design only**. Nothing described as PLANNED exists yet. Baseline: commit `881ad8c` on `ha-native-refactor`; accepted runtime tag `area-events-imagery-runtime-accepted-2026-10-22`. Companion documents: [architecture-modules.md](architecture-modules.md) (milestone 1 module map) and [discovery-architecture-review-manifest.md](discovery-architecture-review-manifest.md) (files to review).
+Status: **Milestone 2A implemented** (section 0); sections 1–14 are the Phase A design it follows, kept for reference. Where the implementation differs from the design, section 0 is authoritative. Accepted runtime tag `area-events-imagery-runtime-accepted-2026-10-22` is unchanged. Companion documents: [architecture-modules.md](architecture-modules.md) and [discovery-architecture-review-manifest.md](discovery-architecture-review-manifest.md).
 
-Goal of the first implementation slice: **the Discovery Engine independently finds pages and persists them in SQLite**, while the Home Assistant runtime keeps working exactly as today.
+---
+
+## 0. As implemented (Milestone 2A)
+
+Package `area_events/discovery/service/` (standard library only, `sqlite3` with SQLite ≥ 3.35 for `RETURNING`):
+
+| Module | Object(s) | Responsibility |
+|---|---|---|
+| `contracts.py` | `SourceRecord`, `PageRecord`, `CandidateRecord`, `EvidenceRecord`, `Change`, `ChangeBatch`, `SnapshotPage`, `CandidateQuery`, `JobCounts`, `DiscoveryStatus`, `RunReport`; protocols `DiscoveryReader`, `SourceAdapter` | transport-independent records with stable string keys (schema `discovery.v1`) |
+| `urls.py` | `canonical_url`, `url_key` | canonical page identity (scheme/host case, default ports, fragments, tracking parameters, query order, percent-encoding) |
+| `schema.py` | `MIGRATIONS` | ordered, append-only migrations (version 1 today) |
+| `store.py` | `DiscoveryStore`, `WriteStats`, `StorageUnavailable`, `StaleLease` | the file and its connections: one coordinated write connection (`BEGIN IMMEDIATE`, bounded retry on busy), a new `query_only` connection per read, pragmas, migrations, sizes |
+| `repositories.py` | `SourceRepository`, `PageRepository`, `CandidateRepository`, `JobRepository`, `ChangeLog`, `Retention` (+ `SourceSpec`, `RetentionPolicy`) | explicit SQL per entity; writes take the caller's transaction |
+| `fetching.py` | `RecordingFetcher` | the only fetch client an adapter gets: wraps the injected SafeFetcher, enforces the job's request budget, records every response |
+| `adapters.py` | `CityOfSanDiegoAdapter` | the EXISTING `sources/sandiego_gov.py` behind `SourceAdapter`, unchanged |
+| `service.py` | `DiscoveryService`, `DiscoveryConfig` | register sources, claim jobs, crawl outside transactions, store results under a lease, release with backoff, pause on storage failure, retention |
+| `reader.py` | `LocalDiscoveryReader` | the `DiscoveryReader` contract over the local database: `changes`, `snapshot`, `candidate`, `candidates`, `page`, `acknowledge`, `status` |
+| `app.py` | `build()`, `DiscoveryApp`, `KNOWN_SOURCES` | the composition root |
+| `cli.py`, `scripts/discovery.py` | `run`, `status`, `inspect` | the command line (no Home Assistant needed) |
+
+Also changed: `safe.py` gained `HostPolicy` (per-host spacing, robots.txt cache, and 429/503 backoff with `Retry-After`), injected into every SafeFetcher of the new path; `safe._STATE` remains only as the default of the legacy runtime. `evidence.visible_text` moved from the workbench so both use it. `classifiers._current` is untouched (the new service has no classifier).
+
+**Tables (migration 1):** `sources` (identity, adapter, options, interval, last attempt/success), `pages` (one row per canonical URL: `url_key`, status of the last fetch, current `content_hash`, readable-text `fingerprint`, timestamps), `source_pages` (many-to-many attribution with role and first/last seen), `contents` (deduplicated zlib bodies keyed by sha256, ≤ 2 MB each), `fetches` (request history), `candidates` (adapter output keyed by the existing event id, `payload_hash`, start time, page), `evidence` (field, kind, exact quote, page and content), `jobs` (state `ready|leased|done|failed`, `next_run_at`, attempts, lease owner/token/expiry, runs), `changes` (AUTOINCREMENT sequence; `upsert` and `delete`), `consumers` (acknowledged sequence), `store_meta` (`pruned_through_seq`), `schema_migrations`. Constraints: foreign keys with cascades, uniqueness of every stable key, CHECKs on states, sizes, intervals and lease consistency.
+
+**Corrections from the review, as built:**
+
+- *Reusable jobs*: one claim statement treats `ready`, `done` (completed) and `failed` jobs as claimable when `next_run_at` has passed, and `leased` jobs whose lease expired; it runs inside `BEGIN IMMEDIATE`, so a job is never claimed twice.
+- *Lease-safe writes*: the store transaction first checks the lease token **and** expiry, then writes pages, attribution, contents, fetches, candidates, evidence and changes, then completes the job with the same check; a stale worker raises `StaleLease` and the whole transaction rolls back.
+- *Canonical identity*: `pages.url_key` is unique; `source_pages` records each discovering source and role.
+- *Shared fetch policy*: `app.build` creates one `HostPolicy` and the SafeFetcher with it; adapters receive only a `RecordingFetcher` around that client.
+- *No classifier global* in the new path.
+- *Change-feed retention*: changes are pruned only below every consumer's acknowledgement and after a minimum age, with a hard cap; `pruned_through_seq` makes `changes(after)` answer `resync_required` for an older checkpoint; `snapshot()` pages through current candidates with an `as_of_seq` after which changes continue (at-least-once, idempotent by `payload_hash`). Evidence and the content it or a page's current state references are never pruned; removed candidates emit `delete` changes.
+
+**Page changes:** many pages carry random ids (the City's Drupal pages change a `js-view-dom-id` on every request), so a page counts as changed only when its readable text changes (`fingerprint`); otherwise only the fetch is recorded and no new snapshot is stored.
+
+**Failure behaviour:** a fetch failure releases the job with backoff (900 s doubling, 4 attempts, then the next regular run); a database that stays locked, is full or fails makes the service pause for 60 s doubling to 1 hour, the job's lease then expires and the run is repeated: nothing is marked done that was not stored.
+
+**Deliberately deferred:** marking candidates withdrawn when a source stops listing them; page-level jobs (one `crawl_source` job per source runs the whole adapter); the scheduler loop, settings and intensity controls; source metrics and interest regions; the HTTP transport; conditional requests (ETag/Last-Modified, now returned in `Response.headers`); a processing consumer. The old Home Assistant runtime is unchanged and still uses its own engine.
+
+**Commands:**
+
+```
+python scripts/discovery.py run [--source san-diego-city] [--db PATH] [--pages N] [--details N] [--now]
+python scripts/discovery.py status [--db PATH]
+python scripts/discovery.py inspect [--db PATH] [--limit N] [--source KEY] [--title TEXT]
+```
+
+Default database: `data/discovery/discovery.db` (Git-ignored).
+
+**Measured (2026-10-22, development Windows PC, live www.sandiego.gov, 2 listing pages and up to 10 event pages per run):** first run 12 requests, 12 pages stored and 22 URLs known, 20 candidates, 109 evidence references, 32 changes, about 25 s (dominated by the 2 s per-host spacing); a second process the same minute found the job not due (0 requests); a forced second run read the 10 remaining event pages (12 requests; both listings unchanged, 10 candidates changed by their event pages, 10 unchanged, 20 changes); a third forced run made 2 requests and stored nothing new (20 candidates unchanged, 0 changes). Database 612 KB after checkpoint, WAL 0–555 KB during runs, 22 snapshots (2.9 MB before compression). Write transactions: p50 about 0.5 ms, p95 about 21 ms (the large store transaction). Peak Python allocation per run about 3 MB (tracemalloc). Twenty concurrent reader threads with different filters while a writer committed continuously: all results correct, 0 lock retries, 0 lock failures, read p50 4–5 ms and p95 220–455 ms (thread scheduling and per-read connection opening on this PC), write p50 0.7 ms, p95 2–3 ms. These are not Raspberry Pi measurements.
 
 ---
 

@@ -131,11 +131,7 @@ def load_fixture(path, base_url=None):
 
 # --- text for locating evidence ---------------------------------------------------------------------------------------------
 
-def visible_text(markup):
-    markup = re.sub(r"(?is)<(script|style|noscript)\b.*?</\1>", " ", markup)
-    markup = re.sub(r"(?i)</?(?:a|b|strong|em|i|u|span|font|small|sup|sub|mark|abbr|code)\b[^>]*>", "", markup)  # inline tags do not break the text
-    markup = re.sub(r"(?i)</?(p|div|li|ul|ol|tr|td|th|h[1-6]|br|section|article|header|footer|nav|table|dd|dt)\b[^>]*>", "\n", markup)
-    return evidence.squeeze(re.sub(r"<[^>]+>", " ", markup))
+visible_text = evidence.visible_text
 
 
 def evidence_sources(bodies, first):

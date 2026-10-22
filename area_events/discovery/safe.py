@@ -40,20 +40,40 @@ class BlockedError(FetchError):
 
 
 class Response:
-    def __init__(self, url, status, content_type, text, body=b""):
+    def __init__(self, url, status, content_type, text, body=b"", headers=None):
         self.url, self.status, self.content_type, self.text, self.body = url, status, content_type, text, body
+        self.headers = headers or {}
 
 
-class State:
-    """Rate-limit and robots.txt memory, shared so that every crawler in the process is polite to a host together."""
+class HostPolicy:
+    """Politeness towards each host, shared by every fetcher that is given the same instance: request spacing, the robots.txt
+    cache, and backing off from a host that answered 429 or 503. The Discovery Service creates one and injects it into all of its
+    fetchers; nothing in that path uses the legacy default below."""
 
-    def __init__(self):
+    def __init__(self, backoff_seconds=600, max_backoff_seconds=3600):
         self.lock = threading.Lock()
         self.last = {}
         self.robots = {}
+        self.backoff = {}
+        self.backoff_seconds, self.max_backoff_seconds = backoff_seconds, max_backoff_seconds
+
+    def refused(self, host, now, retry_after=None):
+        """Remember that `host` asked us to slow down (HTTP 429 or 503)."""
+        try:
+            wait = float(retry_after) if retry_after is not None else self.backoff_seconds
+        except (TypeError, ValueError):
+            wait = self.backoff_seconds
+        with self.lock:
+            self.backoff[host] = now + min(max(wait, 0.0), self.max_backoff_seconds)
+
+    def backing_off(self, host, now):
+        with self.lock:
+            until = self.backoff.get(host)
+        return until is not None and until > now
 
 
-_STATE = State()
+State = HostPolicy  # the earlier name
+_STATE = HostPolicy()  # legacy default for callers that do not inject a policy (the pre-Discovery-Service runtime); to be removed
 
 
 def public_addresses(host, port, resolver=socket.getaddrinfo):
@@ -166,8 +186,13 @@ class SafeFetcher:
     def fetch(self, url, check_robots=True, binary=None, timeout=TIMEOUT):
         """The response for `url`. `binary` is a tuple of accepted content types (for example ("image/jpeg",)) to fetch a
         non-text body, which is then in `response.body`; without it only text-like documents are accepted."""
+        host = urlsplit(url).hostname
+        if host and self.state.backing_off(host, self.clock()):
+            raise BlockedError(f"{host} asked us to slow down; waiting before asking again")
         response = self._request(url, check_robots, timeout)
         host = urlsplit(response.url).hostname
+        if response.status in (429, 503):
+            self.state.refused(host, self.clock(), response.headers.get("Retry-After"))
         if response.status in (401, 403, 429):
             raise BlockedError(f"{host} refused access (HTTP {response.status})")
         if response.status >= 400:
@@ -226,7 +251,7 @@ class SafeFetcher:
                 current = urljoin(current, location)
                 continue
             content_type = received.get("Content-Type") or ""
-            return Response(current, status, content_type, _decode(body, content_type), body)
+            return Response(current, status, content_type, _decode(body, content_type), body, {k: v for k, v in received.items() if k in ("Retry-After", "ETag", "Last-Modified")})
         raise FetchError(f"{urlsplit(url).hostname}: too many redirects")
 
     def _robots(self, parts, port, ip):
