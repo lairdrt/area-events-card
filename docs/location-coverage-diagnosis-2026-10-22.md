@@ -9,7 +9,7 @@ A diagnostic over the saved San Diego and Austin feeds (557 events, the same set
 | Unfinished processing: the source's detail page (with the venue's address) was not fetched yet | 105 | 18.9% | 33.2% |
 | Extracted, but the geocoder found nothing (Austin campus rooms and buildings; 3 San Diego venues) | 97 | 17.4% | 30.7% |
 | Location genuinely absent from the record (Austin: no venue, address or coordinates) | 65 | 11.7% | 20.6% |
-| Extracted, but verification rejected it (near-miss names or numbers 17, ambiguous results 9, corner not in the road network 1 — of these 24, six are San Diego addresses) | 24 | 4.3% | 7.6% |
+| Extracted, but verification rejected it (near-miss names or numbers 14, ambiguous results 9, a corner not in the road network 1) | 24 | 4.3% | 7.6% |
 | Online or virtual | 14 | 2.5% | 4.4% |
 | Ambiguous or conflicting source information (Haunted Trail, one car show) | 6 | 1.1% | 1.9% |
 | Location present on the page but our extraction did not capture it | 5 | 0.9% | 1.6% |
@@ -24,7 +24,7 @@ There is no temporary failure left over: 0 places were pending in the media serv
 
 ## Recurring mechanisms
 
-1. **Address not yet fetched or not captured at the source** (about 128 events): the page lists the venue's full address, for example Porto Vista Hotel and SideYard Coffee on the Reader, Whistle Stop Bar and NOVA SD on DoSD, and every City of San Diego page.
+1. **Address not yet fetched or not captured at the source** (about 110 events: the 105 waiting plus the 5 whose City page line was not captured): the page lists the venue's full address, for example Porto Vista Hotel and SideYard Coffee on the Reader, Whistle Stop Bar and NOVA SD on DoSD, and every City of San Diego page.
 2. **Campus rooms and buildings that OpenStreetMap does not name that way** (about 94 Austin events): "SEAY Library - Room 4.244", UT building codes ("SRH 3.122"), "Gregory Gym Lounge". A bounded name-only search found nothing for 90 of 93 distinct unresolved venue names, so the gap is in the map data (or needs a building-code table), not in how we ask.
 3. **No location in the record** (65 Austin events): application windows, committee meetings, programs.
 4. **Street-closure and block events** whose text gives blocks, not a point (Gaslamp Artisan Market, Mercato).
@@ -43,7 +43,7 @@ There is no temporary failure left over: 0 places were pending in the media serv
 
 ## Which bottleneck matters most
 
-Not text extraction (A): well under 3% of the misses. The opportunity is in **getting the source's own address** (the adapters' detail pages: about 128 events, 40% of the misses) and, second, in **geographic resolution of Austin campus venues** (about 94 events, 30%), where the venue is named but not findable by name. Truly missing information (C) is about a fifth of the misses and mostly Austin administrative events.
+Not text extraction (A): well under 3% of the misses. The opportunity is in **getting the source's own address** (the adapters' detail pages: about 110 events, 35% of the misses) and, second, in **geographic resolution of Austin campus venues** (about 94 events, 30%), where the venue is named but not findable by name. Truly missing information (C) is about a fifth of the misses and mostly Austin administrative events.
 
 An optimistic projection, assuming the deferred events resemble the fetched ones, puts San Diego at roughly 55% overall after the detail pages are fetched and the City address line is read (inference, not measured); it does not reach 67% without a campus-building table. Of 11 distinct City "Get Directions" addresses, 7 verify on Nominatim; the directions line can name an organizer's address rather than the event (the car show's), so such addresses still need the existing verification.
 
