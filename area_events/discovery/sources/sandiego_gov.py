@@ -11,7 +11,9 @@ from datetime import datetime
 from html import unescape
 from urllib.parse import urljoin
 
+from .. import textloc
 from ..core import FetchError, clock_range, finish_event, html_to_text, localize_pacific, make_event, now_pacific
+from .detailwork import DetailWork
 
 KEY = "sandiego_gov"
 NAME = "City of San Diego"
@@ -49,21 +51,59 @@ def _parse_start_end(date_text):
     return start, end
 
 
+DETAIL_VERSION = 2  # 2: also reads the "Get Directions" address (events read at version 1 are read again)
+REPEATED_ADDRESS = 3  # an address that heads this many different events is a general one (an office, a footer), not a venue
+_COORDINATES = re.compile(r"^\s*-?\d+\.\d+\s*,\s*-?\d+\.\d+")
+_STREET_NAME = re.compile(r"((?:[NSEW]\.?\s+|North\s+|South\s+|East\s+|West\s+)?(?:[A-Z0-9][\w']*\s+){0,3}?[A-Z0-9][\w']*)\s+"
+                          r"(?:Street|St|Avenue|Ave|Boulevard|Blvd|Drive|Dr|Road|Rd|Way|Lane|Ln|Court|Ct|Place|Pl|Highway|Hwy)\b")
+_DIRECTIONS = ("the", "of", "and", "from", "to", "north", "south", "east", "west", "n", "s", "e", "w")
+
+
+def _street_words(text):
+    """The lower-case name words of the streets a piece of text mentions ("4900 block of Newport Avenue" -> {"newport"})."""
+    words = set()
+    for match in _STREET_NAME.finditer(text or ""):
+        words |= {w.lower() for w in re.findall(r"[A-Za-z0-9']+", match.group(1)) if w.lower() not in _DIRECTIONS}
+    return words
+
+
+def directions_address(line, location_text):
+    """The street address on an event page's "Get Directions" line, or None when it is not usable as the event's: coordinates, no house
+    number and street, or a street that the page's own location text does not mention while it names others (an organizer's address)."""
+    line = _clean(line) or ""
+    if not line or _COORDINATES.match(line):
+        return None
+    found = textloc.extract_addresses(line, ["San Diego"])
+    if len(found) != 1:
+        return None
+    address = found[0]["address"]
+    mentioned, own = _street_words(location_text), _street_words(re.sub(r"^\d+\s+", "", address))
+    if mentioned and own and not (mentioned & own):
+        return None
+    if "," not in address:
+        head = address
+        tail = line[line.find(head) + len(head):] if head in line else ""
+        place = re.match(r"^[,.\s]*([A-Z][A-Za-z]+(?:\s[A-Z][A-Za-z]+)?),?\s*(?:CA|Ca)\b", tail)
+        address = f"{address}, {place.group(1)}, CA" if place else address
+    return address
+
+
 def _parse_detail(page, title, start):
     text = unescape(re.sub(r"<[^>]+>", " ", page.split("<main", 1)[-1]))
     match = re.search(r"Location:\s*(.+?)(?:\s{2,}|-->|Get Directions)", text, re.S)
     day = f"{start:%B} {start.day}, {start.year}"
-    return {"venue": _clean(match.group(1)) if match else None,
+    venue = _clean(match.group(1)) if match else None
+    line = re.search(r"Location:.*?-->\s*(.*?)\s*Get Directions", text, re.S)
+    return {"venue": venue, "address": directions_address(line.group(1), venue) if line else None,
             "date_on_page": _clean(text) is not None and day in _clean(text) and title in _clean(text)}
 
 
 def discover(fetcher, previous, details=True, limit=None, pages=4, max_details_per_run=20, source_id=KEY, source_name=NAME, url=LISTING_URL, **_):
     retrieved_at = now_pacific().isoformat(timespec="seconds")
     now = now_pacific()
-    cached = {e["id"]: e for e in previous if e.get("extraction", {}).get("detail_page")}
-    notes = {"pages": pages, "listing_items": 0, "unparsed_date_skipped": 0, "past_skipped": 0,
-             "detail_fetched": 0, "detail_reused": 0, "detail_failed": 0, "detail_deferred": 0}
-    events, seen, pages_ok, budget = [], set(), 0, max_details_per_run
+    work = DetailWork(previous, lambda e: e["id"], max_details_per_run, enabled=details, version=DETAIL_VERSION)
+    notes = {"pages": pages, "listing_items": 0, "unparsed_date_skipped": 0, "past_skipped": 0}
+    events, seen, pages_ok = [], set(), 0
 
     for number in range(pages):
         page_url = url if number == 0 else f"{url}?page={number}"
@@ -88,31 +128,42 @@ def discover(fetcher, previous, details=True, limit=None, pages=4, max_details_p
                 continue
             seen.add(local_id)
 
-            detail, old = None, cached.get(f"{source_id}:{local_id}")
+            ident, failed = f"{source_id}:{local_id}", False
+            detail, old = None, work.reusable(ident)
             if old:
-                detail = {"venue": old["venue"], "date_on_page": old["verification"]["status"] == "corroborated"}
-                notes["detail_reused"] += 1
-            elif details and budget > 0:
-                budget -= 1
+                detail = {"venue": old["venue"], "address": old.get("address"), "date_on_page": old["verification"]["status"] == "corroborated"}
+                work.reused()
+            elif work.should_fetch(ident):  # what is not fetched now is picked up by a later refresh
                 try:
                     detail = _parse_detail(fetcher.get(item["url"]), item["title"], start)
-                    notes["detail_fetched"] += 1
+                    work.done()
                 except Exception as error:
-                    notes["detail_failed"] += 1
-                    notes.setdefault("detail_errors", []).append(f"{item['url']}: {error}")
-            elif details:
-                notes["detail_deferred"] += 1
+                    work.failed(ident, item["url"], error)
+                    failed = True
 
             event = make_event(source_id, source_name, url, item["url"], item["title"], start, local_id=local_id,
                                end=end.isoformat() if end else None, venue=(detail or {}).get("venue"),
-                               description=item["description"])
-            event["extraction"]["detail_page"] = detail is not None
+                               address=(detail or {}).get("address"), description=item["description"])
+            work.stamp(event, ident, detail is not None, failed)
             evidence = [f"listing date line '{item['date_text']}' parsed as a single-day Pacific time start"]
             date_on_page = bool(detail and detail.get("date_on_page"))
             if date_on_page:
                 evidence.append("event page repeats the title and the event date")
+            if event.get("address"):
+                evidence.append("address from the event page's Get Directions line (it names a street that the page's location text also names)")
             finish_event(event, retrieved_at, evidence, corroborated=date_on_page)
             events.append(event)
     if not pages_ok:
         raise FetchError("; ".join(notes.get("listing_errors", ["no listing page readable"])))
-    return events, notes
+    titles = {}
+    for event in events:
+        if event.get("address"):
+            titles.setdefault(event["address"].lower(), set()).add(event["title"])
+    general = {address for address, names in titles.items() if len(names) >= REPEATED_ADDRESS}
+    for event in events:
+        if event.get("address") and event["address"].lower() in general:
+            event["address"] = None  # the same address on several unrelated events is not a venue
+            event["verification"]["missing"] = [f for f in ("end", "venue", "address", "description", "image_url") if not event.get(f)]
+            event["verification"]["evidence"] = [e for e in event["verification"]["evidence"] if "Get Directions" not in e]
+            notes["general_address_dropped"] = notes.get("general_address_dropped", 0) + 1
+    return events, work.notes(notes)

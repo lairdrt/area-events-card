@@ -13,6 +13,7 @@ from html import unescape
 from urllib.parse import urljoin
 
 from ..core import FetchError, clock_range, finish_event, localize_pacific, make_event, now_pacific
+from .detailwork import DetailWork
 
 KEY = "dosd"
 NAME = "DoSD"
@@ -75,10 +76,9 @@ def discover(fetcher, previous, details=True, limit=None, days=3, max_details_pe
     base = url.rstrip("/")
     retrieved_at = now_pacific().isoformat(timespec="seconds")
     today, now = now_pacific().date(), now_pacific()
-    cached = {e["url"]: e for e in previous if e.get("extraction", {}).get("detail_page")}
-    notes = {"days": days, "listing_items": 0, "no_time_skipped": 0, "past_skipped": 0,
-             "detail_fetched": 0, "detail_reused": 0, "detail_failed": 0, "detail_deferred": 0}
-    events, seen, listings_ok, budget = [], set(), 0, max_details_per_run
+    work = DetailWork(previous, lambda e: e["url"], max_details_per_run, enabled=details)
+    notes = {"days": days, "listing_items": 0, "no_time_skipped": 0, "past_skipped": 0}
+    events, seen, listings_ok = [], set(), 0
 
     for offset in range(days):
         day = today + timedelta(days=offset)
@@ -105,22 +105,21 @@ def discover(fetcher, previous, details=True, limit=None, days=3, max_details_pe
                 notes["past_skipped"] += 1
                 continue
 
-            detail, old = None, cached.get(card["url"])
+            detail, failed, old = None, False, work.reusable(card["url"])
             if old and old["start"][:10] == day.isoformat():
                 detail = {"start": datetime.fromisoformat(old["start"]), "venue": old["venue"], "address": old["address"],
                           "image": old["image_url"] if old.get("image_source") == "event page JSON-LD" else None,
                           "url": card["url"]}
-                notes["detail_reused"] += 1
-            elif details and budget > 0:
-                budget -= 1
+                work.reused()
+            elif work.should_fetch(card["url"]):  # what is not fetched now is picked up by a later refresh
                 try:
                     detail = _parse_detail(fetcher.get(card["url"]))
-                    notes["detail_fetched"] += 1
+                    if detail is None:
+                        raise ValueError("no event data on the page")
+                    work.done()
                 except Exception as error:
-                    notes["detail_failed"] += 1
-                    notes.setdefault("detail_errors", []).append(f"{card['url']}: {error}")
-            elif details:
-                notes["detail_deferred"] += 1
+                    work.failed(card["url"], card["url"], error)
+                    detail, failed = None, True
 
             detail = detail or {}
             event = make_event(
@@ -130,7 +129,7 @@ def discover(fetcher, previous, details=True, limit=None, days=3, max_details_pe
                 categories=card["categories"], image_url=detail.get("image") or card["image"],
                 image_source="event page JSON-LD" if detail.get("image") else ("listing" if card["image"] else None),
             )
-            event["extraction"]["detail_page"] = bool(detail)
+            work.stamp(event, card["url"], bool(detail), failed)
             evidence = []
             if f"/events/{day.year}/{day.month:02d}/{day.day:02d}/" in card["url"]:
                 evidence.append("event URL date matches the day listing it appeared on")
@@ -143,4 +142,4 @@ def discover(fetcher, previous, details=True, limit=None, days=3, max_details_pe
             events.append(finish_event(event, retrieved_at, evidence, corroborated))
     if not listings_ok:
         raise FetchError("; ".join(notes.get("listing_errors", ["no day listing readable"])))
-    return events, notes
+    return events, work.notes(notes)

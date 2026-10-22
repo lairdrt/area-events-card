@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 
 from ..core import FetchError, finish_event, make_event
 from ..safe import BlockedError, SafeFetcher
-from . import webfeeds, webparse
+from . import webdiscover, webfeeds, webparse, webtext
 from .webtime import parse_when
 
 ACCEPTS_LOCATION = True
@@ -32,6 +32,11 @@ MAX_DETAIL = 12
 TIME_BUDGET = 100  # seconds one website may take in total (requests are spaced out politely, so this bounds the page count)
 MAX_PAGES = 3
 MAX_FEEDS = 3
+MAX_HUBS = 4        # pages a site's own links point to as its calendar or events, read when the page given has no events itself
+MAX_DOCS = 2        # linked event PDFs read for their text
+MAX_EMBEDS = 2      # embedded public calendars whose feed is tried
+BLOCKS = {"li", "p", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "dt", "dd", "div", "td", "article", "section", "blockquote", "span"}
+SKIP_AREAS = {"nav", "footer", "header", "aside", "script", "style", "noscript", "form"}
 CACHE_SECONDS = 900
 CACHE_ENTRIES = 24
 
@@ -61,7 +66,8 @@ class _Crawl:
         self.notes = {"format": None, "formats": {}, "requests": 0, "pages": 0, "feeds": [], "details_fetched": 0, "failed_fetches": 0,
                       "malformed_jsonld": 0, "recurrence_unsupported": 0}
         self.candidates, self.name, self.javascript_hint = [], None, False
-        self.fetched, self.pending_links = set(), []
+        self.fetched, self.pending_links, self.docs, self.last_error = set(), [], [], None
+        self.notes.update(discovered=[], documents=[], embedded_calendars=[])
         self.deadline = time.monotonic() + TIME_BUDGET
 
     def fetch(self, url, required=False):
@@ -74,9 +80,25 @@ class _Crawl:
         self.notes["requests"] = self.requests
         try:
             return self.client.fetch(url)
-        except FetchError:
+        except FetchError as error:
+            self.last_error = str(error)[:200]
             if required:
                 raise
+            self.notes["failed_fetches"] += 1
+            return None
+
+    def fetch_binary(self, url, types):
+        """A non-text document (a PDF), counted against the same request and time limits."""
+        if url in self.fetched or self.requests >= MAX_REQUESTS or time.monotonic() > self.deadline:
+            self.notes["limit_reached"] = True
+            return None
+        self.requests += 1
+        self.fetched.add(url)
+        self.notes["requests"] = self.requests
+        try:
+            return self.client.fetch(url, binary=types)
+        except FetchError as error:
+            self.last_error = str(error)[:200]
             self.notes["failed_fetches"] += 1
             return None
 
@@ -105,6 +127,7 @@ class _Crawl:
             self._html(response)
         else:
             self.notes["unsupported_content"] = response.content_type or "unknown"
+        self._documents()
         return self.candidates, self.notes
 
     def _ics(self, url, text):
@@ -126,13 +149,7 @@ class _Crawl:
         self.add("feed", found)
         self._queue(links)
 
-    def _html(self, response):
-        page = webparse.scan(response.text, response.url)
-        self.name = self.name or page.site_name
-        self.notes["malformed_jsonld"] += page.malformed
-        self._queue(webparse.detail_links(page, self.host))
-        self.add("jsonld", page.jsonld)
-        self.add("microdata", page.micro)
+    def _feeds(self, page):
         for url, kind in page.feeds[:MAX_FEEDS * 2]:
             if _site(urlsplit(url).hostname) != _site(self.host) or len(self.notes["feeds"]) >= MAX_FEEDS:
                 continue
@@ -144,17 +161,141 @@ class _Crawl:
                 self._ics(answer.url, answer.text)
             else:
                 self._feed(answer.url, answer.text)
+
+    def _html(self, response):
+        text = webdiscover.unwrap(response.text)  # some site builders wrap the page's HTML in JSON
+        page = webparse.scan(text, response.url)
+        self.name = self.name or page.site_name
+        self.notes["malformed_jsonld"] += page.malformed
+        self._queue(webparse.detail_links(page, self.host))
+        self.add("jsonld", page.jsonld)
+        self.add("microdata", page.micro)
+        self._feeds(page)
         if not self.candidates:
             cards = webparse.html_cards(page.root, response.url)
             self.add("html", cards)
         if self.candidates:
             self._paginate(page)
         else:
+            self._embedded(text)
+            if not self.candidates:
+                self._hubs(page, response.url)
+            if not self.candidates:
+                self._text(page, response.url)
+        self._collect_documents(page, response.url)
+        if not self.candidates and not self.notes["discovered"] and not self.notes["documents"]:
             body = " ".join(n.text() for n in page.root.walk() if n.tag == "body")
             scripts = sum(1 for n in page.root.walk() if n.tag == "script" and n.attrs.get("src"))
-            self.javascript_hint = len(body) < 400 and scripts >= 2 or bool(re.search(r"enable javascript|requires javascript", response.text, re.I))
+            self.javascript_hint = len(body) < 400 and scripts >= 2 or bool(re.search(r"enable javascript|requires javascript", text, re.I))
             self.notes["javascript_hint"] = self.javascript_hint
         self.notes["pages"] += 1
+
+    # --- discovery: where this website keeps its events -------------------------------------------------------
+
+    def _embedded(self, text):
+        """Public calendars embedded in the page: their published feed is tried like any other (robots.txt and all limits apply)."""
+        for url in webdiscover.embedded_calendars(text)[:MAX_EMBEDS]:
+            if url in self.fetched:
+                continue
+            answer = self.fetch(url)
+            entry = {"url": url, "read": answer is not None}
+            if answer is None:
+                entry["error"] = self.last_error
+            else:
+                self._ics(answer.url, answer.text)
+            self.notes["embedded_calendars"].append(entry)
+
+    def _hubs(self, page, base):
+        """One hop: the same-site pages that look like a calendar, upcoming events or announcements (best first, a few at most)."""
+        for score, url, label in webdiscover.rank_links(page.anchors, base, MAX_HUBS, exclude=self.fetched):
+            answer = self.fetch(url)
+            if answer is None:
+                continue
+            hub_text = webdiscover.unwrap(answer.text)
+            if "<" not in hub_text:
+                continue
+            hub = webparse.scan(hub_text, answer.url)
+            self.notes["pages"] += 1
+            self.notes["malformed_jsonld"] += hub.malformed
+            before = len(self.candidates)
+            self.add("jsonld", hub.jsonld)
+            self.add("microdata", hub.micro)
+            self._feeds(hub)
+            if len(self.candidates) == before:
+                self.add("html", webparse.html_cards(hub.root, answer.url))
+            if len(self.candidates) == before:
+                self._embedded(hub_text)
+            if len(self.candidates) == before:
+                self._text(hub, answer.url)
+            self._queue(webparse.detail_links(hub, self.host))
+            self._collect_documents(hub, answer.url)
+            self.notes["discovered"].append({"url": answer.url, "score": round(score, 2), "events": len(self.candidates) - before})
+
+    def _lines(self, page):
+        """The page's readable text as lines: leaf blocks only, and never navigation, headers, footers or forms."""
+        nodes = list(page.root.walk())
+        holds_blocks = set()
+        for node in nodes:
+            if node.tag in BLOCKS and node.tag != "span":
+                parent = node.parent
+                while parent is not None and id(parent) not in holds_blocks:
+                    holds_blocks.add(id(parent))
+                    parent = parent.parent
+        skipped = {}
+
+        def in_skipped_area(node):
+            if node is None:
+                return False
+            if id(node) not in skipped:
+                skipped[id(node)] = node.tag in SKIP_AREAS or in_skipped_area(node.parent)
+            return skipped[id(node)]
+
+        lines = []
+        for node in nodes:
+            if node.tag not in BLOCKS or id(node) in holds_blocks or in_skipped_area(node):
+                continue
+            text = node.text()
+            if text and text not in lines[-3:]:
+                lines.append(text)
+        return lines
+
+    def _text(self, page, url):
+        """Events written in the page's text (only when nothing better was found): a date and a start time with a title of their own."""
+        today = datetime.now(timezone.utc).date()
+        found = webtext.events_in(self._lines(page), today, url)
+        for candidate in found:
+            candidate["url"] = url
+        self.add("text", found)
+
+    def _collect_documents(self, page, url):
+        for doc in webdiscover.document_links(page.anchors, url):
+            if all(doc["url"] != known["url"] for known in self.docs):
+                self.docs.append(doc)
+
+    def _documents(self):
+        """Linked event PDFs: text-based ones are read for events; image-only PDFs and flyer images are kept as links for later extraction."""
+        today = datetime.now(timezone.utc).date()
+        read = 0
+        for doc in self.docs[:6]:
+            entry = {"url": doc["url"], "kind": doc["kind"], "text": doc["text"], "extracted": False}
+            if doc["kind"] == "pdf" and doc["eventish"] and read < MAX_DOCS:
+                answer = self.fetch_binary(doc["url"], ("application/pdf", "application/x-pdf", "application/octet-stream"))
+                read += 1
+                if answer is None:
+                    entry["reason"] = self.last_error or "not fetched"
+                else:
+                    lines, reason = webtext.pdf_text(answer.body)
+                    if lines:
+                        found = webtext.events_in(lines, today, doc["url"])
+                        for candidate in found:
+                            candidate["kind"] = "pdf"
+                        self.add("pdf", found)
+                        entry.update(extracted=True, events=len(found))
+                    else:
+                        entry["reason"] = reason
+            else:
+                entry["reason"] = "not read (not an event document, or the limit was reached)" if doc["kind"] == "pdf" else "an image: needs text recognition, which is not done"
+            self.notes["documents"].append(entry)
 
     def _paginate(self, page):
         wanted_kind = self.notes["format"]
@@ -282,6 +423,10 @@ def probe(fetcher, url):
         return {"status": "no_events", "reason": "events were found, but none states a start time", "format": notes["format"]}
     if notes["format"]:
         return {"status": "no_events", "reason": "no upcoming events were found", "format": notes["format"]}
+    blocked = [e for e in notes.get("embedded_calendars", []) if not e.get("read")]
+    if blocked:
+        return {"status": "unsupported", "reason": "the events are in an embedded public calendar whose published feed cannot be read ("
+                + (blocked[0].get("error") or "unavailable") + ")"}
     if notes.get("javascript_hint"):
         return {"status": "unsupported", "reason": "the page builds its events with JavaScript, which Area Events does not run, and it offers no calendar feed"}
     return {"status": "unsupported", "reason": "no event data was found (no Schema.org events, calendar feed or event listing)"}
@@ -293,6 +438,34 @@ def _richness(event):
     return sum(1 for f in ("end", "venue", "address", "description", "image_url") if event.get(f))
 
 
+def _words(title):
+    return {w for w in re.findall(r"[a-z0-9]+", (title or "").lower()) if len(w) > 2}
+
+
+def _without_restated(candidates):
+    """Events read from page text or a PDF are dropped when a structured candidate already states the same event (same day and hour, a
+    similar title): the weaker reading never adds a second copy and never overrides the stronger one."""
+    strong = [c for c in candidates if c["kind"] not in ("text", "pdf")]
+    if len(strong) == len(candidates):
+        return candidates
+    kept = list(strong)
+    for c in candidates:
+        if c["kind"] not in ("text", "pdf"):
+            continue
+        mine = _words(c["title"])
+        same = False
+        for other in strong + [k for k in kept if k["kind"] in ("text", "pdf")]:
+            if (other.get("start") or "")[:13] != (c.get("start") or "")[:13]:
+                continue
+            theirs = _words(other["title"])
+            if mine and theirs and len(mine & theirs) / len(mine | theirs) >= 0.5:
+                same = True
+                break
+        if not same:
+            kept.append(c)
+    return kept
+
+
 def discover(fetcher, previous, details=True, limit=None, days=60, source_id="web", source_name="Website", url=None, location=None, **_):
     """Return (events, notes). `url` is the page, ICS feed or RSS/Atom feed to read."""
     candidates, notes, site_name = crawl(fetcher, url, details)
@@ -302,6 +475,7 @@ def discover(fetcher, previous, details=True, limit=None, days=60, source_id="we
     retrieved_at = now.isoformat(timespec="seconds")
     skipped = {}
     best = {}
+    candidates = _without_restated(candidates)
     for c in candidates:
         if len(best) >= (limit or 10_000):
             break
