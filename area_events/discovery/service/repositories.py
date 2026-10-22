@@ -217,10 +217,12 @@ class JobRepository:
                    (job_key, source_id, priority, now, max_attempts, now, now))
         return tx.execute("SELECT job_id FROM jobs WHERE job_key=?", (job_key,)).fetchone()[0]
 
-    def claim(self, tx, worker, token, now, lease_s):
-        row = tx.execute("""UPDATE jobs SET state='leased', lease_owner=?, lease_token=?, lease_until=?, attempts=attempts+1, updated_at=?
+    def claim(self, tx, worker, token, now, lease_s, require_area=False):
+        """`require_area`: only jobs of sources that an enabled area uses (the control plane decides what is crawled)."""
+        gate = ("AND EXISTS (SELECT 1 FROM area_sources x JOIN areas a USING (area_id) WHERE x.source_id = j.source_id AND a.enabled = 1)" if require_area else "")
+        row = tx.execute(f"""UPDATE jobs SET state='leased', lease_owner=?, lease_token=?, lease_until=?, attempts=attempts+1, updated_at=?
                             WHERE job_id = (SELECT j.job_id FROM jobs j JOIN sources s USING (source_id)
-                                            WHERE s.enabled=1 AND j.next_run_at <= ?
+                                            WHERE s.enabled=1 AND j.next_run_at <= ? {gate}
                                               AND (j.state IN ('ready', 'done', 'failed') OR (j.state='leased' AND j.lease_until <= ?))
                                             ORDER BY j.priority DESC, j.next_run_at, j.job_id LIMIT 1)
                             RETURNING job_id, job_key, source_id, attempts, max_attempts, lease_token, lease_until""",
@@ -269,9 +271,10 @@ class JobRepository:
 
 
 class ChangeLog:
-    def append(self, tx, entity, key, digest, now, op="upsert"):
-        return tx.execute("INSERT INTO changes (entity, entity_key, op, payload_hash, created_at) VALUES (?, ?, ?, ?, ?) RETURNING seq",
-                          (entity, key, op, digest, now)).fetchone()[0]
+    def append(self, tx, entity, key, digest, now, op="upsert", kind=None):
+        """Append one change. `kind` names what happened ('candidate.changed', 'area.configuration_changed', ...); it defaults to '<entity>.changed'."""
+        return tx.execute("INSERT INTO changes (entity, entity_key, op, kind, payload_hash, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING seq",
+                          (entity, key, op, kind or f"{entity}.changed", digest, now)).fetchone()[0]
 
     def latest(self, connection):
         row = connection.execute("SELECT seq FROM sqlite_sequence WHERE name='changes'").fetchone()
@@ -281,7 +284,7 @@ class ChangeLog:
         return int(connection.execute("SELECT value FROM store_meta WHERE key='pruned_through_seq'").fetchone()[0])
 
     def after(self, connection, seq, limit):
-        return tuple(Change(r["seq"], r["entity"], r["entity_key"], r["op"], r["payload_hash"], r["created_at"])
+        return tuple(Change(r["seq"], r["entity"], r["entity_key"], r["op"], r["payload_hash"], r["created_at"], r["kind"])
                      for r in connection.execute("SELECT * FROM changes WHERE seq > ? ORDER BY seq LIMIT ?", (seq, limit)))
 
     def acknowledge(self, tx, consumer, seq, now):

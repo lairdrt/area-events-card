@@ -55,6 +55,62 @@ Default database: `data/discovery/discovery.db` (Git-ignored).
 
 ---
 
+## 0b. As implemented (Milestone 2B: persistent service and control plane)
+
+**What exists.** The service now runs on its own (`discovery.py serve`), is configured through a versioned, authenticated HTTP/JSON API, and
+crawls what its configured *areas* need whether or not any card or Home Assistant is running. Verified by `tests/test_discovery_control.py`
+(31 tests) on top of the 25 from 2A; the whole suite is 590 Python tests plus 91 card tests.
+
+**Planes.** Control plane = areas, settings, pause/resume (small, revision-checked commands). Data plane = candidates, pages, the change feed
+(read-only to consumers). A card's display filters stay private to the card and never reach the service.
+
+**Schema (migration 2).** `areas`, `area_sources` (many-to-many), `settings` (mode, intensity, paused, revision, scheduler_seen_seq),
+`sources.quiet_runs`; `changes` gained a typed `kind` and the entities `area`, `settings`, `discovery`. Existing 2A data and sequence numbers
+are preserved (tested).
+
+**Contracts** (`control.py`, schema `discovery.control.v1`): `get_status`, `list_areas`, `get_area`, `create_area`, `update_area`,
+`set_area_enabled`, `set_discovery_mode`, `pause`, `resume`. Rules: input validated (name, lat/lon, radius ≤ 250 mi / 400 km, unit,
+intensity, source keys); updates need `expected_revision` (stale → `RevisionConflict` with the current revision); a command is saved, its
+change record appended and the revision bumped in one transaction; the acknowledgement means "saved". Idempotent: `request_id` on creation,
+and a command that changes nothing (same state, same values) returns `replayed: true` and writes nothing. No SQL or internal object crosses
+the boundary. Changes are not re-geocoded: the centre is stored as given, and unverified coordinates never cause evidence to be refused.
+
+**Change kinds.** `area.configuration_changed`, `discovery.settings_changed`, `discovery.paused`, `discovery.resumed`, plus the 2A
+`candidate.*` / `page.*` kinds, all in one monotonic `seq`. Consumers keep their own checkpoints; the durable feed is authoritative.
+Notifications would only be hints; none is needed yet (revision-based polling of `/v1/changes`).
+
+**Scheduler** (`scheduler.py`). A source is eligible only if an enabled area uses it; however many areas or cards share it there is one job
+per source. `plan()` runs each host cycle: if the settings/area change records advanced past `scheduler_seen_seq` it records that it noticed
+and pulls an already scheduled job forward when the new intensity is faster (never pushes one later). Pacing (`AreaPacing`): interval ×2 for
+low, ×1 normal, ×0.5 high; in automatic mode a source unchanged for 2+ / 4+ runs is asked for half / quarter as often; floor 300 s, cap one
+day. Provider limits are separate and always win: HostPolicy spacing, robots.txt, 429/503 and Retry-After, failure backoff (900 s doubling,
+4 attempts). Pause is a persisted setting; the service returns `paused` without claiming a job.
+
+**Host** (`host.py`). One daemon thread: recover expired leases, plan, run up to `max_jobs_per_cycle` jobs (fairness: every cycle re-claims,
+so no source is run twice in a row while another is due), then wait (event-based, never a busy poll; a stop interrupts the wait). A failing
+cycle is counted and logged, the wait grows to a cap, and the host keeps running. Each job has a request and a time budget, and a lease, so a
+stalled source ends and is retried later without holding the others. `stop()` finishes the current job (bounded by the join timeout); a
+job interrupted by a crash is recovered after its lease expires.
+
+**API** (`api.py`, standard library). `GET /v1/discovery/status`, `GET|POST /v1/areas`, `GET|PATCH /v1/areas/{key}`,
+`PUT /v1/discovery/settings`, `POST /v1/discovery/pause|resume`, `GET /v1/changes?after=&limit=`, `POST /v1/service/stop`. Bearer tokens
+with two scopes (read, control), compared in constant time; read tokens can never mutate (403); 5 failures from a client in 60 s → 429.
+Bodies are capped at 8 KiB (declared length checked before reading), JSON objects only, unknown fields rejected, `application/json`
+required, socket timeouts, loopback bind unless `--allow-remote`, tokens never logged or echoed. The control token is kept in
+`<db dir>/api-token` (mode 600) and referenced by path only.
+
+**Home Assistant.** `custom_components/area_events/discovery_client.py` is an async client over an injected session (HA's shared aiohttp
+session in production), with typed exceptions and timeouts; tested against the real loopback API without blocking the event loop.
+**Deferred:** a config entry, a WebSocket command and a card UI for areas; this needs changes to the legacy integration and was left out.
+
+**CLI.** `discovery.py serve | stop | status | areas (list/create/update/enable/disable/inspect) | settings | pause | resume | changes | run`.
+
+**Measured** (development machine, simulated pages): 20 concurrent clients × 10 requests while discovery wrote: no errors, request p50 ≈ 25 ms
+and p95 ≈ 0.5 s (dominated by thread start-up of the test clients), 24 writes, 0 lock retries, 0 failures.
+
+**Deferred / limitations.** Reader and DoSD adapters; HA config-entry and WebSocket wiring; a processing consumer; marking vanished
+candidates withdrawn; a smarter adaptive scheduler than the simple pacing above; TLS (use loopback or a trusted network/reverse proxy).
+
 ## 1. Findings from the current code
 
 ### A. Reusable capabilities (EXISTING)

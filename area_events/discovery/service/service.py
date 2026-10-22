@@ -25,6 +25,7 @@ from .. import evidence as evidence_text
 from .contracts import RunReport
 from .fetching import RecordingFetcher
 from .repositories import RetentionPolicy, SourceSpec, compress, payload_hash
+from .scheduler import FixedPacing
 from .store import StaleLease, StorageUnavailable
 from .urls import canonical_url, url_key
 
@@ -36,6 +37,8 @@ class DiscoveryConfig:
     backoff_base_s: int = 900
     backoff_cap_s: int = 43200
     max_requests_per_job: int = 40
+    max_job_seconds: int = 300
+    require_area: bool = False   # True on the host: only sources that an enabled area uses are crawled
     storage_pause_s: int = 60
     storage_pause_cap_s: int = 3600
     retention: RetentionPolicy = field(default_factory=RetentionPolicy)
@@ -47,11 +50,12 @@ def job_key_for(source_key):
 
 class DiscoveryService:
     def __init__(self, store, sources, pages, candidates, jobs, changes, retention, fetch_client, adapters, clock, config=DiscoveryConfig(),
-                 worker_id="worker-1", new_token=lambda: uuid.uuid4().hex):
+                 worker_id="worker-1", new_token=lambda: uuid.uuid4().hex, pacing=None, gate=None):
         self.store, self.sources, self.pages, self.candidates = store, sources, pages, candidates
         self.jobs, self.changes, self.retention = jobs, changes, retention
         self.fetch_client, self.adapters, self.clock, self.config = fetch_client, dict(adapters), clock, config
         self.worker_id, self.new_token = worker_id, new_token
+        self.pacing, self.gate = pacing or FixedPacing(), gate   # gate.paused(): operator pause
         self.paused_until, self.pause_seconds, self.last_storage_error = 0, 0, None
 
     # --- sources and jobs --------------------------------------------------------------------------------------------
@@ -82,14 +86,17 @@ class DiscoveryService:
 
     # --- one job --------------------------------------------------------------------------------------------------
 
-    def run_once(self):
+    def run_once(self, worker_id=None):
         now = self._now()
+        worker = worker_id or self.worker_id
+        if self.gate is not None and self.gate.paused():
+            return RunReport(None, "paused", error="discovery is paused")
         if now < self.paused_until:
             return RunReport(None, "paused", error=f"storage unavailable; retrying after {self.paused_until - now} s: {self.last_storage_error}")
         token = self.new_token()
         try:
             with self.store.write() as tx:
-                job = self.jobs.claim(tx, self.worker_id, token, now, self.config.lease_s)
+                job = self.jobs.claim(tx, worker, token, now, self.config.lease_s, self.config.require_area)
                 if job:
                     self.sources.attempted(tx, job["source_id"], now)
         except StorageUnavailable as error:
@@ -100,7 +107,7 @@ class DiscoveryService:
             source = self.sources.by_id(connection, job["source_id"])
             previous = self.candidates.payloads(connection, job["source_id"])
         adapter = self.adapters.get(source["adapter"])
-        fetcher = RecordingFetcher(self.fetch_client, self.config.max_requests_per_job)
+        fetcher = RecordingFetcher(self.fetch_client, self.config.max_requests_per_job, self.config.max_job_seconds)
         options = {**json.loads(source["options_json"]), "source_key": source["source_key"], "name": source["name"], "url": source["base_url"]}
         try:
             if adapter is None:
@@ -116,7 +123,9 @@ class DiscoveryService:
                     raise StaleLease(job["job_key"])
                 counts = self._store(tx, job, source, plan, stored_at)
                 self.sources.succeeded(tx, source["source_id"], stored_at)
-                if not self.jobs.complete(tx, job["job_id"], token, stored_at, stored_at + int(source["interval_s"])):
+                changed = bool(counts["candidates_new"] or counts["candidates_changed"] or counts["changes_appended"])
+                next_run = self.pacing.after_run(tx, source["source_id"], int(source["interval_s"]), stored_at, changed)
+                if not self.jobs.complete(tx, job["job_id"], token, stored_at, next_run):
                     raise StaleLease(job["job_key"])
         except StaleLease:
             return RunReport(job["job_key"], "stale_lease", requests=fetcher.requests, error="the lease expired or was taken over; nothing was written")

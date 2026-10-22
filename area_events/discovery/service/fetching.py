@@ -4,6 +4,7 @@ It wraps the injected SafeFetcher (which carries the shared HostPolicy: public a
 backoff, size and time limits), enforces a request budget for one job, and records every response, so the service can store each
 page the adapter read. One instance per job run; it holds that run's bodies in memory only until they are stored.
 """
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -40,8 +41,9 @@ def classify_failure(error):
 
 
 class RecordingFetcher:
-    def __init__(self, client, max_requests):
-        self.client, self.max_requests = client, max_requests
+    def __init__(self, client, max_requests, max_seconds=None, monotonic=time.monotonic):
+        self.client, self.max_requests, self.max_seconds, self.monotonic = client, max_requests, max_seconds, monotonic
+        self.started = monotonic()
         self.fetches = []
 
     @property
@@ -51,6 +53,8 @@ class RecordingFetcher:
     def fetch(self, url, check_robots=True, binary=None, timeout=None):
         if len(self.fetches) >= self.max_requests:
             raise BudgetExceeded(f"the request budget of this job ({self.max_requests}) is spent")
+        if self.max_seconds is not None and self.monotonic() - self.started > self.max_seconds:
+            raise BudgetExceeded(f"the time budget of this job ({self.max_seconds} s) is spent")
         try:
             response = self.client.fetch(url, binary=binary) if binary else self.client.fetch(url)
         except FetchError as error:

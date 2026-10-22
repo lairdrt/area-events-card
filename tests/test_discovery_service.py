@@ -26,6 +26,11 @@ from tests.test_site_discovery import CITY_URL, city_detail, city_listing
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVICE_DIR = os.path.join(ROOT, "area_events", "discovery", "service")
+def build_plain(*args, **kwargs):
+    """The 2A behaviour: no area is needed for a source to be crawled."""
+    return app_module.build(*args, service_gate=False, **kwargs)
+
+
 SPEC = SourceSpec("sandiego_gov", "sandiego_gov", "City of San Diego", CITY_URL, options=(("pages", 1), ("max_details_per_run", 10)), interval_s=3600)
 
 
@@ -72,7 +77,7 @@ class Fixture(unittest.TestCase):
         self.clock = Clock()
 
     def build(self, pages=None, client=None, config=DiscoveryConfig(), worker="worker-1", store_options=None):
-        built = app_module.build(self.db, clock=self.clock, fetch_client=client or FakeClient(pages if pages is not None else city_pages()), config=config,
+        built = build_plain(self.db, clock=self.clock, fetch_client=client or FakeClient(pages if pages is not None else city_pages()), config=config,
                                  worker_id=worker, store_options=store_options)
         self.addCleanup(built.close)
         return built
@@ -102,16 +107,16 @@ class Schema(Fixture):
 
     def test_migrations_apply_once_in_order_and_a_newer_database_is_refused(self):
         self.build().close()
-        extra = store_module.MIGRATIONS + ((2, "test column", "ALTER TABLE sources ADD COLUMN note TEXT;"),)
+        extra = store_module.MIGRATIONS + ((3, "test column", "ALTER TABLE sources ADD COLUMN note TEXT;"),)
         store = DiscoveryStore(self.db, migrations=extra).open()
-        self.assertEqual(store.version(), 2)
+        self.assertEqual(store.version(), 3)
         store.close()
         store = DiscoveryStore(self.db, migrations=extra).open()  # reopening applies nothing again
         with store.read() as connection:
-            self.assertEqual([r[0] for r in connection.execute("SELECT version FROM schema_migrations ORDER BY version")], [1, 2])
+            self.assertEqual([r[0] for r in connection.execute("SELECT version FROM schema_migrations ORDER BY version")], [1, 2, 3])
         store.close()
         with self.assertRaises(RuntimeError):
-            DiscoveryStore(self.db).open()  # this program knows only version 1
+            DiscoveryStore(self.db).open()  # this program knows only version 2
         with self.assertRaises(ValueError):
             DiscoveryStore(os.path.join(self.folder.name, "x.db"), migrations=((2, "a", "SELECT 1;"), (1, "b", "SELECT 1;"))).open()
 
@@ -264,7 +269,7 @@ class Jobs(Fixture):
             if "takeover" not in token_holder:
                 token_holder["takeover"] = True
                 clock.t += 700  # worker 1's lease has expired
-                fast = app_module.build(self.db, clock=clock, fetch_client=FakeClient(pages), config=config, worker_id="fast")
+                fast = build_plain(self.db, clock=clock, fetch_client=FakeClient(pages), config=config, worker_id="fast")
                 self.addCleanup(fast.close)
                 token_holder["report"] = fast.service.run_once()
 
@@ -330,7 +335,7 @@ class Recovery(Fixture):
         code = ("import sys, json; sys.path.insert(0, sys.argv[1]); from discovery.service.app import build; app = build(sys.argv[2]); "
                 "s = app.reader.status(); print(json.dumps([s.candidates, s.pages, s.jobs.done, s.schema_version])); app.close()")
         out = subprocess.run([sys.executable, "-c", code, os.path.join(ROOT, "area_events"), self.db], capture_output=True, text=True, timeout=60)
-        self.assertEqual(json.loads(out.stdout), [4, 5, 1, 1], out.stderr)
+        self.assertEqual(json.loads(out.stdout), [4, 5, 1, 2], out.stderr)
 
     def test_a_locked_or_failing_database_pauses_discovery_for_a_bounded_time_and_then_it_resumes(self):
         built = self.build(store_options={"busy_timeout_ms": 50, "write_retries": 2, "retry_sleep": 0.001})
@@ -462,7 +467,7 @@ class HostPolicyShared(Fixture):
 
         policy = HostPolicy()
         client = SafeFetcher(0, resolver=lambda host, port, type=None: [(None, None, None, None, ("93.184.216.34", port))], send=send, sleep=lambda s: None, state=policy)
-        built = app_module.build(self.db, clock=self.clock, fetch_client=client, policy=policy)
+        built = build_plain(self.db, clock=self.clock, fetch_client=client, policy=policy)
         self.addCleanup(built.close)
         self.assertIs(built.policy, policy)
         self.assertIs(built.service.fetch_client.state, policy)
@@ -485,7 +490,7 @@ class HostPolicyShared(Fixture):
     def test_ssrf_protection_still_applies_in_the_discovery_path(self):
         client = SafeFetcher(0, resolver=lambda host, port, type=None: [(None, None, None, None, ("10.0.0.5", port))], send=lambda *a: (200, {}, b""),
                              sleep=lambda s: None, state=HostPolicy())
-        built = app_module.build(self.db, clock=self.clock, fetch_client=client)
+        built = build_plain(self.db, clock=self.clock, fetch_client=client)
         self.addCleanup(built.close)
         built.service.register_source(SPEC)
         report = built.service.run_once()
@@ -497,7 +502,7 @@ class NoGlobals(unittest.TestCase):
     """New modules hold no module-level mutable state: only constants (literals, tuples, frozensets, compiled patterns, read-only mappings),
     functions and classes; and no `global` statement."""
 
-    ALLOWED_CALLS = {"frozenset", "tuple", "re.compile", "types.MappingProxyType", "SourceSpec", "os.path.join", "RetentionPolicy", "DiscoveryConfig"}
+    ALLOWED_CALLS = {"frozenset", "tuple", "re.compile", "types.MappingProxyType", "SourceSpec", "os.path.join", "RetentionPolicy", "DiscoveryConfig", "logging.getLogger", "SchedulerConfig", "HostConfig", "re.compile"}
 
     def test_the_service_package(self):
         for name in sorted(os.listdir(SERVICE_DIR)):

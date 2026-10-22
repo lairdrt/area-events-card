@@ -66,11 +66,12 @@ class CandidateRecord:
 @dataclass(frozen=True)
 class Change:
     seq: int
-    entity: str                     # 'candidate' | 'page'
+    entity: str                     # 'candidate' | 'page' | 'area' | 'settings' | 'discovery'
     entity_key: str
-    op: str                         # 'upsert'
+    op: str                         # 'upsert' | 'delete'
     payload_hash: str
     created_at: int
+    kind: str = ""                  # 'candidate.changed', 'page.changed', 'area.configuration_changed', 'discovery.settings_changed', 'discovery.paused', 'discovery.resumed'
 
 
 @dataclass(frozen=True)
