@@ -8,3 +8,6 @@ configuration:
   log_level:
     name: Log level
     description: How much the app writes to its log.
+  location_imagery:
+    name: Venue photographs and maps
+    description: Slowly looks up verified venue photographs (Wikimedia Commons) and draws location maps (OpenStreetMap data) for events without a photo. Turn off to stop all of those lookups.

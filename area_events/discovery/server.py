@@ -14,7 +14,7 @@ this API, never a browser.
 
 Settings come from /data/options.json (Home Assistant app options) and, for running outside the Supervisor,
 from the environment: AREA_EVENTS_TOKEN, AREA_EVENTS_REFRESH_MINUTES, AREA_EVENTS_DATA_DIR, AREA_EVENTS_PORT,
-AREA_EVENTS_HOST, AREA_EVENTS_LOG_LEVEL.
+AREA_EVENTS_HOST, AREA_EVENTS_LOG_LEVEL, AREA_EVENTS_LOCATION_IMAGERY (false switches off the venue photographs and maps).
 """
 import hmac
 import json
@@ -40,6 +40,14 @@ MIN_TOKEN_LENGTH = 32
 AUTH_FAILURES = 5
 AUTH_WINDOW = 60
 PROFILE_ROUTE = "/api/v1/profiles"
+MEDIA_ROUTE = "/api/v1/media/"
+
+
+class Raw:
+    """A non-JSON answer (a stored map or photograph)."""
+
+    def __init__(self, data, content_type):
+        self.data, self.content_type = data, content_type
 
 
 class ApiError(Exception):
@@ -67,7 +75,7 @@ class Api:
             raise ApiError(401, "a valid token is required", {"WWW-Authenticate": "Bearer"})
 
     def handle(self, method, target, headers, body, client):
-        """(status, payload dict). Never raises."""
+        """(status, payload dict, or Raw for a stored image). Never raises."""
         try:
             parts = urlsplit(target)
             path = parts.path
@@ -85,6 +93,11 @@ class Api:
                     raise ApiError(400, "the request body is not valid JSON") from error
                 pid = self.engine.register(request)
                 return 200, self.engine.snapshot(pid, with_events=False)
+            if method == "GET" and path.startswith(MEDIA_ROUTE):
+                found = self.engine.media_file(path[len(MEDIA_ROUTE):])
+                if found is None:
+                    raise ApiError(404, "not found")
+                return 200, Raw(*found)
             if method == "GET" and path.startswith(PROFILE_ROUTE + "/"):
                 since = (parse_qs(parts.query).get("since") or [None])[0]
                 return 200, self.engine.snapshot(path[len(PROFILE_ROUTE) + 1:], since=since)
@@ -117,9 +130,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, status, payload):
         extra = payload.pop("_headers", {}) if isinstance(payload, dict) else {}
-        raw = (json.dumps(payload) + "\n").encode()
+        raw_payload = isinstance(payload, Raw)
+        raw = payload.data if raw_payload else (json.dumps(payload) + "\n").encode()
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Type", payload.content_type if raw_payload else "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -154,6 +168,7 @@ def load_settings(environ=None, options_path="/data/options.json"):
         "token": str(environ.get("AREA_EVENTS_TOKEN") or options.get("token") or "").strip(),
         "refresh_minutes": int(environ.get("AREA_EVENTS_REFRESH_MINUTES") or options.get("refresh_minutes") or 60),
         "log_level": str(environ.get("AREA_EVENTS_LOG_LEVEL") or options.get("log_level") or "info").upper(),
+        "location_imagery": str(environ.get("AREA_EVENTS_LOCATION_IMAGERY", options.get("location_imagery", True))).strip().lower() not in ("false", "0", "no", "off"),
         "data_dir": environ.get("AREA_EVENTS_DATA_DIR", "/data"),
         "host": environ.get("AREA_EVENTS_HOST", "0.0.0.0"),
         "port": int(environ.get("AREA_EVENTS_PORT", "8765")),
@@ -193,7 +208,7 @@ def main():
     except (ValueError, OSError) as error:
         log.error("%s. Not starting.", error)
         sys.exit(1)
-    engine = Engine(settings["data_dir"], interval=settings["refresh_minutes"] * 60)
+    engine = Engine(settings["data_dir"], interval=settings["refresh_minutes"] * 60, media_enabled=settings["location_imagery"])
     server = make_server(Api(engine, token), settings["host"], settings["port"])
     stop = threading.Event()
 

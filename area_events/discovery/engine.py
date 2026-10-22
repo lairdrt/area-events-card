@@ -25,6 +25,7 @@ from .location import LocationError, resolve_location
 from .profiles import ProfileError, location_spec, match_registered, normalize_profile, profile_id, public_host
 from .publish import FeedError, validate_feed, write_atomic
 from .refresh import SOURCES_FILE, load_config, refresh
+from .media import MediaService
 from .safe import SafeFetcher
 from .sources import web
 
@@ -70,6 +71,11 @@ class _LogWriter:
         pass
 
 
+def snapshot_key(generated_at, revision):
+    """What a card sends as `since`: the feed's time, plus the media revision once there is any (so new imagery reaches the card)."""
+    return f"{generated_at}#{revision}" if revision else generated_at
+
+
 def _iso(timestamp):
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat(timespec="seconds")
 
@@ -89,7 +95,7 @@ def probe_localist(fetcher, url):
 
 class Engine:
     def __init__(self, data_dir, sources_path=SOURCES_FILE, interval=3600, clock=time.time, refresh_fn=refresh,
-                 fetcher_factory=None, host_check=public_host, probe=probe_localist, max_profiles=MAX_PROFILES, geocode=None, web_probe=probe_web):
+                 fetcher_factory=None, host_check=public_host, probe=probe_localist, max_profiles=MAX_PROFILES, geocode=None, web_probe=probe_web, media=None, media_enabled=True):
         self.data_dir = os.path.join(data_dir, "profiles")
         self.geocode = geocode or resolve_location
         self._geocode_cache = os.path.join(data_dir, "geocode-cache.json")  # shared: a place is looked up once, not once per profile
@@ -97,6 +103,9 @@ class Engine:
         self.interval = max(MIN_INTERVAL, interval)
         self.clock, self.refresh_fn, self.host_check, self.probe, self.max_profiles = clock, refresh_fn, host_check, probe, max_profiles
         self.web_probe = web_probe
+        # Location imagery (venue photographs and maps) is found in the background, after and apart from discovery; it never gates events.
+        self.media = media if media is not None else MediaService(data_dir, SafeFetcher(1.1), clock=clock)
+        self.media_enabled = media_enabled  # off: nothing is looked up, drawn or attached (the app option location_imagery)
         self.fetcher_factory = fetcher_factory or (lambda: Fetcher(2.0))
         self.started = clock()
         self._lock = threading.RLock()
@@ -250,11 +259,30 @@ class Engine:
                       "report": record.get("report", []), "generated_at": None, "location": None, "sources": {}}
             if feed:
                 result.update(generated_at=feed["generated_at"], location=feed.get("location"), sources=feed.get("sources", {}))
-                if since and since == feed["generated_at"]:
+                revision = self.media.revision if self.media_enabled else 0
+                result["revision"] = revision
+                if since and since == snapshot_key(feed["generated_at"], revision):
                     result["unchanged"] = True
                 elif with_events:
-                    result["events"] = feed["events"]
+                    result["events"] = self._with_media(feed)
             return result
+
+    def media_file(self, name):
+        """(bytes, content type) of a stored map or venue photograph, or None. The name is validated by the store."""
+        data = self.media.store.read_file(name)
+        if data is None:
+            return None
+        return data, "image/svg+xml" if name.endswith(".svg") else "image/jpeg"
+
+    def _with_media(self, feed):
+        """The feed's events with verified venue photos and maps attached; a failure here must never cost the events."""
+        if not self.media_enabled:
+            return feed["events"]
+        try:
+            return self.media.annotate(feed["events"], feed.get("location"))
+        except Exception:
+            log.exception("could not attach location imagery")
+            return feed["events"]
 
     def status(self):
         with self._lock:
@@ -343,7 +371,28 @@ class Engine:
                 self._running = None
         return pid
 
+    def _media_feeds(self):
+        with self._lock:
+            return [(feed.get("location"), feed["events"]) for feed in (self._feed(pid) for pid in list(self._profiles)) if feed]
+
+    def _media_loop(self, stop):
+        """Slowly resolve the places in the feeds into maps and venue photographs, only while discovery is idle."""
+        stop.wait(30)
+        while not stop.is_set():
+            busy = self._running is not None or self._queue
+            pending = 0
+            if not busy:
+                try:
+                    feeds = self._media_feeds()
+                    self.media.cycle(feeds)
+                    pending = self.media.pending(feeds)
+                except Exception:
+                    log.exception("location imagery cycle failed")
+            stop.wait(15 if busy else 20 if pending else 600)
+
     def run_forever(self, stop):
+        if self.media_enabled:
+            threading.Thread(target=self._media_loop, args=(stop,), name="media", daemon=True).start()
         while not stop.is_set():
             self.tick()
             if self.run_next() is None:

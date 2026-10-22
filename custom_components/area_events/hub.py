@@ -15,6 +15,12 @@ from .const import ACTIVE_SECONDS, REGISTER_TTL_SECONDS, UNPROVEN_SECONDS
 BUSY_STATES = ("pending", "discovering")
 
 
+
+def snapshot_key(generated_at, revision):
+    """What a card sends as `since`: the feed's time, plus the app's media revision once it has one (same rule as the app)."""
+    return f"{generated_at}#{revision}" if revision else generated_at
+
+
 class Record:
     def __init__(self, key, profile):
         self.key, self.profile = key, profile
@@ -78,12 +84,13 @@ class Hub:
             "progress": snapshot.get("progress"),
             "connected": record.error is None,
             "generated_at": snapshot.get("generated_at"),
+            "revision": snapshot.get("revision") or 0,
             "location": snapshot.get("location"),
             "sources": snapshot.get("sources") or {},
             "report": snapshot.get("report") or [],
         }
         if "events" in snapshot:
-            if since and since == snapshot.get("generated_at"):
+            if since and since == snapshot_key(snapshot.get("generated_at"), snapshot.get("revision")):
                 result["unchanged"] = True
             else:
                 result["events"] = snapshot["events"]
@@ -110,7 +117,7 @@ class Hub:
             if record.id is None or self.clock() - record.registered_at > REGISTER_TTL_SECONDS:
                 record.id = (await self.client.register(record.profile))["id"]
                 record.registered_at = self.clock()
-            known = (record.snapshot or {}).get("generated_at")
+            known = snapshot_key((record.snapshot or {}).get("generated_at"), (record.snapshot or {}).get("revision")) if record.snapshot else None
             answer = await self.client.get(record.id, since=known)
             if answer.get("unchanged") and record.snapshot:
                 answer = {**answer, "events": record.snapshot.get("events", [])}

@@ -43,6 +43,7 @@ class FakeClient:
         self.down = self.reject = self.deny = None
         self.known = {}
         self.generated = "2030-01-01T00:00:00+00:00"
+        self.revision = 0
         self.state = "ready"
 
     async def status(self):
@@ -71,9 +72,9 @@ class FakeClient:
         if pid not in self.known:
             raise AreaEventsRequestError(404, "unknown profile")
         answer = {"id": pid, "state": self.state, "generated_at": self.generated, "location": {"display_name": str(self.known[pid].get("area"))},
-                  "sources": {}, "report": [], "error": None, "refreshing": False}
+                  "sources": {}, "report": [], "error": None, "refreshing": False, "revision": self.revision}
         if self.state == "ready":
-            if since == self.generated:
+            if since == (f"{self.generated}#{self.revision}" if self.revision else self.generated):
                 answer["unchanged"] = True
             else:
                 answer["events"] = [{"id": "e1", "title": "Event", "start": "2030-01-02T00:00:00+00:00", "url": "https://x.example"}]
@@ -147,6 +148,24 @@ class HubCoordination(unittest.TestCase):
         again = run(self.hub.request(profile, since=first["generated_at"]))
         self.assertTrue(again["unchanged"])
         self.assertNotIn("events", again)
+
+    def test_new_imagery_reaches_a_card_that_already_has_the_events(self):
+        profile = {"area": "Austin, TX", "radius_miles": 25.0}
+        first = run(self.hub.request(profile))
+        self.assertEqual(first["revision"], 0)
+        self.assertTrue(run(self.hub.request(profile, since=first["generated_at"]))["unchanged"], "without imagery the plain feed time still works")
+        self.client.revision = 1_800_000_100  # the app found maps and venue photographs; the feed itself did not change
+        self.now += 100
+        run(self.hub.refresh())
+        self.assertEqual(self.client.gets[-1][1], first["generated_at"], "the hub asked with what it had")
+        updated = run(self.hub.request(profile, since=first["generated_at"]))
+        self.assertNotIn("unchanged", updated, "the card's old token no longer matches")
+        self.assertEqual((updated["revision"], len(updated["events"])), (1_800_000_100, 1))
+        key = f"{updated['generated_at']}#{updated['revision']}"
+        self.assertTrue(run(self.hub.request(profile, since=key))["unchanged"], "and the new token does")
+        self.now += 100
+        run(self.hub.refresh())
+        self.assertEqual(self.client.gets[-1][1], key, "the hub itself polls with the revision-aware token")
 
     def test_refresh_visits_each_active_profile_in_turn_and_keeps_events_when_unchanged(self):
         run(self.hub.request({"area": "Austin, TX", "radius_miles": 25.0}))

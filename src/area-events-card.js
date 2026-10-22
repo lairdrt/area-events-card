@@ -145,6 +145,16 @@ const STYLES = `
   .art.food { --ae-accent: hsl(12 74% 56%); } .art.sports { --ae-accent: hsl(150 52% 42%); } .art.arts { --ae-accent: hsl(262 52% 60%); }
   .art.science { --ae-accent: hsl(195 70% 46%); } .art.family { --ae-accent: hsl(42 88% 50%); } .art.community { --ae-accent: hsl(172 52% 42%); }
   .art.outdoors { --ae-accent: hsl(128 46% 42%); } .art.general { --ae-accent: hsl(220 52% 58%); }
+  .pin { position: absolute; left: 50%; top: 50%; width: 30px; height: 40px; transform: translate(-50%, -100%); pointer-events: none; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.45)); }
+  .pin svg { width: 100%; height: 100%; display: block; }
+  .media-credit, .venue-chip {
+    position: absolute; padding: 1px 8px; border-radius: 12px; font-size: 0.6875rem; line-height: 1.5; box-sizing: border-box; max-width: calc(100% - 16px);
+    background: rgba(37, 40, 45, 0.86); color: rgb(232 234 238); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  }
+  .media-credit { left: 8px; bottom: 8px; max-width: calc(100% - 120px); }
+  .media-credit a { color: inherit; text-decoration: underline; }
+  .venue-chip { right: 8px; top: 8px; max-width: calc(100% - 90px); font-weight: 600; }
+  .art-tag.media-badge { background: rgba(37, 40, 45, 0.88); color: rgb(240 138 36); border-color: rgba(255, 255, 255, 0.22); font-weight: 700; letter-spacing: 0.04em; }
   .art-tag {
     position: absolute; right: 8px; bottom: 8px; padding: 1px 8px; border-radius: 12px; font-size: 0.75rem; box-sizing: border-box;
     background: var(--card-background-color, var(--primary-background-color)); border: 1px solid var(--divider-color); color: var(--secondary-text-color);
@@ -569,6 +579,44 @@ function categoryPhotoFor(event, photos) {
   return { url: `${photos.base}${pick.file}${version}`, alt: `Category photo, not from this event: ${pick.alt}`, set };
 }
 
+/*
+ * Location imagery from the Area Events app (event.media): a verified photograph of the venue and/or a map. Everything is
+ * validated here as data from outside: addresses must be this integration's own /area_events/media/ files, links must be
+ * https addresses on the expected sites, and every text is shown as text. The card draws the pin, badges, venue name and
+ * credits itself; the map files are vector images in a light and a graphite variant with the same geography.
+ */
+const MEDIA_FILE = /^\/area_events\/media\/[a-z0-9][a-z0-9-]*(\.light|\.dark)?\.(svg|jpg)$/;
+function safeMedia(raw, event) {
+  if (!raw || typeof raw !== "object") return undefined;
+  const text = (value, max = 120) => (typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "");
+  const link = (value, host) => {
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" && (url.hostname === host || url.hostname.endsWith(`.${host}`)) ? url.href : "";
+    } catch {
+      return "";
+    }
+  };
+  const out = {};
+  const venue = text(event && event.venue, 80).split(",")[0].trim();
+  const photo = raw.photo;
+  if (photo && MEDIA_FILE.test(photo.url) && /\.jpg$/.test(photo.url)) {
+    out.photo = {
+      url: photo.url, venue: text(photo.venue, 80).split(",")[0].trim() || venue, creator: text(photo.creator), license: text(photo.license, 40),
+      licenseUrl: link(photo.license_url, "creativecommons.org"), sourceUrl: link(photo.source_url, "wikimedia.org"),
+    };
+  }
+  const map = raw.map;
+  if (map && MEDIA_FILE.test(map.light) && MEDIA_FILE.test(map.dark) && /\.svg$/.test(map.light) && /\.svg$/.test(map.dark)) {
+    out.map = { light: map.light, dark: map.dark, approximate: map.approximate === true, credit: text(map.credit, 80) || "OpenFreeMap © OpenMapTiles Data from OpenStreetMap", venue };
+  }
+  return out.photo || out.map ? out : undefined;
+}
+
+const PIN_SVG = '<svg viewBox="0 0 30 40" aria-hidden="true" focusable="false"><path d="M15 39 L5 23 A13 13 0 1 1 25 23 Z" fill="#f08a24" stroke="#fff" stroke-width="2.4" stroke-linejoin="round"/>' +
+  '<circle cx="15" cy="14" r="5.2" fill="#25282d"/></svg>';
+const MEDIA_BADGES = { venue: "VENUE", map: "MAP", category: "CATEGORY PHOTO" };
+
 class AreaEventsCard extends HTMLElement {
   setConfig(config) {
     this._settings = readSettings(config);
@@ -608,6 +656,20 @@ class AreaEventsCard extends HTMLElement {
       this._startFeed();
       this._loadRemotePrefs();
     }
+    // The effective Home Assistant theme decides the map: it is read from Home Assistant on every update, so a change of theme
+    // (or of the automatic dark mode) reaches the maps on screen at once, without a refresh.
+    const dark = this._isDark();
+    if (dark !== this._dark) {
+      this._dark = dark;
+      for (const tile of this._tiles || []) if (tile.el && tile.el._aeTheme) tile.el._aeTheme();
+    }
+  }
+
+  /** Is Home Assistant showing a dark theme right now? (Its own setting; the browser's colour scheme only if Home Assistant gives none.) */
+  _isDark() {
+    const themes = this._hass && this._hass.themes;
+    if (themes && typeof themes.darkMode === "boolean") return themes.darkMode;
+    return Boolean(typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
   }
 
   getCardSize() {
@@ -628,7 +690,7 @@ class AreaEventsCard extends HTMLElement {
   }
 
   static get _internals() {
-    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, readSettings, assertEditable, EDITOR_SCHEMA, ART, ART_LABELS, artFor, categoryPhotoFor };
+    return { categoriesFor, normalizePrefs, prefsKey, DEFAULT_CATEGORIES, readSettings, assertEditable, EDITOR_SCHEMA, ART, ART_LABELS, artFor, categoryPhotoFor, safeMedia };
   }
 
   // --- preferences ------------------------------------------------------------
@@ -732,7 +794,7 @@ class AreaEventsCard extends HTMLElement {
     let error;
     let code;
     try {
-      const since = this._feed && this._feed.generatedAt;
+      const since = this._feed && this._feed.key;
       reply = await this._hass.callWS({ type: WS_EVENTS, ...this._profileRequest(), ...(since ? { since } : {}) });
     } catch (caught) {
       error = (caught && caught.message) || String(caught);
@@ -740,7 +802,7 @@ class AreaEventsCard extends HTMLElement {
     }
     if (run !== this._feedRun) return;
 
-    const before = JSON.stringify([this._status, this._feedError, this._feed && this._feed.generatedAt, this._photos]);
+    const before = JSON.stringify([this._status, this._feedError, this._feed && this._feed.key, this._photos]);
     if (reply) {
       const events = Array.isArray(reply.events) ? reply.events : reply.unchanged && this._feed ? this._feed.events : undefined;
       this._status = {
@@ -749,12 +811,16 @@ class AreaEventsCard extends HTMLElement {
       };
       this._feedError = this._feedErrorCode = undefined;
       this._photos = reply.photos && typeof reply.photos === "object" ? reply.photos : undefined;
-      if (Array.isArray(events)) this._feed = { events, generatedAt: reply.generated_at, sources: reply.sources, location: reply.location };
+      if (Array.isArray(events)) {
+        // `key` is what the next poll sends as `since`: the feed's time, plus the app's imagery revision once there is one
+        const revision = Number(reply.revision) || 0;
+        this._feed = { events, generatedAt: reply.generated_at, revision, key: revision ? `${reply.generated_at}#${revision}` : reply.generated_at, sources: reply.sources, location: reply.location };
+      }
     } else {
       this._feedError = error;
       this._feedErrorCode = code;
     }
-    const after = JSON.stringify([this._status, this._feedError, this._feed && this._feed.generatedAt, this._photos]);
+    const after = JSON.stringify([this._status, this._feedError, this._feed && this._feed.key, this._photos]);
     // Nothing new changes nothing on screen; new events are merged into the existing tiles in place.
     if (before === after && this._els) this._updateHeader();
     else this._applyData();
@@ -825,6 +891,8 @@ class AreaEventsCard extends HTMLElement {
       images: [...new Set([event.image, event.image_url, ...(Array.isArray(event.images) ? event.images : [])]
         .filter((url) => typeof url === "string" && /^https?:\/\//i.test(url.trim())).map((url) => url.trim()))],
       description: event.description,
+      venue: event.venue,
+      media: safeMedia(event.media, event),
       url: event.url,
       sourceName: event.source && event.source.name,
       verified: event.verified === true,
@@ -1295,14 +1363,56 @@ class AreaEventsCard extends HTMLElement {
     art.setAttribute("aria-label", `Illustration: ${ART_LABELS[artKind]}`);
     const tag = this._el("span", "art-tag", "Illustration");
     image.append(art, tag);
-    // The event's own photos come first (the engine put its best first, then verified ones from other matched records). If
-    // the event has none, or every one fails to load, the category photograph (when this installation has one) is tried last;
-    // if that fails too the illustration simply stays. Only the event's own photos are ever presented without a label.
-    const candidates = this._settings.showImages ? event.images.map((url) => ({ url, alt: `Image for ${event.title || "this event"}` })) : [];
-    if (candidates.length || (this._settings.showImages && categoryPhoto)) {
-      if (this._settings.showImages && categoryPhoto) candidates.push({ url: categoryPhoto.url, alt: categoryPhoto.alt, category: true });
+    // Image priority: the event's own photos (the engine put its best first, then verified ones from other matched records), a
+    // verified photograph of the venue, a map of the event's location, the category photograph (when this installation has
+    // them), and finally the illustration, which is always underneath. An image that fails to load hands over to the next
+    // one. Only the event's own photos are ever shown without a label: VENUE, MAP and CATEGORY PHOTO say what the rest are.
+    const media = event.media;
+    const place = media && media.map && media.map.venue;
+    const candidates = [];
+    if (this._settings.showImages) {
+      for (const url of event.images) candidates.push({ kind: "event", url: () => url, alt: `Image for ${event.title || "this event"}` });
+      if (media && media.photo) candidates.push({ kind: "venue", url: () => media.photo.url, alt: `Photograph of the venue${media.photo.venue ? `, ${media.photo.venue}` : ""}, not of the event`, photo: media.photo });
+      if (media && media.map) {
+        candidates.push({ kind: "map", url: () => (this._isDark() ? media.map.dark : media.map.light), map: media.map,
+          alt: `Map of the event location${place ? `: ${place}` : ""}${media.map.approximate ? " (approximate position)" : ""}` });
+      }
+      if (categoryPhoto) candidates.push({ kind: "category", url: () => categoryPhoto.url, alt: categoryPhoto.alt });
+    }
+    if (candidates.length) {
       let current = candidates.shift();
       const img = document.createElement("img");
+      const pin = this._el("span", "pin");
+      pin.innerHTML = PIN_SVG;
+      pin.hidden = true;
+      const credit = this._el("span", "media-credit");
+      credit.hidden = true;
+      const chip = this._el("span", "venue-chip");
+      chip.hidden = true;
+      const fill = () => {
+        // what the image that is showing needs around it: a pin and the map credit, or the photograph's credit
+        credit.replaceChildren();
+        pin.hidden = current.kind !== "map";
+        chip.hidden = current.kind !== "map" || !place;
+        if (!chip.hidden) chip.textContent = `${place}${current.map.approximate ? " (approximate)" : ""}`;
+        credit.hidden = current.kind !== "map" && current.kind !== "venue";
+        if (current.kind === "venue") {
+          const { creator, license, licenseUrl, sourceUrl } = current.photo;
+          credit.append(document.createTextNode(`Photo: ${creator || "Wikimedia Commons"} · `));
+          const licence = this._el(licenseUrl ? "a" : "span", "", license || "see file page");
+          if (licenseUrl) Object.assign(licence, { href: licenseUrl, target: "_blank", rel: "noopener noreferrer" });
+          credit.append(licence);
+          if (sourceUrl) {
+            const source = this._el("a", "", " · Wikimedia Commons");
+            Object.assign(source, { href: sourceUrl, target: "_blank", rel: "noopener noreferrer" });
+            credit.append(source);
+          }
+        } else if (current.kind === "map") {
+          const source = this._el("a", "", current.map.credit);
+          Object.assign(source, { href: "https://www.openstreetmap.org/copyright", target: "_blank", rel: "noopener noreferrer" });
+          credit.append(source);
+        }
+      };
       img.alt = current.alt;
       img.loading = "lazy";
       img.decoding = "async";
@@ -1310,20 +1420,34 @@ class AreaEventsCard extends HTMLElement {
       img.addEventListener("load", () => {
         img.className = "loaded";
         art.hidden = true;
-        tag.textContent = "Category photo";
-        tag.hidden = !current.category;
+        const badge = MEDIA_BADGES[current.kind];
+        tag.textContent = badge || "Illustration";
+        tag.className = badge ? "art-tag media-badge" : "art-tag";
+        tag.hidden = !badge;
+        fill();
       });
       img.addEventListener("error", () => {
+        // back to the illustration (and its label) while the next image loads, or for good when none is left
+        img.className = "";
+        art.hidden = false;
+        tag.textContent = "Illustration";
+        tag.className = "art-tag";
+        tag.hidden = false;
+        pin.hidden = credit.hidden = chip.hidden = true;
         current = candidates.shift();
         if (current) {
           img.alt = current.alt;
-          img.src = current.url;
+          img.src = current.url();
         } else {
           img.remove();
         }
       });
-      img.src = current.url;
-      image.append(img);
+      // a theme change swaps the map being shown for its other variant (only the one in use is ever requested)
+      item._aeTheme = () => {
+        if (current && current.kind === "map" && img.src !== current.url()) img.src = current.url();
+      };
+      img.src = current.url();
+      image.append(img, pin, chip, credit);
     }
     if (event.category) image.append(this._el("span", "category", event.category));
 

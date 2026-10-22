@@ -65,6 +65,22 @@ class AreaEventsClient:
             raise AreaEventsRequestError(status, str(message))
         return payload
 
+    async def get_media(self, name):
+        """(bytes, content type) of a stored map or venue photograph. Raises AreaEventsRequestError(404) when there is none."""
+        try:
+            async with asyncio.timeout(TIMEOUT_SECONDS):
+                async with self._session.get(f"{self._base}/api/v1/media/{quote(name, safe='')}", headers={"Authorization": f"Bearer {self._token}"}) as response:
+                    status, kind, data = response.status, response.headers.get("Content-Type", ""), await response.read()
+        except _NETWORK_ERRORS as error:
+            raise AreaEventsConnectionError(f"could not reach the Area Events app at {self._base}: {error or type(error).__name__}") from error
+        if status in (401, 403):
+            raise AreaEventsAuthError("the Area Events app rejected the token")
+        if status == 404:
+            raise AreaEventsRequestError(404, "no such image")
+        if status >= 400:
+            raise AreaEventsConnectionError(f"the Area Events app answered {status}")
+        return data, kind
+
     async def status(self):
         """Engine counters; also the connection and token check."""
         return await self._request("GET", "/api/v1/status")

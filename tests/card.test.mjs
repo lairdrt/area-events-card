@@ -1166,7 +1166,7 @@ test("an event without a photograph shows its category photograph, labelled, and
   img.listeners.load({});
   assert.equal(artOf(jazz).hidden, true);
   assert.equal(tagOf(jazz).hidden, false);
-  assert.equal(tagOf(jazz).textContent, "Category photo", "never presented as a photograph of the event");
+  assert.equal(tagOf(jazz).textContent, "CATEGORY PHOTO", "never presented as a photograph of the event");
   assert.match(imgOf(tileFor(card, "Taco Rally")).src, /^\/area_events\/photos\/food-truck-\d\.webp/);
 });
 
@@ -1224,4 +1224,177 @@ test("photographs arriving later replace the illustration, and a refresh with th
   await pollAgain(card);
   assert.deepEqual(byClass(card.shadowRoot, "event").map((tile) => imgOf(tile).src), urls, "a refresh with the same index keeps every URL");
   assert.ok(byClass(card.shadowRoot, "event").every((tile, i) => tile === after[i]), "and every tile element");
+});
+
+// --- location imagery: venue photographs and maps (event.media) -----------------------------------------------------
+
+const { safeMedia } = CardClass._internals;
+const MEDIA = () => ({
+  photo: { url: "/area_events/media/pabc123def4567890.jpg", venue: "Viejas Arena", creator: "A. Photographer", license: "CC BY-SA 3.0",
+    license_url: "https://creativecommons.org/licenses/by-sa/3.0/", source_url: "https://commons.wikimedia.org/wiki/File:Cox_arena_front.JPG", attribution_required: true },
+  map: { light: "/area_events/media/m0123456789abcdef-light.svg", dark: "/area_events/media/m0123456789abcdef-dark.svg", confidence: "address", precision: "address", approximate: true,
+    credit: "OpenFreeMap © OpenMapTiles Data from OpenStreetMap" },
+});
+const withMedia = (title, media, extra = {}) => event(title, 2, { venue: "Viejas Arena, San Diego", illustration: { category: "music" }, media, ...extra });
+const themed = (feed, dark, reply) => {
+  const hass = fakeHass({ feed, reply });
+  hass.themes = { darkMode: dark };
+  return hass;
+};
+const pinOf = (tile) => byClass(tile, "pin")[0];
+const creditOf = (tile) => byClass(tile, "media-credit")[0];
+const chipOf = (tile) => byClass(tile, "venue-chip")[0];
+const plain = (el) => [el.textContent, el.text, ...(el.children || []).map(plain)].filter(Boolean).join("");
+
+test("event.media is accepted only as this integration's own files and safe links, and shown only as text", () => {
+  const ok = safeMedia(MEDIA(), { venue: "Viejas Arena, San Diego" });
+  assert.equal(ok.photo.url, "/area_events/media/pabc123def4567890.jpg");
+  assert.equal(ok.photo.sourceUrl, "https://commons.wikimedia.org/wiki/File:Cox_arena_front.JPG");
+  assert.equal(ok.map.venue, "Viejas Arena");
+  assert.equal(ok.map.approximate, true);
+  const hostile = MEDIA();
+  hostile.photo.url = "https://tracker.example/p.jpg";
+  hostile.map.light = "//tracker.example/x.svg";
+  assert.equal(safeMedia(hostile, {}), undefined, "remote or protocol-relative addresses are never used");
+  const links = MEDIA();
+  links.photo.license_url = "javascript:alert(1)";
+  links.photo.source_url = "https://evil.example/File:x";
+  const cleaned = safeMedia(links, {});
+  assert.equal(cleaned.photo.licenseUrl, "");
+  assert.equal(cleaned.photo.sourceUrl, "", "only Wikimedia pages are linked");
+  assert.equal(safeMedia({ photo: { url: "/area_events/media/../../etc/passwd.jpg" } }, {}), undefined);
+  assert.equal(safeMedia({ map: { light: "/area_events/media/a.svg", dark: "/area_events/media/b.jpg" } }, {}), undefined, "a map needs both variants as SVG");
+  assert.equal(safeMedia("<img src=x onerror=alert(1)>", {}), undefined);
+  assert.equal(safeMedia(null, {}), undefined);
+});
+
+test("image priority: event photo, venue photo, map, category photograph, illustration, each handing over when an image fails", async () => {
+  const feed = makeFeed({ events: [withMedia("Weezer", MEDIA(), { images: ["https://a.example/1.jpg"], image_url: "https://a.example/1.jpg" })] });
+  const card = await make({}, { hass: themed(feed, false, () => answer(feed, { photos: PHOTO_INDEX() })) });
+  const tile = tileFor(card, "Weezer");
+  const img = imgOf(tile);
+  assert.equal(img.src, "https://a.example/1.jpg", "the event's own photograph first");
+  img.listeners.error({});
+  assert.equal(img.src, "/area_events/media/pabc123def4567890.jpg", "then the verified venue photograph");
+  assert.match(img.alt, /^Photograph of the venue, Viejas Arena, not of the event$/);
+  img.listeners.load({});
+  assert.equal(tagOf(tile).textContent, "VENUE");
+  assert.equal(tagOf(tile).hidden, false);
+  assert.equal(pinOf(tile).hidden, true, "no pin on a photograph");
+  assert.match(plain(creditOf(tile)), /Photo: A\. Photographer · CC BY-SA 3\.0 · Wikimedia Commons/);
+  img.listeners.error({});
+  assert.equal(img.src, "/area_events/media/m0123456789abcdef-light.svg", "then the map");
+  assert.match(img.alt, /^Map of the event location: Viejas Arena \(approximate position\)$/);
+  img.listeners.load({});
+  assert.equal(tagOf(tile).textContent, "MAP");
+  assert.equal(pinOf(tile).hidden, false);
+  assert.equal(text(chipOf(tile)), "Viejas Arena (approximate)");
+  assert.match(plain(creditOf(tile)), /OpenFreeMap © OpenMapTiles Data from OpenStreetMap/);
+  img.listeners.error({});
+  assert.match(img.src, /^\/area_events\/photos\/music-\d\.webp/, "then the category photograph");
+  img.listeners.load({});
+  assert.equal(tagOf(tile).textContent, "CATEGORY PHOTO");
+  assert.equal(pinOf(tile).hidden, true);
+  assert.equal(creditOf(tile).hidden, true);
+  img.listeners.error({});
+  assert.equal(img.removed, true, "then no broken image");
+  assert.equal(artOf(tile).hidden, false);
+  assert.equal(tagOf(tile).textContent, "Illustration", "the illustration is labelled as one again");
+  assert.equal(tagOf(tile).hidden, false);
+  assert.equal(pinOf(tile).hidden, true);
+});
+
+test("the event's own photograph is never labelled and never gets a pin or credit", async () => {
+  const feed = makeFeed({ events: [withMedia("Weezer", MEDIA(), { images: ["https://a.example/1.jpg"], image_url: "https://a.example/1.jpg" })] });
+  const card = await make({}, { hass: themed(feed, false) });
+  const tile = tileFor(card, "Weezer");
+  imgOf(tile).listeners.load({});
+  assert.equal(tagOf(tile).hidden, true);
+  assert.equal(pinOf(tile).hidden, true);
+  assert.equal(creditOf(tile).hidden, true);
+  assert.equal(chipOf(tile).hidden, true);
+});
+
+test("an event with only a map shows the map in the light or graphite variant HA is using, and follows a theme change at runtime", async () => {
+  const feed = makeFeed({ events: [withMedia("Weezer", { map: MEDIA().map })] });
+  const hass = themed(feed, false);
+  const card = await make({}, { hass });
+  const tile = tileFor(card, "Weezer");
+  const img = imgOf(tile);
+  assert.equal(img.src, "/area_events/media/m0123456789abcdef-light.svg", "a light theme gets the light map");
+  img.listeners.load({});
+  hass.themes = { darkMode: true };
+  card.hass = hass;
+  assert.equal(img.src, "/area_events/media/m0123456789abcdef-dark.svg", "a dark theme swaps in the graphite map at once, with no refresh");
+  assert.equal(pinOf(tile).hidden, false, "the pin and badge stay");
+  hass.themes = { darkMode: false };
+  card.hass = hass;
+  assert.equal(img.src, "/area_events/media/m0123456789abcdef-light.svg");
+  const darkFirst = await make({}, { hass: themed(feed, true) });
+  assert.equal(imgOf(tileFor(darkFirst, "Weezer")).src, "/area_events/media/m0123456789abcdef-dark.svg", "a dark HA theme loads only the graphite variant");
+});
+
+test("the theme comes from Home Assistant, not only from the browser's colour scheme", async () => {
+  const feed = makeFeed({ events: [withMedia("Weezer", { map: MEDIA().map })] });
+  const saved = window.matchMedia;
+  window.matchMedia = () => ({ matches: true }); // the browser says dark...
+  try {
+    const card = await make({}, { hass: themed(feed, false) }); // ...Home Assistant says light
+    assert.equal(imgOf(tileFor(card, "Weezer")).src, "/area_events/media/m0123456789abcdef-light.svg");
+    const noTheme = fakeHass({ feed });
+    const fallback = await make({}, { hass: noTheme }); // no Home Assistant theme information: the browser's setting is the fallback
+    assert.equal(imgOf(tileFor(fallback, "Weezer")).src, "/area_events/media/m0123456789abcdef-dark.svg");
+  } finally {
+    window.matchMedia = saved;
+  }
+});
+
+test("a map that fails after a theme change falls back without a broken image", async () => {
+  const feed = makeFeed({ events: [withMedia("Weezer", { map: MEDIA().map })] });
+  const hass = themed(feed, false, () => answer(feed, { photos: PHOTO_INDEX() }));
+  const card = await make({}, { hass });
+  const tile = tileFor(card, "Weezer");
+  const img = imgOf(tile);
+  img.listeners.load({});
+  hass.themes = { darkMode: true };
+  card.hass = hass;
+  img.listeners.error({});
+  assert.match(img.src, /^\/area_events\/photos\/music-\d\.webp/);
+});
+
+test("show_images: false shows no photographs, no maps and no badges", async () => {
+  const feed = makeFeed({ events: [withMedia("Weezer", MEDIA(), { images: ["https://a.example/1.jpg"], image_url: "https://a.example/1.jpg" })] });
+  const card = await make({ show_images: false }, { hass: themed(feed, false, () => answer(feed, { photos: PHOTO_INDEX() })) });
+  const tile = tileFor(card, "Weezer");
+  assert.equal(imgOf(tile), undefined);
+  assert.equal(byClass(tile, "pin").length, 0);
+  assert.equal(tagOf(tile).textContent, "Illustration");
+});
+
+test("imagery that arrives with a later answer reaches the tile: the poll key carries the app's revision", async () => {
+  const feed = makeFeed({ events: [event("Weezer", 2, { venue: "Viejas Arena", illustration: { category: "music" } })] });
+  let next = answer(feed, { revision: 0 });
+  const card = await make({}, { reply: () => next });
+  assert.equal(imgOf(tileFor(card, "Weezer")), undefined);
+  assert.equal(card._feed.key, feed.generated_at, "no revision: the key is the feed time, as before");
+  const withImagery = makeFeed({ generated_at: feed.generated_at, events: [{ ...feed.events[0], media: { map: MEDIA().map } }] });
+  next = answer(withImagery, { revision: 1792630000 });
+  await pollAgain(card);
+  assert.equal(card._feed.key, `${feed.generated_at}#1792630000`);
+  assert.ok(imgOf(tileFor(card, "Weezer")), "the map appears without waiting for the next discovery");
+  await pollAgain(card);
+  assert.equal(card.hassStub.eventsCalls().at(-1).since, `${feed.generated_at}#1792630000`, "the next poll asks since that key");
+});
+
+test("a venue photograph without a stated creator is credited to Wikimedia Commons, and links stay on Wikimedia and Creative Commons", async () => {
+  const media = MEDIA();
+  media.photo.creator = "";
+  const feed = makeFeed({ events: [withMedia("Weezer", { photo: media.photo })] });
+  const card = await make({}, { hass: themed(feed, false) });
+  const tile = tileFor(card, "Weezer");
+  imgOf(tile).listeners.load({});
+  assert.match(plain(creditOf(tile)), /Photo: Wikimedia Commons · CC BY-SA 3\.0 · Wikimedia Commons/);
+  const anchors = walk(creditOf(tile)).filter((el) => el.tag === "a");
+  assert.deepEqual(anchors.map((a) => new URL(a.href).hostname), ["creativecommons.org", "commons.wikimedia.org"]);
+  assert.ok(anchors.every((a) => a.rel === "noopener noreferrer" && a.target === "_blank"));
 });

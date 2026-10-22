@@ -136,7 +136,8 @@ def install_stand_ins():
     module("homeassistant")
     components = module("homeassistant.components", websocket_api=websocket_api)
     components.frontend = module("homeassistant.components.frontend", add_extra_js_url=mock.Mock())
-    components.http = module("homeassistant.components.http", StaticPathConfig=lambda *args, **kwargs: (args, kwargs))
+    components.http = module("homeassistant.components.http", StaticPathConfig=lambda *args, **kwargs: (args, kwargs), HomeAssistantView=type("HomeAssistantView", (), {}))
+    module("aiohttp", ClientError=OSError, web=types.SimpleNamespace(Response=lambda **kw: types.SimpleNamespace(**kw)))
     module("homeassistant.config_entries", ConfigFlow=FakeConfigFlow, ConfigFlowResult=dict, ConfigEntry=Subscriptable,
            ConfigEntryState=types.SimpleNamespace(LOADED="loaded"))
     module("homeassistant.core", HomeAssistant=object, callback=lambda func: func)
@@ -257,7 +258,7 @@ class Setup(unittest.TestCase):
         async def register(configs):
             paths.extend(configs)
 
-        hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=register), async_add_executor_job=lambda func, *args: asyncio.sleep(0, func(*args)), data={})
+        hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=register, register_view=lambda view: None), async_add_executor_job=lambda func, *args: asyncio.sleep(0, func(*args)), data={})
         self.assertTrue(run(init.async_setup(hass, {})))
         self.assertEqual(paths[0][0][0], "/area_events/area-events-card.js")
         self.assertTrue(paths[0][0][1].endswith("area-events-card.js"))
@@ -274,7 +275,7 @@ class Setup(unittest.TestCase):
             order.append(("static", configs))
 
         announce = lambda hass, url: (order.append(("script", url)), urls.append(url))
-        hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=register), async_add_executor_job=lambda func, *args: asyncio.sleep(0, func(*args)), data={})
+        hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=register, register_view=lambda view: None), async_add_executor_job=lambda func, *args: asyncio.sleep(0, func(*args)), data={})
         with tempfile.TemporaryDirectory() as folder:
             card = pathlib.Path(folder, "area-events-card.js")
             card.write_text("// v1")

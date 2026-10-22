@@ -19,7 +19,9 @@ ports_description:
 options:
   refresh_minutes: 60
   log_level: info
+  location_imagery: true
 schema:
   token: password?
   refresh_minutes: int(15,1440)
   log_level: list(debug|info|warning|error)
+  location_imagery: bool

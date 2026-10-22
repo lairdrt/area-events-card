@@ -120,3 +120,7 @@ WebP versions were 12 to 17 KB. Each image is one request of about 91 to 94 KB P
 
 **Production sketch** (unchanged from section 6): do the recolour and pin in the card (CSS filter or a pre-tinted cache), or cache the plain JPEG and draw the pin, tag and credit as DOM elements; the second avoids any image library on the Pi 4 and keeps the credit as real text.
 
+## 9. Outcome (2026-10-21): the design that was built
+
+The higher-resolution investigation showed USGS cannot be sharp on high-density displays (native 2.4 m per pixel; no tiles above zoom 16; 1280 x 720 and 1920 x 1080 exports are upscaled, with identical stair-stepped building outlines and equally soft labels; its dynamic services have no building footprints). The maps are now drawn as vector SVG from OpenFreeMap tiles instead, and venue photographs come from a strict Wikidata/Commons identity chain. See [location-imagery.md](location-imagery.md) for the design, the terms relied on, the trust rules and the measured coverage.
+

@@ -125,7 +125,7 @@ class Serving(unittest.TestCase):
         async def register(configs):
             paths.append(configs)
 
-        hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=register), data={},
+        hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=register, register_view=lambda view: None), data={},
                                      async_add_executor_job=lambda func, *args: asyncio.sleep(0, func(*args)))
         with mock.patch.object(init, "PHOTOS_FOLDER", folder):
             self.assertTrue(asyncio.run(init.async_setup(hass, {})))

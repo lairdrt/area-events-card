@@ -40,8 +40,8 @@ class BlockedError(FetchError):
 
 
 class Response:
-    def __init__(self, url, status, content_type, text):
-        self.url, self.status, self.content_type, self.text = url, status, content_type, text
+    def __init__(self, url, status, content_type, text, body=b""):
+        self.url, self.status, self.content_type, self.text, self.body = url, status, content_type, text, body
 
 
 class State:
@@ -163,14 +163,20 @@ class SafeFetcher:
     def get(self, url, check_robots=True):
         return self.fetch(url, check_robots).text
 
-    def fetch(self, url, check_robots=True):
+    def fetch(self, url, check_robots=True, binary=None):
+        """The response for `url`. `binary` is a tuple of accepted content types (for example ("image/jpeg",)) to fetch a
+        non-text body, which is then in `response.body`; without it only text-like documents are accepted."""
         response = self._request(url, check_robots)
         host = urlsplit(response.url).hostname
         if response.status in (401, 403, 429):
             raise BlockedError(f"{host} refused access (HTTP {response.status})")
         if response.status >= 400:
             raise FetchError(f"{host}: HTTP {response.status}")
-        if not _texty(response.content_type):
+        if binary:
+            kind = (response.content_type or "").split(";")[0].strip().lower()
+            if kind not in binary:
+                raise FetchError(f"{host}: unexpected content type ({response.content_type})")
+        elif not _texty(response.content_type):
             raise FetchError(f"{host}: not a text document ({response.content_type})")
         return response
 
@@ -220,7 +226,7 @@ class SafeFetcher:
                 current = urljoin(current, location)
                 continue
             content_type = received.get("Content-Type") or ""
-            return Response(current, status, content_type, _decode(body, content_type))
+            return Response(current, status, content_type, _decode(body, content_type), body)
         raise FetchError(f"{urlsplit(url).hostname}: too many redirects")
 
     def _robots(self, parts, port, ip):
