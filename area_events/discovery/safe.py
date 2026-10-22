@@ -128,7 +128,7 @@ def transport(scheme, host, port, ip, target, headers, timeout, limit, clock=tim
         response = connection.getresponse()
         if response.status in REDIRECTS:
             return response.status, response.headers, b""
-        body = _read_limited(response, limit, clock() + TOTAL_SECONDS, clock)
+        body = _read_limited(response, limit, clock() + max(TOTAL_SECONDS, timeout * 2), clock)
         return response.status, response.headers, _inflate(body, (response.headers.get("Content-Encoding") or "").lower(), limit)
     except (OSError, http.client.HTTPException) as error:
         raise FetchError(f"{host}: {error}") from error
@@ -163,10 +163,10 @@ class SafeFetcher:
     def get(self, url, check_robots=True):
         return self.fetch(url, check_robots).text
 
-    def fetch(self, url, check_robots=True, binary=None):
+    def fetch(self, url, check_robots=True, binary=None, timeout=TIMEOUT):
         """The response for `url`. `binary` is a tuple of accepted content types (for example ("image/jpeg",)) to fetch a
         non-text body, which is then in `response.body`; without it only text-like documents are accepted."""
-        response = self._request(url, check_robots)
+        response = self._request(url, check_robots, timeout)
         host = urlsplit(response.url).hostname
         if response.status in (401, 403, 429):
             raise BlockedError(f"{host} refused access (HTTP {response.status})")
@@ -204,7 +204,7 @@ class SafeFetcher:
         if slot > now:
             self.sleep(slot - now)
 
-    def _request(self, url, check_robots):
+    def _request(self, url, check_robots, timeout=TIMEOUT):
         current = url
         for _ in range(MAX_REDIRECTS + 1):
             parts, port = self._check(current)
@@ -218,7 +218,7 @@ class SafeFetcher:
             target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
             headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,application/xml,text/calendar,application/json;q=0.9,*/*;q=0.5",
                        "Accept-Encoding": "gzip, identity"}
-            status, received, body = self.send(parts.scheme, parts.hostname, port, ips[0], target, headers, TIMEOUT, MAX_BYTES)
+            status, received, body = self.send(parts.scheme, parts.hostname, port, ips[0], target, headers, timeout, MAX_BYTES)
             if status in REDIRECTS:
                 location = received.get("Location")
                 if not location:

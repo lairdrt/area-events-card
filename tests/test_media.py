@@ -410,14 +410,16 @@ class VenuePhotos(unittest.TestCase):
 class FakeFetcher:
     """Answers Nominatim, the OpenFreeMap tile list and tiles, and Wikimedia from fixtures; every request is recorded."""
 
-    def __init__(self, nominatim_results=None, fail=None, wiki=None):
-        self.urls, self.fail, self.wiki = [], fail, wiki
+    def __init__(self, nominatim_results=None, fail=None, wiki=None, overpass=None):
+        self.urls, self.fail, self.wiki, self.overpass = [], fail, wiki, overpass
         self.nominatim_results = nominatim_results if nominatim_results is not None else {}
 
-    def fetch(self, url, check_robots=True, binary=None):
+    def fetch(self, url, check_robots=True, binary=None, timeout=None):
         self.urls.append(url)
         if self.fail and self.fail(url):
             raise FetchError("unavailable")
+        if "overpass" in url:
+            return types.SimpleNamespace(text=json.dumps({"elements": self.overpass or []}), body=b"")
         if "nominatim" in url:
             for needle, result in self.nominatim_results.items():
                 if needle.replace(" ", "+") in url or needle in url:
@@ -614,10 +616,10 @@ class Service(unittest.TestCase):
 
     def test_an_unexpected_tile_address_is_not_followed(self):
         class Evil(FakeFetcher):
-            def fetch(self, url, check_robots=True, binary=None):
+            def fetch(self, url, check_robots=True, binary=None, timeout=None):
                 if url == media.TILEJSON:
                     return types.SimpleNamespace(text=json.dumps({"tiles": ["https://evil.example/{z}/{x}/{y}.pbf"]}), body=b"")
-                return super().fetch(url, check_robots, binary)
+                return super().fetch(url, check_robots, binary, timeout)
         service = self.service(Evil(self.result, wiki=Wikimedia()))
         self.assertEqual(service.cycle([(SD, [self.viejas])]), 0)
         self.assertFalse([u for u in service.fetcher.urls if "evil" in u])

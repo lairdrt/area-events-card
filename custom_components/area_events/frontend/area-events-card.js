@@ -9,7 +9,7 @@
  * visual editor; the filter chips are the viewer's own choices, saved per card instance (see "Preferences").
  */
 
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-1274c935";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-ce1c4bd8";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
@@ -147,12 +147,25 @@ const STYLES = `
   .art.outdoors { --ae-accent: hsl(128 46% 42%); } .art.general { --ae-accent: hsl(220 52% 58%); }
   .pin { position: absolute; left: 50%; top: 50%; width: 30px; height: 40px; transform: translate(-50%, -100%); pointer-events: none; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.45)); }
   .pin svg { width: 100%; height: 100%; display: block; }
-  .media-credit, .venue-chip {
+  .venue-chip {
     position: absolute; padding: 1px 8px; border-radius: 12px; font-size: 0.6875rem; line-height: 1.5; box-sizing: border-box; max-width: calc(100% - 16px);
     background: rgba(37, 40, 45, 0.86); color: rgb(232 234 238); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   }
-  .media-credit { left: 8px; bottom: 8px; max-width: calc(100% - 120px); }
+  .credit-button {
+    position: absolute; left: 8px; bottom: 8px; width: 22px; height: 22px; padding: 0; margin: 0; border-radius: 50%; box-sizing: border-box; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; font: inherit;
+    background: rgba(37, 40, 45, 0.72); color: rgb(232 234 238); border: 1px solid rgba(255, 255, 255, 0.35);
+  }
+  .credit-button::after { content: ""; position: absolute; inset: -11px; }
+  .credit-button:hover, .credit-button[aria-expanded="true"] { background: rgba(37, 40, 45, 0.94); }
+  .credit-button:focus-visible, .media-credit a:focus-visible { outline: 2px solid rgb(240 138 36); outline-offset: 2px; }
+  .credit-button svg { width: 14px; height: 14px; display: block; }
+  .media-credit {
+    position: absolute; left: 8px; bottom: 38px; max-width: calc(100% - 16px); max-height: calc(100% - 52px); overflow: auto; box-sizing: border-box;
+    padding: 6px 10px; border-radius: 8px; font-size: 0.75rem; line-height: 1.45; background: rgba(37, 40, 45, 0.96); color: rgb(232 234 238);
+  }
   .media-credit a { color: inherit; text-decoration: underline; }
+  .media-credit .note { display: block; opacity: 0.8; }
   .venue-chip { right: 8px; top: 8px; max-width: calc(100% - 90px); font-weight: 600; }
   .art-tag.media-badge { background: rgba(37, 40, 45, 0.88); color: rgb(240 138 36); border-color: rgba(255, 255, 255, 0.22); font-weight: 700; letter-spacing: 0.04em; }
   .art-tag {
@@ -591,6 +604,10 @@ function safeMedia(raw, event) {
 const PIN_SVG = '<svg viewBox="0 0 30 40" aria-hidden="true" focusable="false"><path d="M15 39 L5 23 A13 13 0 1 1 25 23 Z" fill="#f08a24" stroke="#fff" stroke-width="2.4" stroke-linejoin="round"/>' +
   '<circle cx="15" cy="14" r="5.2" fill="#25282d"/></svg>';
 const MEDIA_BADGES = { venue: "VENUE", map: "MAP" };
+const INFO_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>' +
+  '<path d="M12 11v6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="12" cy="7.2" r="1.5" fill="currentColor"/></svg>';
+// The credit a map must carry (OpenFreeMap's required text, the OpenStreetMap copyright page) lives behind a small info button on the tile.
+const MAP_CREDITS = [["OpenFreeMap", "https://openfreemap.org"], [" © OpenMapTiles", "https://openmaptiles.org/"], [" Data from OpenStreetMap", "https://www.openstreetmap.org/copyright"]];
 
 class AreaEventsCard extends HTMLElement {
   setConfig(config) {
@@ -1356,17 +1373,41 @@ class AreaEventsCard extends HTMLElement {
       const pin = this._el("span", "pin");
       pin.innerHTML = PIN_SVG;
       pin.hidden = true;
-      const credit = this._el("span", "media-credit");
+      const credit = this._el("div", "media-credit");
       credit.hidden = true;
+      this._creditIds = (this._creditIds || 0) + 1;
+      credit.id = `ae-credit-${this._creditIds}`;
+      // a small information button; the full credit and its links open from it and close again with it, Escape or a change of image
+      const info = this._el("button", "credit-button");
+      info.type = "button";
+      info.hidden = true;
+      info.innerHTML = INFO_SVG;
+      info.setAttribute("aria-expanded", "false");
+      info.setAttribute("aria-controls", credit.id);
+      const collapse = (focus) => {
+        credit.hidden = true;
+        info.setAttribute("aria-expanded", "false");
+        if (focus && info.focus) info.focus();
+      };
+      info.addEventListener("click", () => {
+        credit.hidden = !credit.hidden;
+        info.setAttribute("aria-expanded", String(!credit.hidden));
+      });
+      const escape = (e) => { if (e && e.key === "Escape" && !credit.hidden) collapse(true); };
+      info.addEventListener("keydown", escape);
+      credit.addEventListener("keydown", escape);
       const chip = this._el("span", "venue-chip");
       chip.hidden = true;
       const fill = () => {
         // what the image that is showing needs around it: a pin and the map credit, or the photograph's credit
         credit.replaceChildren();
+        collapse(false);
+        info.hidden = current.kind !== "map" && current.kind !== "venue";
+        info.setAttribute("aria-label", current.kind === "map" ? "Map credits and licence" : "Photo credit and licence");
+        info.title = info.getAttribute("aria-label");
         pin.hidden = current.kind !== "map";
         chip.hidden = current.kind !== "map" || !place;
         if (!chip.hidden) chip.textContent = `${place}${current.map.approximate ? " (approximate)" : ""}`;
-        credit.hidden = current.kind !== "map" && current.kind !== "venue";
         if (current.kind === "venue") {
           const { creator, license, licenseUrl, sourceUrl } = current.photo;
           credit.append(document.createTextNode(`Photo: ${creator || "Wikimedia Commons"} · `));
@@ -1379,9 +1420,13 @@ class AreaEventsCard extends HTMLElement {
             credit.append(source);
           }
         } else if (current.kind === "map") {
-          const source = this._el("a", "", current.map.credit);
-          Object.assign(source, { href: "https://www.openstreetmap.org/copyright", target: "_blank", rel: "noopener noreferrer" });
-          credit.append(source);
+          credit.append(document.createTextNode("Map: "));
+          for (const [label, href] of MAP_CREDITS) {
+            const source = this._el("a", "", label);
+            Object.assign(source, { href, target: "_blank", rel: "noopener noreferrer" });
+            credit.append(source);
+          }
+          if (current.map.approximate) credit.append(this._el("span", "note", "The pin shows an approximate position."));
         }
       };
       img.alt = current.alt;
@@ -1404,7 +1449,8 @@ class AreaEventsCard extends HTMLElement {
         tag.textContent = "Illustration";
         tag.className = "art-tag";
         tag.hidden = false;
-        pin.hidden = credit.hidden = chip.hidden = true;
+        pin.hidden = chip.hidden = info.hidden = true;
+        collapse(false);
         current = candidates.shift();
         if (current) {
           img.alt = current.alt;
@@ -1418,7 +1464,7 @@ class AreaEventsCard extends HTMLElement {
         if (current && current.kind === "map" && img.src !== current.url()) img.src = current.url();
       };
       img.src = current.url();
-      image.append(img, pin, chip, credit);
+      image.append(img, pin, chip, info, credit);
     }
     if (event.category) image.append(this._el("span", "category", event.category));
 

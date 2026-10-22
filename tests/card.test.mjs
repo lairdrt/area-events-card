@@ -1,6 +1,7 @@
 // Run: npm test   (no dependencies; a tiny DOM stub stands in for the browser)
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 
 class El {
   constructor(tag) { Object.assign(this, { tag, children: [], className: "", textContent: "", attrs: {}, listeners: {}, hidden: false, value: "" }); }
@@ -1289,4 +1290,120 @@ test("a venue photograph without a stated creator is credited to Wikimedia Commo
   const anchors = walk(creditOf(tile)).filter((el) => el.tag === "a");
   assert.deepEqual(anchors.map((a) => new URL(a.href).hostname), ["creativecommons.org", "commons.wikimedia.org"]);
   assert.ok(anchors.every((a) => a.rel === "noopener noreferrer" && a.target === "_blank"));
+});
+
+// --- map and photo credits: a small information button, the full credit one tap away ----------------------------------
+
+const creditButtonOf = (tile) => byClass(tile, "credit-button")[0];
+const anchorsOf = (el) => walk(el).filter((e) => e.tag === "a");
+
+test("a map shows no credit strip: a small information button opens the full credit and its links", async () => {
+  const feed = makeFeed({ events: [withMedia("Weezer", { map: MEDIA().map })] });
+  const card = await make({}, { hass: themed(feed, false) });
+  const tile = tileFor(card, "Weezer");
+  const button = creditButtonOf(tile);
+  assert.equal(button.hidden, true, "nothing is shown before the map has loaded");
+  imgOf(tile).listeners.load({});
+  assert.equal(button.hidden, false);
+  assert.equal(button.tag, "button");
+  assert.equal(button.type, "button", "a real button, so it is reachable by keyboard and screen reader");
+  assert.equal(button.getAttribute("aria-label"), "Map credits and licence");
+  assert.equal(button.getAttribute("aria-expanded"), "false");
+  assert.equal(button.getAttribute("aria-controls"), creditOf(tile).id);
+  assert.equal(button.textContent, "", "the button is an icon, not text laid over the map");
+  assert.equal(creditOf(tile).hidden, true, "the long attribution is not on the tile until asked for");
+  click(button);
+  assert.equal(creditOf(tile).hidden, false);
+  assert.equal(button.getAttribute("aria-expanded"), "true");
+  assert.match(plain(creditOf(tile)), /^Map: OpenFreeMap © OpenMapTiles Data from OpenStreetMap/);
+  assert.match(plain(creditOf(tile)), /approximate position/);
+  assert.deepEqual(anchorsOf(creditOf(tile)).map((a) => a.href), ["https://openfreemap.org", "https://openmaptiles.org/", "https://www.openstreetmap.org/copyright"]);
+  assert.ok(anchorsOf(creditOf(tile)).every((a) => a.rel === "noopener noreferrer" && a.target === "_blank"));
+  click(button);
+  assert.equal(creditOf(tile).hidden, true, "the same button closes it");
+  assert.equal(button.getAttribute("aria-expanded"), "false");
+});
+
+test("Escape closes the credit and the control keeps working on touch (it is a plain click)", async () => {
+  const feed = makeFeed({ events: [withMedia("Weezer", { map: MEDIA().map })] });
+  const card = await make({}, { hass: themed(feed, false) });
+  const tile = tileFor(card, "Weezer");
+  imgOf(tile).listeners.load({});
+  const button = creditButtonOf(tile);
+  let focused = false;
+  button.focus = () => { focused = true; };
+  click(button);
+  button.listeners.keydown({ key: "a" });
+  assert.equal(creditOf(tile).hidden, false, "other keys do nothing");
+  creditOf(tile).listeners.keydown({ key: "Escape" });
+  assert.equal(creditOf(tile).hidden, true);
+  assert.equal(focused, true, "focus returns to the button");
+  assert.equal(button.listeners.pointerdown, undefined, "no hover-only behaviour");
+});
+
+test("a venue photograph gets the same control with its creator, licence and Commons links", async () => {
+  const feed = makeFeed({ events: [withMedia("Weezer", { photo: MEDIA().photo })] });
+  const card = await make({}, { hass: themed(feed, false) });
+  const tile = tileFor(card, "Weezer");
+  imgOf(tile).listeners.load({});
+  const button = creditButtonOf(tile);
+  assert.equal(button.getAttribute("aria-label"), "Photo credit and licence");
+  assert.equal(creditOf(tile).hidden, true);
+  click(button);
+  assert.match(plain(creditOf(tile)), /Photo: A\. Photographer · CC BY-SA 3\.0 · Wikimedia Commons/);
+  assert.equal(anchorsOf(creditOf(tile)).length, 2);
+});
+
+test("the credit control follows the image that is showing: none for event photos, closed again when the image changes, and in both themes", async () => {
+  const feed = makeFeed({ events: [withMedia("Weezer", MEDIA(), { images: ["https://a.example/1.jpg"], image_url: "https://a.example/1.jpg" })] });
+  const hass = themed(feed, false);
+  const card = await make({}, { hass });
+  const tile = tileFor(card, "Weezer");
+  const img = imgOf(tile);
+  img.listeners.load({});
+  assert.equal(creditButtonOf(tile).hidden, true, "the event's own photograph needs none");
+  img.listeners.error({});
+  img.listeners.load({});
+  click(creditButtonOf(tile));
+  assert.equal(creditOf(tile).hidden, false);
+  img.listeners.error({});
+  assert.equal(creditOf(tile).hidden, true, "a new image starts with the credit closed");
+  assert.equal(creditButtonOf(tile).hidden, true, "and hidden until it has loaded");
+  img.listeners.load({});
+  assert.equal(creditButtonOf(tile).getAttribute("aria-label"), "Map credits and licence");
+  hass.themes = { darkMode: true };
+  card.hass = hass;
+  assert.equal(img.src, "/area_events/media/m0123456789abcdef-dark.svg");
+  assert.equal(creditButtonOf(tile).hidden, false, "the dark map keeps its credit control, pin and badge");
+  assert.equal(pinOf(tile).hidden, false);
+  assert.equal(tagOf(tile).textContent, "MAP");
+  img.listeners.error({});
+  assert.equal(img.removed, true);
+  assert.equal(creditButtonOf(tile).hidden, true, "no credit control on the illustration");
+});
+
+test("each tile's credit panel has its own id", async () => {
+  const feed = makeFeed({ events: [withMedia("Weezer", { map: MEDIA().map }), withMedia("Pixies", { map: MEDIA().map })] });
+  const card = await make({}, { hass: themed(feed, false) });
+  assert.notEqual(creditOf(tileFor(card, "Weezer")).id, creditOf(tileFor(card, "Pixies")).id);
+});
+
+test("the card's styles keep the credit compact: a small round button, a panel only on request, no theme colours as hex", () => {
+  const source = fs.readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  const styles = source.slice(source.indexOf("const STYLES = `"), source.indexOf("`;", source.indexOf("const STYLES = `")));
+  assert.match(styles, /\.credit-button \{[^}]*width: 22px; height: 22px;[^}]*border-radius: 50%/);
+  assert.match(styles, /\.credit-button::after \{ content: ""; position: absolute; inset: -11px; \}/, "a 44px touch target around the 22px button");
+  assert.match(styles, /\.media-credit \{[^}]*max-height: calc\(100% - 52px\); overflow: auto/);
+  assert.doesNotMatch(styles, /\.media-credit[^{]*\{[^}]*white-space: nowrap/, "the credit is no longer a one-line strip");
+  assert.doesNotMatch(styles, /#[0-9a-fA-F]{3,8}\b/);
+});
+
+test("event text with markup is shown as text, never as HTML", async () => {
+  const hostile = '<img src=x onerror=alert(1)> Hotel & Suites';
+  const feed = makeFeed({ events: [event(hostile, 2, { venue: "<script>alert(1)</script>", description: "<b>bold</b> &amp; plain" })] });
+  const card = await make({}, { hass: themed(feed, false) });
+  const tile = tileFor(card, hostile);
+  assert.equal(text(byClass(tile, "title")[0]), hostile);
+  assert.ok(walk(tile).every((el) => !/<(script|img)\b/i.test(el.innerHTML || "")), "nothing from the feed reaches innerHTML");
+  assert.equal(walk(tile).filter((el) => el.tag === "script" || (el.tag === "img" && el.src && /x$/.test(el.src))).length, 0);
 });

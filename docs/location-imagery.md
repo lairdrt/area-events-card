@@ -8,12 +8,12 @@ Image priority (each step hands over to the next when an image is missing or fai
 
 1. the event's own photograph, then verified alternatives from other matched records (no badge);
 2. a verified photograph of the actual venue, badge **VENUE**, with its credit and licence;
-3. a map of the event's location, badge **MAP**, with a pin, the venue name and the data credit;
+3. a map of the event's location, badge **MAP**, with a pin, the venue name and a small credit button;
 4. the category illustration, labelled "Illustration".
 
 Generic category photographs are **not** part of the selection (the curated set described in [category-photography.md](category-photography.md) is kept on disk but unused).
 
-`show_images: false` shows none of 2 and 3. The pin, badges, venue name and credits are elements of the card, never part of an image. Alt text says what each image is ("Map of the event location: Viejas Arena (approximate position)", "Photograph of the venue, Viejas Arena, not of the event").
+`show_images: false` shows none of 2 and 3. The pin, badges, venue name and credit button are elements of the card, never part of an image. Alt text says what each image is ("Map of the event location: Viejas Arena (approximate position)", "Photograph of the venue, Viejas Arena, not of the event").
 
 ## Maps
 
@@ -23,6 +23,10 @@ Generic category photographs are **not** part of the selection (the curated set 
 
 *Terms (from the operator's pages).* OpenFreeMap: free, no limit on requests, no API key; automated downloads are allowed "as long as each download is at most 3,000 tiles or 50 MB", with at most 4 parallel requests and a unique User-Agent (this uses one tile per area, one request at a time, and caches them); required credit "OpenFreeMap © OpenMapTiles Data from OpenStreetMap". The data is OpenStreetMap's (ODbL; a drawn map is a "produced work" that needs the credit, which the card shows as a link to openstreetmap.org/copyright). The terms do not address caching explicitly; the explicit allowance for downloads is what this relies on.
 
+## Credits
+
+A tile carries no attribution text. A small round information button (bottom left, 22 px with a 44 px touch target, a real `<button>` with an accessible name, `aria-expanded` and `aria-controls`) opens the full credit as a panel over the image; the button, Escape or a change of image closes it, and it works the same by mouse, keyboard and touch. For a map the panel reads "Map: OpenFreeMap © OpenMapTiles Data from OpenStreetMap" (OpenFreeMap's required text), each part linking to openfreemap.org, openmaptiles.org and openstreetmap.org/copyright, and says when the pin is approximate; for a venue photograph it gives the creator, licence and the Commons file page. The event's own photographs have no button.
+
 ## Trusting a position
 
 A pin is drawn only when the position is trustworthy; the reason and evidence are stored with it (`location.confidence`, `precision`, `provenance`) and refusals are cached with their reason.
@@ -30,8 +34,9 @@ A pin is drawn only when the position is trustworthy; the reason and evidence ar
 - **source**: coordinates the event's own source supplied for the venue (the engine classified them *confirmed*). Not approximate, though a building coordinate is not an entrance.
 - **address**: a street address whose **house number and street name** both match the geocoder's result (street-type and direction words are normalised), in the right locality, inside the search area. Marked approximate: it says "somewhere on this property".
 - **venue**: a named place the geocoder returned with **exactly** the venue's name, a place-like type (not a city, road or district), inside the search area, and no second candidate of that name elsewhere. Marked approximate.
+- **intersection**: a location given only as the corner of two streets and no house number ("A and B", "A & B", "A at B", "Corner of A and B", also in the address field; "Eighth" and "8th" are the same). Both sides must look like streets (they need a street-type word, so "Arts and Crafts" is not one). The first street is geocoded within the listing's locality (or the search area) and must come back as a road of that name; then OpenStreetMap's road network is asked (Overpass, one query per corner, at most one every 10 s, 60 s timeout, a failure is retried later and never cached as a refusal) for ways named like either street, and the pin is placed on the **node the two streets actually share**. Streets that merely pass near each other, two junctions of the same pair (ambiguous), a junction outside the search area, or a street that is absent or in another locality are refused with the reason. A different street type ("Drive" in the listing, "Avenue" on the map) is accepted only when the name and everything else agrees, and the difference is recorded in the provenance. Marked approximate; no photograph is sought; coordinates are never estimated from the text or from the city centre. Source coordinates, when the source gives trustworthy ones, still take priority. A one-word street without a type ("Broadway") is not recognised as a street, so "5th Avenue and Broadway" is not read as a corner.
 
-Never used: city-centre estimates, partial addresses, near-miss names ("Texas Union" never becomes "Greater Texas Federal Credit Union"), ambiguous names, results outside the area. Geocoding is OpenStreetMap Nominatim, limited to the area's country when known; its policy allows a long-running program 4 lookups a minute and requires caching, so lookups are 15 s apart and cached for 60 days (refusals 14 days).
+Never used: city-centre estimates, partial addresses, a corner whose streets do not meet in the map data, near-miss names ("Texas Union" never becomes "Greater Texas Federal Credit Union"), ambiguous names, results outside the area. Geocoding is OpenStreetMap Nominatim, limited to the area's country when known; its policy allows a long-running program 4 lookups a minute and requires caching, so lookups are 15 s apart and cached for 60 days (refusals 14 days).
 
 ## Venue photographs
 
@@ -51,7 +56,7 @@ The card shows "Photo: *creator* · *licence* · Wikimedia Commons" with links t
 - Results are cached on disk by a stable key (place) and a versioned file name (content hash plus the renderer version): about 40 KB of maps (two variants) and 60 to 240 KB for a photograph per place, tiles cached 14 days (at most 120 files, about 25 MB at most), records bounded to 2,000, unreferenced files removed. The same venue is looked up once however many events use it.
 - Files reach the dashboard through the integration (`/area_events/media/<name>`): names must match a strict pattern, SVGs are served with a policy forbidding scripts and any resource load, responses are cacheable for a year (the names change when content does). The app's own API needs the token; the integration forwards with it.
 - A request that is a pure `since` poll still learns about new imagery: the app reports a `revision` (0 while there is none), part of the token the card sends.
-- Outbound requests go through the safe fetcher (public addresses only, pinned connections, size and time limits) to fixed hosts: nominatim.openstreetmap.org, tiles.openfreemap.org, en.wikipedia.org, www.wikidata.org, commons.wikimedia.org, upload.wikimedia.org and thumb.wikimedia.org. robots.txt is not consulted for these documented APIs. Everything fetched is treated as untrusted data (validated, bounded, text escaped); images are never executed.
+- Outbound requests go through the safe fetcher (public addresses only, pinned connections, size and time limits) to fixed hosts: nominatim.openstreetmap.org, overpass-api.de (intersections only), tiles.openfreemap.org, en.wikipedia.org, www.wikidata.org, commons.wikimedia.org, upload.wikimedia.org and thumb.wikimedia.org. robots.txt is not consulted for these documented APIs. Everything fetched is treated as untrusted data (validated, bounded, text escaped); images are never executed.
 - **Off switch:** the app option *Venue photographs and maps* (`location_imagery`, default on) stops all lookups and attaches nothing.
 
 ## Light and dark
@@ -65,3 +70,9 @@ The card reads the effective Home Assistant theme (`hass.themes.darkMode`) on ev
 - An address or venue pin is approximate within the property; a building coordinate is not an entrance.
 - Street names appear where they fit; business names are not drawn on the map (the card shows the venue name).
 - The first fill of a large area takes hours because of the geocoder's rate; it never affects event discovery.
+- **The Haunted Trail of Balboa Park** (venue text "On the corner of Balboa Drive and Eighth Drive."): the text is read as a corner, but OpenStreetMap has no "Eighth Drive" (nor a "8th Drive"), its only "Balboa Drive" is a short stub, and the nearest "8th Avenue" does not connect to it, so the check fails and the event keeps its illustration instead of a guessed pin. The city's event page embeds a map query with an invalid latitude, so its coordinates are not used either. If OpenStreetMap is corrected, the corner is found at the next cycle after the 14-day refusal expires.
+- Overpass is a shared public service that is sometimes slow or unavailable; those lookups simply wait for a later cycle.
+
+## Event text
+
+Sources sometimes leave HTML entities in what they publish ("Porto Vista Hotel &amp; Suites"). The engine decodes them once, where events enter (and for events cached before the fix), in the title, venue, address, description, organizer, price, neighbourhood, category tags and source label. Only complete entities are decoded (named, decimal and hexadecimal; unknown names and invalid numbers are left as written; "AT&T" and "Q&A" are untouched), a second pass happens only for a double-encoded entity ("&amp;amp;"), and web addresses and identifiers are never changed. Markup is not interpreted: the card shows every field as text.

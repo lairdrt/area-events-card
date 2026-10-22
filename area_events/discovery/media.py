@@ -45,6 +45,10 @@ MEDIA_URL = "/area_events/media"
 RENDER_VERSION = 1
 MAP_CREDIT = "OpenFreeMap © OpenMapTiles Data from OpenStreetMap"
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
+OVERPASS = "https://overpass-api.de/api/interpreter"
+OVERPASS_INTERVAL = 10.0  # seconds between Overpass queries (a shared public service)
+INTERSECTION_RADIUS_M = 1500
+OVERPASS_TIMEOUT = 60  # the public instance can take 30 s or more
 TILEJSON = "https://tiles.openfreemap.org/planet"
 TILE_TTL = 14 * 86400
 RECORD_TTL = 60 * 86400
@@ -102,9 +106,78 @@ def place_names(venue, area):
             and not re.fullmatch(r"(online|virtual|tba|tbd|various|off campus|offsite|multiple locations)", n)]
 
 
+ORDINALS = {"first": "1", "second": "2", "third": "3", "fourth": "4", "fifth": "5", "sixth": "6", "seventh": "7", "eighth": "8", "ninth": "9", "tenth": "10",
+            "eleventh": "11", "twelfth": "12", "thirteenth": "13", "fourteenth": "14", "fifteenth": "15", "sixteenth": "16", "seventeenth": "17",
+            "eighteenth": "18", "nineteenth": "19", "twentieth": "20", "thirtieth": "30", "fortieth": "40", "fiftieth": "50"}
+
+
 def street_tokens(text):
+    """Lower-case words of a street with street types and directions abbreviated and ordinals as digits (8th = Eighth = 8)."""
     words = re.sub(r"[^\w\s]", " ", html.unescape(str(text or "")).lower()).split()
-    return [SUFFIXES.get(w, w) for w in words]
+    out = []
+    for w in words:
+        digits = re.fullmatch(r"(\d+)(?:st|nd|rd|th)", w)
+        out.append(digits.group(1) if digits else ORDINALS.get(w) or SUFFIXES.get(w, w))
+    return out
+
+
+_DIRECTIONS = {"n", "s", "e", "w"}
+_TYPES = set(SUFFIXES.values()) - _DIRECTIONS
+_LEAD = re.compile(r"^(?:(?:on|at|near|by)\s+)?(?:the\s+)?(?:(?:north|south)?(?:east|west)?\s+)?(?:corner|intersection|junction)\s+of\s+", re.I)
+_JOIN = re.compile(r"\s+(?:and|&|at)\s+|\s*@\s*|\s*/\s*", re.I)
+
+
+def _is_street(tokens):
+    return any(t not in _NOT_CORE for t in tokens) and any(t in _TYPES for t in tokens)
+
+
+def numeric_ordinals(text):
+    """A street written for a geocoder: ordinal words as numerals ("Fifth Avenue" -> "5th Avenue"), which is how maps usually name them."""
+    def number(word):
+        digits = ORDINALS.get(word.lower())
+        if not digits:
+            return word
+        suffix = "th" if digits[-2:] in ("11", "12", "13") or digits[-1] not in "123" else {"1": "st", "2": "nd", "3": "rd"}[digits[-1]]
+        return digits + suffix
+    return re.sub(r"[A-Za-z]+", lambda m: number(m.group(0)), text)
+
+
+def parse_intersection(text):
+    """{"a", "b" (street tokens), "a_text", "b_text", "locality"} for "Street A and Street B", "A & B", "A at B", "Corner of A and B"
+    (with or without a trailing locality); None for anything else. Both sides must look like streets (a street type word), so
+    "Arts and Crafts" or a venue name with "and" in it is not an intersection."""
+    text = html.unescape(str(text or "")).strip()
+    if not text or re.match(r"^\d", text):
+        return None
+    segments = [p.strip() for p in text.split(",") if p.strip()]
+    head = _LEAD.sub("", segments[0].strip(" .")).strip(" .")
+    parts = _JOIN.split(head)
+    if len(parts) != 2:
+        return None
+    a, b = street_tokens(parts[0]), street_tokens(parts[1])
+    if not (_is_street(a) and _is_street(b)) or a == b:
+        return None
+    locality = None
+    for part in segments[1:]:
+        if not re.search(r"\d", part) and not re.fullmatch(r"[A-Za-z]{2}", part):
+            locality = norm_name(part)
+            break
+    return {"a": a, "b": b, "a_text": parts[0].strip(), "b_text": parts[1].strip(), "locality": locality}
+
+
+def street_like(wanted, name):
+    """(True, note) when OpenStreetMap's `name` is the street `wanted`: the same name once types and directions are set aside, any
+    direction that both state equal. A different street type ("Drive" for "Avenue") still matches, and the note says so."""
+    found = street_tokens(name)
+    core_a = [t for t in wanted if t not in _NOT_CORE]
+    core_b = [t for t in found if t not in _NOT_CORE]
+    if not core_a or core_a != core_b:
+        return False, ""
+    dir_a, dir_b = [t for t in wanted if t in _DIRECTIONS], [t for t in found if t in _DIRECTIONS]
+    if dir_a and dir_b and dir_a != dir_b:
+        return False, ""
+    type_a, type_b = [t for t in wanted if t in _TYPES], [t for t in found if t in _TYPES]
+    return True, "" if (not type_a or not type_b or type_a == type_b) else f"the listing says {' '.join(type_a)}, the map says {' '.join(type_b)}"
 
 
 def parse_street(address):
@@ -163,6 +236,11 @@ def candidate_for(event, area):
     if street:
         return {"kind": "address", "key": make_key("a", street[0], " ".join(street[1]), street[2] or "", _area_key(area)), "venue": venue, "address": address,
                 "street": street, "area": area, "names": place_names(venue, area)}
+    crossing = parse_intersection(address) or parse_intersection(venue)
+    if crossing:
+        cores = sorted(" ".join(t for t in side if t not in _NOT_CORE) for side in (crossing["a"], crossing["b"]))
+        return {"kind": "intersection", "key": make_key("x", *cores, crossing["locality"] or "", _area_key(area)), "venue": "", "address": address or venue,
+                "intersection": crossing, "area": area, "names": []}
     names = place_names(venue, area)
     if names and not re.match(r"^\s*\d", venue):
         return {"kind": "venue", "key": make_key("v", names[0], _area_key(area)), "venue": venue, "address": address, "names": names, "area": area}
@@ -195,6 +273,83 @@ def _in_area(lat, lon, area, slack_miles=5):
         return distance_m(lat, lon, float(area["latitude"]), float(area["longitude"])) <= (float(area.get("radius_miles", 25)) + slack_miles) * 1609.34
     except (KeyError, TypeError, ValueError):
         return False
+
+
+def accept_street(candidate, tokens, results):
+    """Points on the named street, from Nominatim results for it: highways whose name is that street, inside the search area and,
+    when the listing names a locality, in that locality."""
+    area, locality = candidate["area"], candidate["intersection"]["locality"]
+    points = []
+    for r in results or []:
+        try:
+            lat, lon = float(r["lat"]), float(r["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if r.get("category") != "highway" or not street_like(tokens, r.get("name") or "")[0] or not _in_area(lat, lon, area):
+            continue
+        names = {norm_name(v) for v in (r.get("address") or {}).values() if isinstance(v, str)}
+        if locality and locality not in names:
+            continue
+        points.append((lat, lon))
+    return points
+
+
+def bounding_box(points, margin_m):
+    """(south, west, north, east) around the points, widened by margin_m; None when that is more than about 8 km across."""
+    lats, lons = [p[0] for p in points], [p[1] for p in points]
+    dlat = margin_m / 111320
+    dlon = margin_m / (111320 * max(0.2, math.cos(math.radians(sum(lats) / len(lats)))))
+    box = (min(lats) - dlat, min(lons) - dlon, max(lats) + dlat, max(lons) + dlon)
+    return box if (box[2] - box[0]) * 111320 <= 8000 else None
+
+
+def _alternatives(token):
+    words = [word for word, digits in ORDINALS.items() if digits == token]
+    return "|".join([re.escape(token)] + words) if token.isdigit() else re.escape(token)
+
+
+def overpass_query(box, tokens_a, tokens_b):
+    """An Overpass QL query for the roads that might be either street (a loose name filter; the exact test is made on the answer)."""
+    def clause(tokens):
+        core = [t for t in tokens if t not in _NOT_CORE]
+        return ".*".join(f"({_alternatives(t)})" for t in core)
+    south, west, north, east = (f"{v:.6f}" for v in box)
+    return (f'[out:json][timeout:25];(way["highway"]["name"~"{clause(tokens_a)}",i]({south},{west},{north},{east});'
+            f'way["highway"]["name"~"{clause(tokens_b)}",i]({south},{west},{north},{east}););out body;>;out skel qt;')
+
+
+def shared_nodes(elements, tokens_a, tokens_b, merge_m=100):
+    """Where a way named like A and a way named like B share a node, as [{"lat", "lon", "node", "names", "note"}] (nearby nodes are one
+    place). The roads must actually be connected in OpenStreetMap; two streets that merely pass near each other do not count."""
+    if not isinstance(elements, list):
+        return []
+    ways = [e for e in elements if isinstance(e, dict) and e.get("type") == "way" and isinstance(e.get("nodes"), list) and isinstance(e.get("tags"), dict)]
+    nodes = {e["id"]: e for e in elements if isinstance(e, dict) and e.get("type") == "node" and "lat" in e and "lon" in e}
+    notes, side_a, side_b = [], [], []
+    for way in ways:
+        name = way["tags"].get("name")
+        if not isinstance(name, str):
+            continue
+        ok_a, note_a = street_like(tokens_a, name)
+        ok_b, note_b = street_like(tokens_b, name)
+        if ok_a and not ok_b:
+            side_a.append(way)
+            notes.append(note_a)
+        elif ok_b and not ok_a:
+            side_b.append(way)
+            notes.append(note_b)
+    places = []
+    for wa in side_a:
+        for wb in side_b:
+            for node_id in set(wa["nodes"]) & set(wb["nodes"]):
+                node = nodes.get(node_id)
+                if node is None:
+                    continue
+                if any(distance_m(p["lat"], p["lon"], node["lat"], node["lon"]) <= merge_m for p in places):
+                    continue
+                note = next((n for n in notes if n), "")
+                places.append({"lat": float(node["lat"]), "lon": float(node["lon"]), "node": node_id, "names": (wa["tags"]["name"], wb["tags"]["name"]), "note": note})
+    return places
 
 
 def accept_geocode(candidate, results):
@@ -403,6 +558,7 @@ class MediaService:
         self.store = MediaStore(os.path.join(folder, "media"), clock)
         self.fetcher, self.clock, self.sleep = fetcher, clock, sleep
         self.nominatim_interval, self._nominatim_at = nominatim_interval, 0.0
+        self._overpass_at = 0.0
         self.tiles_dir = os.path.join(folder, "media", "tiles")
         os.makedirs(self.tiles_dir, exist_ok=True)
         self._tile_template = None
@@ -416,7 +572,7 @@ class MediaService:
 
     # --- network (bounded; every call is to a fixed public API host through the safe fetcher) -------------------
 
-    def get_json(self, url):
+    def get_json(self, url, timeout=None):
         if url.startswith(NOMINATIM):
             # OpenStreetMap's usage policy: results are cached (they are), and a long-running program makes at most 4 lookups a minute
             wait = self._nominatim_at + self.nominatim_interval - self.clock()
@@ -424,7 +580,7 @@ class MediaService:
                 self.sleep(wait)
             self._nominatim_at = self.clock()
         self.stats["requests"] += 1
-        return json.loads(self.fetcher.fetch(url, check_robots=False).text)
+        return json.loads((self.fetcher.fetch(url, check_robots=False, timeout=timeout) if timeout else self.fetcher.fetch(url, check_robots=False)).text)
 
     def get_bytes(self, url, types):
         self.stats["requests"] += 1
@@ -461,6 +617,42 @@ class MediaService:
 
     # --- one place ---------------------------------------------------------------------------------------------------
 
+    def _resolve_intersection(self, candidate, record):
+        """Place a pin where the two named streets share a node in OpenStreetMap's road network, or refuse with the reason."""
+        crossing, area = candidate["intersection"], candidate["area"]
+        where = crossing["locality"] or (area or {}).get("display_name") or (area or {}).get("name") or ""
+        params = {"q": f"{numeric_ordinals(crossing['a_text'])}, {where}", "format": "jsonv2", "limit": 5, "addressdetails": 1}
+        country = str((area or {}).get("country") or "").lower()
+        if re.fullmatch(r"[a-z]{2}", country):
+            params["countrycodes"] = country
+        points = accept_street(candidate, crossing["a"], self.get_json(NOMINATIM + "?" + urlencode(params)))
+        if not points:
+            record["reason"] = f"'{crossing['a_text']}' was not found in the locality"
+            return None
+        box = bounding_box(points, INTERSECTION_RADIUS_M)
+        if box is None:
+            record["reason"] = f"the streets named '{crossing['a_text']}' are spread over too wide an area to check"
+            return None
+        wait = self._overpass_at + OVERPASS_INTERVAL - self.clock()
+        if wait > 0:
+            self.sleep(wait)
+        self._overpass_at = self.clock()
+        data = self.get_json(OVERPASS + "?" + urlencode({"data": overpass_query(box, crossing["a"], crossing["b"])}), timeout=OVERPASS_TIMEOUT)
+        places = shared_nodes(data.get("elements") if isinstance(data, dict) else None, crossing["a"], crossing["b"])
+        if not places:
+            record["reason"] = f"'{crossing['a_text']}' and '{crossing['b_text']}' do not meet in OpenStreetMap's road network"
+            return None
+        if len(places) > 1:
+            record["reason"] = f"'{crossing['a_text']}' and '{crossing['b_text']}' meet in more than one place"
+            return None
+        place = places[0]
+        if not _in_area(place["lat"], place["lon"], area):
+            record["reason"] = "the intersection lies outside the search area"
+            return None
+        note = f"; {place['note']}" if place["note"] else ""
+        return {"lat": place["lat"], "lon": place["lon"], "precision": "intersection", "confidence": "intersection", "approximate": True, "wikidata": None, "name": "",
+                "provenance": f"intersection of {place['names'][0]} and {place['names'][1]}: OpenStreetMap node {place['node']} is shared by both streets{note}"}
+
     def resolve(self, candidate):
         """The record for a candidate place: a verified location with a map and perhaps a venue photograph, or a cached refusal."""
         now = self.clock()
@@ -468,6 +660,11 @@ class MediaService:
         if candidate["kind"] == "source":
             location = {"lat": candidate["lat"], "lon": candidate["lon"], "precision": "venue", "confidence": "source", "approximate": False,
                         "provenance": candidate["provenance"], "wikidata": None, "name": candidate.get("venue", "")}
+        elif candidate["kind"] == "intersection":
+            location = self._resolve_intersection(candidate, record)
+            if not location:
+                self.stats["refused"] += 1
+                return record
         else:
             where = (candidate["area"] or {}).get("display_name") or (candidate["area"] or {}).get("name") or ""
             if candidate["kind"] == "venue":

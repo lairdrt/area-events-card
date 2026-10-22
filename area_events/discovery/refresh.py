@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import classify, images, photo_subject, registry
 from .place import CityResolver, locate_events
-from .core import FetchError, Fetcher, save_events
+from .core import FetchError, Fetcher, normalize_event_text, save_events
 from .location import LocationError, PROVIDERS, resolve_location
 from .merge import merge_events
 from .publish import FeedError, validate_feed
@@ -79,7 +79,7 @@ def build_document(config, cache, now, selected, location=None):
     records, status = {}, {}
     for source in selected:
         entry = cache.get(source.id, {})
-        events = _unexpired(entry.get("events", []), now)
+        events = [normalize_event_text(e) for e in _unexpired(entry.get("events", []), now)]  # also events cached before this cleanup existed
         last_ok = entry.get("last_success_at")
         stale = bool(last_ok) and now - datetime.fromisoformat(last_ok) > retention
         if stale:
@@ -181,6 +181,7 @@ def refresh(config, options, cache_path, output, lock_path, fetcher=None, locati
                 found, notes = source.discover(fetcher, entry.get("events", []), details=not options.get("no_details"),
                                                limit=options.get("limit"), location=location)
                 notify("source_processing", name=source.name)
+                found = [normalize_event_text(event) for event in found]  # entities left in listings are decoded once, here, before anything reads them
                 found, summary = locate_events(found, location, resolver)
                 notes["places"] = summary
                 notes["outside_area"] = summary["outside_area"]
