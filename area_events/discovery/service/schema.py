@@ -199,6 +199,104 @@ INSERT INTO sqlite_sequence (name, seq) VALUES ('changes', MAX((SELECT COALESCE(
                                                               (SELECT CAST(value AS INTEGER) FROM store_meta WHERE key = 'seq_before_2')));
 DELETE FROM store_meta WHERE key = 'seq_before_2';
 """),
+    (3, "normalized events, extraction results and revisions, event/candidate relation, extraction work", """
+CREATE TABLE events (
+  event_id     INTEGER PRIMARY KEY,
+  event_key    TEXT NOT NULL UNIQUE CHECK (length(event_key) BETWEEN 8 AND 60),
+  match_key    TEXT,                       -- hash of title, start and address: only set when an address is known; links duplicate candidates
+  title        TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 300),
+  description  TEXT,
+  starts_at    INTEGER NOT NULL,
+  ends_at      INTEGER,
+  timezone     TEXT,
+  venue_name   TEXT,
+  location_text TEXT,                      -- a written description of where, as the source gave it; not a venue name and not geocoded
+  address      TEXT,
+  location_status TEXT NOT NULL CHECK (location_status IN ('address', 'venue', 'description_only', 'unknown')),
+  source_url   TEXT,
+  status       TEXT NOT NULL CHECK (status IN ('complete', 'partial')),
+  missing_json TEXT NOT NULL DEFAULT '[]',
+  revision     INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+  extraction_id INTEGER,                   -- the extraction that produced the current values
+  first_extracted_at INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+CREATE INDEX events_start ON events(starts_at, event_id);
+CREATE INDEX events_match ON events(match_key) WHERE match_key IS NOT NULL;
+
+CREATE TABLE event_candidates (
+  candidate_id INTEGER PRIMARY KEY REFERENCES candidates(candidate_id) ON DELETE CASCADE,
+  event_id     INTEGER NOT NULL REFERENCES events(event_id) ON DELETE CASCADE,
+  role         TEXT NOT NULL CHECK (role IN ('primary', 'duplicate')),
+  linked_at    INTEGER NOT NULL
+);
+CREATE INDEX event_candidates_event ON event_candidates(event_id);
+
+CREATE TABLE extractions (
+  extraction_id INTEGER PRIMARY KEY,
+  candidate_id INTEGER NOT NULL REFERENCES candidates(candidate_id) ON DELETE CASCADE,
+  event_id     INTEGER REFERENCES events(event_id) ON DELETE SET NULL,
+  candidate_payload_hash TEXT NOT NULL,    -- the source revision this result was made from
+  extractor    TEXT NOT NULL,
+  version      INTEGER NOT NULL CHECK (version >= 1),
+  status       TEXT NOT NULL CHECK (status IN ('complete', 'partial', 'failed')),
+  failure_reason TEXT,
+  result_json  TEXT NOT NULL,
+  result_hash  TEXT NOT NULL,
+  worker       TEXT,
+  created_at   INTEGER NOT NULL,
+  UNIQUE (candidate_id, candidate_payload_hash, extractor, version, result_hash)
+);
+CREATE INDEX extractions_candidate ON extractions(candidate_id, extraction_id);
+
+CREATE TABLE event_revisions (
+  event_id     INTEGER NOT NULL REFERENCES events(event_id) ON DELETE CASCADE,
+  revision     INTEGER NOT NULL,
+  extraction_id INTEGER NOT NULL REFERENCES extractions(extraction_id) ON DELETE CASCADE,
+  changed_json TEXT NOT NULL,              -- {"field": [old, new]}; empty for the first revision
+  created_at   INTEGER NOT NULL,
+  PRIMARY KEY (event_id, revision)
+);
+
+CREATE TABLE processing_work (
+  candidate_id INTEGER NOT NULL REFERENCES candidates(candidate_id) ON DELETE CASCADE,
+  extractor    TEXT NOT NULL,
+  state        TEXT NOT NULL CHECK (state IN ('ready', 'leased', 'done', 'failed')),
+  done_hash    TEXT,
+  done_version INTEGER NOT NULL DEFAULT 0,
+  claimed_hash TEXT,
+  attempts     INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER NOT NULL DEFAULT 0,
+  last_fail_hash TEXT,
+  fail_version INTEGER NOT NULL DEFAULT 0,
+  lease_owner  TEXT,
+  lease_token  TEXT,
+  lease_until  INTEGER,
+  last_error   TEXT,
+  updated_at   INTEGER NOT NULL,
+  PRIMARY KEY (candidate_id, extractor),
+  CHECK ((state = 'leased') = (lease_token IS NOT NULL AND lease_until IS NOT NULL))
+);
+
+INSERT INTO store_meta (key, value) VALUES ('seq_before_3', COALESCE((SELECT CAST(seq AS TEXT) FROM sqlite_sequence WHERE name = 'changes'), '0'));
+CREATE TABLE changes_new (
+  seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity       TEXT NOT NULL CHECK (entity IN ('candidate', 'page', 'area', 'settings', 'discovery', 'event')),
+  entity_key   TEXT NOT NULL,
+  op           TEXT NOT NULL CHECK (op IN ('upsert', 'delete')),
+  kind         TEXT NOT NULL DEFAULT '',
+  payload_hash TEXT NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+INSERT INTO changes_new (seq, entity, entity_key, op, kind, payload_hash, created_at) SELECT seq, entity, entity_key, op, kind, payload_hash, created_at FROM changes;
+DROP TABLE changes;
+ALTER TABLE changes_new RENAME TO changes;
+CREATE INDEX changes_entity ON changes(entity, entity_key);
+DELETE FROM sqlite_sequence WHERE name = 'changes';
+INSERT INTO sqlite_sequence (name, seq) VALUES ('changes', MAX((SELECT COALESCE(MAX(seq), 0) FROM changes),
+                                                              (SELECT CAST(value AS INTEGER) FROM store_meta WHERE key = 'seq_before_3')));
+DELETE FROM store_meta WHERE key = 'seq_before_3';
+"""),
 )
 
 LATEST = MIGRATIONS[-1][0]

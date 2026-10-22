@@ -10,14 +10,18 @@
     python scripts/discovery.py changes [--after N] [--limit N]
     python scripts/discovery.py run     [--source san-diego-city] [--now]         one job, outside the scheduler
     python scripts/discovery.py inspect [--limit N] [--source KEY] [--title TEXT]
+    python scripts/discovery.py extract [--db PATH | --url http://host:8780 --token-file PATH] [--once]   an extraction worker (local or remote)
+    python scripts/discovery.py events  [--area ID] [--source KEY] [--limit N] | --event KEY           normalized events
 
 The commands other than `serve`, `stop` and `run` open the same database as the service would (this tool belongs to the Discovery host)
 and change configuration through the same DiscoveryControl contract the API uses. No tokens are printed.
 """
 import argparse
+import json
 import os
 import signal
 import sys
+import threading
 import time
 import tracemalloc
 import urllib.error
@@ -28,6 +32,8 @@ from datetime import datetime, timezone
 from .app import KNOWN_SOURCES, build, build_api, load_tokens
 from .contracts import CandidateQuery
 from .control import ControlError, CreateAreaRequest, RevisionConflict, SettingsRequest, UpdateAreaRequest
+from .events import EventQuery
+from .extraction import ExtractionService, HttpProcessingClient, StoredCandidateExtractor
 from .service import job_key_for
 
 DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "data", "discovery", "discovery.db")
@@ -93,9 +99,10 @@ def cmd_run(args):
 def cmd_serve(args):
     app = build(args.db)
     directory = os.path.dirname(os.path.abspath(args.db))
-    tokens, token_path = load_tokens(directory)
+    tokens, token_path = load_tokens(directory, process_token=True)
     app.register_known_sources()
     server = build_api(app, tokens, host=args.bind, port=args.port, allow_remote=args.allow_remote)
+    print(f"processing token for a remote extraction worker: {os.path.normpath(os.path.join(directory, 'api-process-token'))}", flush=True)
     for name in ("SIGINT", "SIGTERM"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), lambda *_: app.host.request_stop())
@@ -103,6 +110,8 @@ def cmd_serve(args):
         recovered = app.service.recover()
         server.start()
         app.host.start()
+        if not args.no_extract:
+            app.extraction.start()
         host, port = server.address[:2]
         print(f"discovery service running: database {os.path.normpath(args.db)}", flush=True)
         print(f"control API http://{host}:{port}/v1/  (bearer token in {os.path.normpath(token_path)})" + (f"; recovered {recovered} expired lease(s)" if recovered else ""), flush=True)
@@ -114,6 +123,89 @@ def cmd_serve(args):
         stopped = app.host.stop(timeout=120)
         app.close()
     print("stopped cleanly" if stopped else "stopped; a job was still running and will be recovered by lease expiry", flush=True)
+    return 0
+
+
+def _wait_for_stop(stop):
+    for name in ("SIGINT", "SIGTERM"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), lambda *_: stop.set())
+    while not stop.wait(1.0):
+        pass
+
+
+def cmd_extract(args):
+    """An extraction worker: with --db it reads and writes through this host's database-owning service code; with --url it uses only the API."""
+    extractor = StoredCandidateExtractor()
+    app = None
+    if args.url:
+        try:
+            with open(args.token_file, encoding="utf-8") as handle:
+                token = handle.read().strip()
+        except (OSError, TypeError):
+            print("--token-file must name the file holding the processing token", file=sys.stderr)
+            return 1
+        service, where = ExtractionService(HttpProcessingClient(args.url, token), extractor, time.time, worker_id=args.worker), args.url
+    else:
+        app = build(args.db, service_gate=False)
+        service, where = app.extraction, os.path.normpath(args.db)
+    try:
+        if args.once:
+            claimed = submitted = failed = 0
+            while True:
+                report = service.run_once()
+                claimed, submitted, failed = claimed + report.claimed, submitted + report.submitted, failed + report.failed
+                if not report.claimed:
+                    break
+            print(f"{where}: {claimed} item(s) claimed, {submitted} result(s) submitted, {failed} failed")
+            return 0 if not failed else 1
+        stop = threading.Event()
+        service.start()
+        print(f"extraction worker {args.worker} running against {where}; Ctrl+C to stop", flush=True)
+        _wait_for_stop(stop)
+        print("stopping...", flush=True)
+        return 0 if service.stop(30) else 1
+    finally:
+        if app is not None:
+            app.close()
+
+
+def _event_line(e):
+    return (f"{e.event_key}  {_when(e.starts_at)}  rev {e.revision}  {e.status:<8} {e.location_status:<16} {e.title[:48]}"
+            f"  [{e.address or e.venue_name or (e.location_text or '-')[:40]}]  ({', '.join(e.sources)})")
+
+
+def cmd_events(args):
+    app = build(args.db)
+    try:
+        if args.event:
+            detail = app.events.get(args.event)
+            e = detail.event
+            print(_event_line(e))
+            print(f"  description  {(e.description or '-')[:200]}")
+            print(f"  location     status {e.location_status}; venue {e.venue_name or '-'}; address {e.address or '-'}; text {(e.location_text or '-')[:120]}")
+            print(f"  missing      {', '.join(e.missing) or '-'}; source {e.source_url or '-'}")
+            for h in detail.history:
+                changed = json.dumps(h["changed"], ensure_ascii=False)[:300] if h["changed"] else "-"
+                print(f"  revision {h['revision']}  {_when(h['created_at'])}  {h['extractor']}@{h['version']}  changed: {changed}")
+            for name, entry in detail.evidence.items():
+                quote = next((r["quote"] for r in entry["evidence"] if r.get("quote")), None)
+                print(f"  evidence     {name:<12} from {entry['origin']}" + (f': "{quote[:80]}"' if quote else ""))
+            for link in detail.candidate_links:
+                print(f"  candidate    {link['candidate_key']} ({link['source_key']}, {link['role']})")
+            return 0
+        events, cursor = [], None
+        while len(events) < args.limit:
+            page = app.events.query(EventQuery(area_key=args.area, source_key=args.source, after=cursor, limit=min(args.limit - len(events), 200)))
+            events.extend(page.events)
+            cursor = page.next_cursor
+            if not cursor:
+                break
+        print(f"{len(events)} event(s)")
+        for e in events:
+            print(_event_line(e))
+    finally:
+        app.close()
     return 0
 
 
@@ -215,6 +307,7 @@ def cmd_status(args):
     try:
         status = app.reader.status()
         control = app.control.get_status()
+        work = app.processing.status(StoredCandidateExtractor.name, StoredCandidateExtractor.version)
     finally:
         app.close()
     s = control.settings
@@ -230,6 +323,8 @@ def cmd_status(args):
     print(f"candidates    {status.candidates}; evidence {status.evidence}; latest change {status.changes_latest_seq}")
     print(f"jobs          ready {status.jobs.ready}, running {status.jobs.leased}, completed {status.jobs.done}, retrying {status.jobs.retrying}, failed {status.jobs.failed}")
     print(f"last success  {_when(status.last_success_at)}")
+    print(f"events        {work.events} normalized; extraction pending {work.pending}, leased {work.leased}, retrying {work.retrying}, given up {work.failed}; "
+          f"results {dict(work.extractions) or '-'}")
     return 0
 
 
@@ -292,6 +387,7 @@ def main(argv=None):
     serve.add_argument("--bind", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8780)
     serve.add_argument("--allow-remote", action="store_true", help="allow a bind address other than loopback (the API always needs its token)")
+    serve.add_argument("--no-extract", action="store_true", help="do not run the local extraction worker (run `extract` separately or remotely)")
     stop = add("stop", "ask a running service to stop gracefully")
     stop.add_argument("--bind", default="127.0.0.1")
     stop.add_argument("--port", type=int, default=8780)
@@ -326,6 +422,16 @@ def main(argv=None):
     inspect.add_argument("--limit", type=int, default=20)
     inspect.add_argument("--source")
     inspect.add_argument("--title")
+    extract = add("extract", "run an extraction worker against this database or a remote service")
+    extract.add_argument("--url", help="the Discovery Service address; the worker then uses only the API")
+    extract.add_argument("--token-file", help="the file holding the processing token (with --url)")
+    extract.add_argument("--worker", default="extractor-cli")
+    extract.add_argument("--once", action="store_true", help="process what is pending, then exit")
+    events = add("events", "normalized events, or one event's detail with --event")
+    events.add_argument("--area")
+    events.add_argument("--source")
+    events.add_argument("--limit", type=int, default=20)
+    events.add_argument("--event")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")
@@ -337,7 +443,8 @@ def main(argv=None):
         elif args.action == "update" and args.revision is None:
             parser.error("areas update needs --revision")
     handlers = {"run": cmd_run, "serve": cmd_serve, "stop": cmd_stop, "status": cmd_status, "areas": cmd_areas, "settings": cmd_settings,
-                "pause": cmd_pause_resume, "resume": cmd_pause_resume, "changes": cmd_changes, "inspect": cmd_inspect}
+                "pause": cmd_pause_resume, "resume": cmd_pause_resume, "changes": cmd_changes, "inspect": cmd_inspect, "extract": cmd_extract,
+                "events": cmd_events}
     return handlers[args.command](args)
 
 

@@ -19,6 +19,7 @@ from discovery.service import app as app_module
 from discovery.service import repositories, store as store_module
 from discovery.service.contracts import CandidateQuery
 from discovery.service.repositories import JobRepository, PageRepository, RetentionPolicy, SourceRepository, SourceSpec
+from discovery.service.schema import LATEST
 from discovery.service.service import DiscoveryConfig, job_key_for
 from discovery.service.store import DiscoveryStore, StorageUnavailable
 from discovery.service.urls import canonical_url, url_key
@@ -107,16 +108,16 @@ class Schema(Fixture):
 
     def test_migrations_apply_once_in_order_and_a_newer_database_is_refused(self):
         self.build().close()
-        extra = store_module.MIGRATIONS + ((3, "test column", "ALTER TABLE sources ADD COLUMN note TEXT;"),)
+        extra = store_module.MIGRATIONS + ((LATEST + 1, "test column", "ALTER TABLE sources ADD COLUMN note TEXT;"),)
         store = DiscoveryStore(self.db, migrations=extra).open()
-        self.assertEqual(store.version(), 3)
+        self.assertEqual(store.version(), LATEST + 1)
         store.close()
         store = DiscoveryStore(self.db, migrations=extra).open()  # reopening applies nothing again
         with store.read() as connection:
-            self.assertEqual([r[0] for r in connection.execute("SELECT version FROM schema_migrations ORDER BY version")], [1, 2, 3])
+            self.assertEqual([r[0] for r in connection.execute("SELECT version FROM schema_migrations ORDER BY version")], list(range(1, LATEST + 2)))
         store.close()
         with self.assertRaises(RuntimeError):
-            DiscoveryStore(self.db).open()  # this program knows only version 2
+            DiscoveryStore(self.db).open()  # this program knows only the latest version
         with self.assertRaises(ValueError):
             DiscoveryStore(os.path.join(self.folder.name, "x.db"), migrations=((2, "a", "SELECT 1;"), (1, "b", "SELECT 1;"))).open()
 
@@ -335,7 +336,7 @@ class Recovery(Fixture):
         code = ("import sys, json; sys.path.insert(0, sys.argv[1]); from discovery.service.app import build; app = build(sys.argv[2]); "
                 "s = app.reader.status(); print(json.dumps([s.candidates, s.pages, s.jobs.done, s.schema_version])); app.close()")
         out = subprocess.run([sys.executable, "-c", code, os.path.join(ROOT, "area_events"), self.db], capture_output=True, text=True, timeout=60)
-        self.assertEqual(json.loads(out.stdout), [4, 5, 1, 2], out.stderr)
+        self.assertEqual(json.loads(out.stdout), [4, 5, 1, LATEST], out.stderr)
 
     def test_a_locked_or_failing_database_pauses_discovery_for_a_bounded_time_and_then_it_resumes(self):
         built = self.build(store_options={"busy_timeout_ms": 50, "write_retries": 2, "retry_sleep": 0.001})

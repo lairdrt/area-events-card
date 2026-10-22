@@ -23,7 +23,7 @@ from discovery.service.control import (CONTROL_SCHEMA, CreateAreaRequest, NotFou
 from discovery.service.host import HostConfig
 from discovery.service.repositories import SourceSpec
 from discovery.service.scheduler import AreaPacing, SchedulerConfig
-from discovery.service.schema import MIGRATIONS
+from discovery.service.schema import LATEST, MIGRATIONS
 from discovery.service.store import DiscoveryStore
 from tests.test_discovery_service import Clock, FakeClient, SPEC, city_pages
 from tests.test_site_discovery import CITY_URL
@@ -182,7 +182,7 @@ class Areas(Fixture):
             tx.execute("DELETE FROM changes WHERE seq = 2")  # a pruned sequence number must never be reused
         store.close()
         built = self.build()
-        self.assertEqual(built.store.version(), 2)
+        self.assertEqual(built.store.version(), LATEST)
         batch = built.reader.changes(0)
         self.assertEqual([(c.seq, c.entity, c.kind) for c in batch.changes], [(1, "candidate", "candidate.changed")])
         built.control.pause()

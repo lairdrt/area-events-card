@@ -326,8 +326,8 @@ class RetentionPolicy:
 class Retention:
     """Bounded growth. Never removes content that a page's current state or a retained candidate's evidence refers to."""
 
-    def __init__(self, changes):
-        self.changes = changes
+    def __init__(self, changes, events):
+        self.changes, self.events = changes, events
 
     def prune(self, tx, now, policy):
         removed = {}
@@ -341,6 +341,8 @@ class Retention:
             self.changes.append(tx, "candidate", row["candidate_key"], row["payload_hash"], now, op="delete")
         removed["candidates"] = tx.execute("DELETE FROM candidates WHERE starts_at IS NOT NULL AND starts_at < ?",
                                            (now - policy.candidate_days_after_start * 86400,)).rowcount
+        for key in self.events.delete_before(tx, now - policy.candidate_days_after_start * 86400):
+            self.changes.append(tx, "event", key, "0" * 64, now, op="delete", kind="event.removed")
         removed["pages"] = tx.execute("""DELETE FROM pages WHERE page_id NOT IN (SELECT page_id FROM candidates WHERE page_id IS NOT NULL)
                                            AND page_id NOT IN (SELECT page_id FROM evidence WHERE page_id IS NOT NULL)
                                            AND COALESCE((SELECT MAX(last_seen_at) FROM source_pages sp WHERE sp.page_id = pages.page_id), first_seen_at) < ?""",

@@ -8,9 +8,13 @@
     POST  /v1/discovery/pause|resume     control   idempotent
     GET   /v1/changes?after=N&limit=K    read      the durable change feed (hints are not needed; this is authoritative)
     POST  /v1/service/stop               control   graceful shutdown of the serving process
+    GET   /v1/events?area=&source=&from=&to=&after=&limit=   read   normalized events (bounded pages; `after` is the previous page's cursor)
+    GET   /v1/events/{key}               read      one event with its revision history and field evidence
+    POST  /v1/processing/claim|submit|fail           process   an extraction worker's calls (a "process" token cannot read areas or events)
+    GET   /v1/processing/status          read | process   work counts
 
-Every request needs `Authorization: Bearer <token>`. A token has scopes ("read", "control"; control includes read): a read token
-can never change anything. Failed attempts are rate limited per client. Request bodies are bounded (8 KB), must be JSON objects, and
+Every request needs `Authorization: Bearer <token>`. A token has one scope: "read", "control" (includes read) or "process" (only the
+/v1/processing routes). A read token can never change anything, and only a process token can submit extraction results. Failed attempts are rate limited per client. Request bodies are bounded (8 KB), must be JSON objects, and
 mutations need `Content-Type: application/json`. Responses carry no CORS headers and are never cached. Errors are
 `{"error": {"code", "message"}}` with an explicit status (400, 401, 403, 404, 409, 413, 415, 429, 500). The API takes no SQL, no file paths
 and no addresses to fetch. It binds to loopback unless remote binding is explicitly allowed, and refuses to start without tokens.
@@ -22,18 +26,25 @@ import logging
 import re
 import secrets
 import threading
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 from .control import (CONTROL_SCHEMA, ControlError, CreateAreaRequest, RevisionConflict, SettingsRequest, UpdateAreaRequest, ValidationFailed)
+from .events import EventQuery
 
 log = logging.getLogger("area-events.discovery.api")
 MAX_BODY = 8192
+MAX_PROCESSING_BODY = 65536   # a submitted extraction result carries a description and evidence
 MIN_TOKEN_LENGTH = 32
 AUTH_FAILURES = 5
 AUTH_WINDOW = 60
 AREA_PATH = re.compile(r"^/v1/areas/([A-Za-z0-9]{8,40})$")
-SCOPES = ("read", "control")
+SCOPES = ("read", "control", "process")
+
+
+def body_limit(path):
+    return MAX_PROCESSING_BODY if path.startswith("/v1/processing/") else MAX_BODY
 
 
 def to_jsonable(value):
@@ -51,13 +62,16 @@ def to_jsonable(value):
 class ApiTokens:
     """Bearer tokens and what each may do. Immutable after construction; compared in constant time."""
 
-    def __init__(self, control_token, read_token=None):
-        for token in (control_token, read_token):
-            if token is not None and (not isinstance(token, str) or len(token) < MIN_TOKEN_LENGTH):
+    def __init__(self, control_token, read_token=None, process_token=None):
+        if control_token is None:
+            raise ValueError("a control token is required")
+        given = [t for t in (control_token, read_token, process_token) if t is not None]
+        for token in given:
+            if not isinstance(token, str) or len(token) < MIN_TOKEN_LENGTH:
                 raise ValueError(f"tokens must have at least {MIN_TOKEN_LENGTH} characters")
-        if control_token == read_token:
-            raise ValueError("the read and control tokens must differ")
-        self._tokens = tuple(((control_token.encode(), "control"),) + (((read_token.encode(), "read"),) if read_token else ()))
+        if len(set(given)) != len(given):
+            raise ValueError("the control, read and process tokens must differ")
+        self._tokens = tuple((token.encode(), scope) for token, scope in ((control_token, "control"), (read_token, "read"), (process_token, "process")) if token)
 
     @staticmethod
     def generate():
@@ -81,8 +95,9 @@ class ApiError(Exception):
 class DiscoveryApi:
     """Routes a request to the DiscoveryControl and DiscoveryReader contracts. Knows nothing about HTTP sockets."""
 
-    def __init__(self, control, reader, tokens: ApiTokens, clock, on_stop=None):
+    def __init__(self, control, reader, tokens: ApiTokens, clock, on_stop=None, processing=None, events=None):
         self._control, self._reader, self._tokens, self._clock, self._on_stop = control, reader, tokens, clock, on_stop
+        self._processing, self._events = processing, events
         self._failures, self._failure_lock = {}, threading.Lock()
 
     def handle(self, method, target, headers, body, client):
@@ -123,9 +138,11 @@ class DiscoveryApi:
     def _need(scope, wanted):
         if wanted == "control" and scope != "control":
             raise ApiError(403, "forbidden", "this token may only read")
+        if wanted == "process" and scope != "process":
+            raise ApiError(403, "forbidden", "only a processing token may do this")
 
-    def _json(self, headers, body):
-        if len(body) > MAX_BODY:
+    def _json(self, headers, body, limit=MAX_BODY):
+        if len(body) > limit:
             raise ApiError(413, "too_large", "the request body is too large")
         if not body:
             return {}
@@ -146,6 +163,12 @@ class DiscoveryApi:
             raise ValidationFailed(f"unknown fields: {', '.join(unknown)[:100]}")
 
     def _route(self, method, path, query, headers, body, scope):
+        if scope == "process" and not (path.startswith("/v1/processing/") and (method == "POST" or path == "/v1/processing/status")):
+            raise ApiError(403, "forbidden", "a processing token may only use the processing routes")
+        if path.startswith("/v1/processing/"):
+            return self._processing_route(method, path, query, headers, body, scope)
+        if path == "/v1/events" or path.startswith("/v1/events/"):
+            return self._events_route(method, path, query)
         if method == "GET" and path == "/v1/discovery/status":
             return 200, {"schema": CONTROL_SCHEMA, "status": to_jsonable(self._control.get_status())}
         if method == "GET" and path == "/v1/areas":
@@ -202,6 +225,74 @@ class DiscoveryApi:
         raise ApiError(405 if known else 404, "method_not_allowed" if known else "not_found", "method not allowed" if known else "not found")
 
 
+    def _events_route(self, method, path, query):
+        if self._events is None:
+            raise ApiError(404, "not_found", "this service does not serve events")
+        if method != "GET":
+            raise ApiError(405, "method_not_allowed", "method not allowed")
+        if path == "/v1/events":
+            unknown = sorted(set(query) - {"area", "source", "from", "to", "after", "limit"})
+            if unknown:
+                raise ValidationFailed(f"unknown parameters: {', '.join(unknown)[:100]}")
+
+            def one(name):
+                return (query.get(name) or [None])[0]
+            try:
+                limit = int(one("limit") or 50)
+            except ValueError as error:
+                raise ValidationFailed("limit must be an integer") from error
+            return 200, to_jsonable(self._events.query(EventQuery(one("area"), one("source"), self._time(one("from"), "from"), self._time(one("to"), "to"),
+                                                                  one("after"), max(1, limit))))
+        return 200, to_jsonable(self._events.get(path[len("/v1/events/"):]))
+
+    @staticmethod
+    def _time(value, name):
+        """A UTC epoch in seconds, or an ISO-8601 time with an offset."""
+        if value is None:
+            return None
+        if re.fullmatch(r"[0-9]{1,12}", value):
+            return int(value)
+        try:
+            moment = datetime.fromisoformat(value)
+        except ValueError as error:
+            raise ValidationFailed(f"{name} must be a UTC epoch or an ISO-8601 time with an offset") from error
+        if moment.tzinfo is None:
+            raise ValidationFailed(f"{name} needs a UTC offset")
+        return int(moment.timestamp())
+
+    def _processing_route(self, method, path, query, headers, body, scope):
+        if self._processing is None:
+            raise ApiError(404, "not_found", "this service does not offer processing")
+        routes = ("/v1/processing/claim", "/v1/processing/submit", "/v1/processing/fail", "/v1/processing/status")
+        if path not in routes:
+            raise ApiError(404, "not_found", "not found")
+        if method == "GET" and path == "/v1/processing/status":
+            extractor = (query.get("extractor") or ["stored-candidate"])[0]
+            try:
+                version = int((query.get("version") or ["1"])[0])
+            except ValueError as error:
+                raise ValidationFailed("version must be an integer") from error
+            return 200, to_jsonable(self._processing.status(extractor, version))
+        if method != "POST" or path == "/v1/processing/status":
+            raise ApiError(405, "method_not_allowed", "method not allowed")
+        self._need(scope, "process")
+        data = self._json(headers, body, MAX_PROCESSING_BODY)
+        if path.endswith("claim"):
+            self._only(data, ("worker", "extractor", "version", "limit", "lease_s"))
+            if not {"worker", "extractor", "version"} <= set(data):
+                raise ValidationFailed("worker, extractor and version are required")
+            return 200, to_jsonable(self._processing.claim(data["worker"], data["extractor"], data["version"], data.get("limit", 5), data.get("lease_s", 300)))
+        if path.endswith("submit"):
+            self._only(data, ("worker", "extractor", "version", "candidate_key", "lease_token", "result"))
+            if not {"extractor", "version", "candidate_key", "lease_token", "result"} <= set(data):
+                raise ValidationFailed("extractor, version, candidate_key, lease_token and result are required")
+            return 200, to_jsonable(self._processing.submit(data["candidate_key"], data["extractor"], data["version"], data["lease_token"], data["result"], data.get("worker")))
+        self._only(data, ("extractor", "version", "candidate_key", "lease_token", "error"))
+        if not {"extractor", "version", "candidate_key", "lease_token"} <= set(data):
+            raise ValidationFailed("extractor, version, candidate_key and lease_token are required")
+        return 200, self._processing.fail(data["candidate_key"], data["extractor"], data["version"], data["lease_token"], data.get("error"))
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "area-events-discovery"
     sys_version = ""
@@ -211,7 +302,7 @@ class _Handler(BaseHTTPRequestHandler):
         length = self.headers.get("Content-Length", "0")
         if self.headers.get("Transfer-Encoding") or not length.isdigit():
             return self._send(411, {"error": {"code": "length_required", "message": "Content-Length is required"}})
-        if int(length) > MAX_BODY:
+        if int(length) > body_limit(urlsplit(self.path).path):
             return self._send(413, {"error": {"code": "too_large", "message": "the request body is too large"}})
         body = self.rfile.read(int(length)) if int(length) else b""
         status, payload = self.server.api.handle(self.command, self.path, self.headers, body, self.client_address[0])

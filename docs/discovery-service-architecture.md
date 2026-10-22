@@ -111,6 +111,73 @@ and p95 ≈ 0.5 s (dominated by thread start-up of the test clients), 24 writes,
 **Deferred / limitations.** Reader and DoSD adapters; HA config-entry and WebSocket wiring; a processing consumer; marking vanished
 candidates withdrawn; a smarter adaptive scheduler than the simple pacing above; TLS (use loopback or a trusted network/reverse proxy).
 
+## 0c. As implemented (Milestone 2C: independent extraction into the one database)
+
+**Decision.** There is exactly one authoritative database: `discovery.db`, owned by the Discovery Service on its host. There is no `events.db`, no
+processing database, no per-city or per-card database and no replication. Discovery, Extraction (and later Classification, Geolocation,
+Validation and Presentation) are separate objects that own algorithms and in-memory state, not data. Remote components use the versioned API,
+never a shared SQLite file. The Phase A two-database design in sections 2, 3, 7 and 8 is superseded; those sections are kept for history and
+patched where they named `events.db`.
+
+**Schema (migration 3).** `events` (one row per real-world event: stable `event_key`, title, description, UTC start/end, timezone, `venue_name`,
+`location_text`, `address`, `location_status`, source URL, `status`, `missing_json`, `revision`), `event_candidates` (each candidate links to one
+event as `primary` or `duplicate`), `extractions` (every result ever submitted, tied to the candidate's `payload_hash` it was made from, the
+extractor name and version; unique per result), `event_revisions` (per revision: the extraction and `{field: [old, new]}`), `processing_work`
+(per candidate and extractor: lease, claimed hash, `done_hash`/`done_version`, attempts, next attempt). The `changes` table accepts the entity
+`event` (`event.created`, `event.updated`, `event.removed`). Foreign keys cascade from candidates, so retention removes an expired candidate's
+extractions, and events that started long ago are pruned with their history.
+
+**Areas and events.** Events are not copied per area or per card. An area reaches an event through the sources that area uses
+(`area_sources` → candidates → `event_candidates`), so overlapping areas share rows and a source crawled once serves every area that uses it.
+Events have **no coordinates** yet (no geolocation component), so area filtering is by serving source, and each event says how its location is
+known (`location_status`: `address`, `venue`, `description_only`, `unknown`). Nothing is geocoded or invented.
+
+**Identity.** `event_key = ev-<sha256(first candidate_key)[:20]>`, kept for the life of the event. Candidate and event are 1:1 unless another
+candidate has the same normalized title, start and street address (only when an address exists): it is then linked as a `duplicate`
+(provenance only; the primary candidate defines the fields). Cross-source duplicate detection beyond that is backlog.
+
+**Processing contract** (`processing.py`, `discovery.processing.v1`). Work is derived, not queued: a candidate is pending for an extractor
+version when it has no completed result for its *current* `payload_hash` at that version. A source revision or a better extractor therefore
+makes work reappear by itself.
+- `claim(worker, extractor, version, limit, lease_s)`: one write transaction leases the oldest pending candidates (leases expire; retries respect
+  their backoff) and returns each candidate's payload, evidence rows and the *stored* readable text of its page. No website is fetched again.
+- `submit(candidate_key, extractor, version, lease_token, result)`: **one transaction** checks the lease, checks the candidate still has the leased
+  `payload_hash` (otherwise `stale_result`: the result is discarded and the item is released), validates the result (types, lengths, no unknown
+  fields, at most 60 KB), stores the extraction, creates/updates the event and its revision, marks the work done and appends the change record.
+  All of it commits together or none of it does. An identical retry returns `replayed` without writing.
+- `fail(...)`: bounded retries (5 min doubling, 4 attempts), then the item waits until its source revision or the extractor version changes.
+- `status(extractor, version)`: counts. The service recomputes `location_status`, `missing` and `status` itself; it never trusts them from a worker.
+
+**ExtractionService** (`extraction.py`). Constructor-injected client (`LocalProcessingClient` or `HttpProcessingClient`), extractor, clock and
+config; its own thread; `run_once`, `start`, `stop`, `status`; capped error backoff; an extractor exception fails that item only. It holds no
+database handle (a test enforces this). `StoredCandidateExtractor@1` is a pure function of one stored candidate: ISO times with an offset become
+UTC epochs (a time *without* an offset is a recorded failure, never a guess); an end before the start is dropped; the source's `venue` text is
+kept as `venue_name` only when it is short and not a sentence, otherwise as `location_text`; a missing address is taken from the event's own
+description only when it names exactly one street address; each field carries its origin and the candidate's evidence references (quotes exist
+only where the text was found verbatim). It reuses the existing `textloc` and `evidence` algorithms. No confidence numbers are produced.
+
+**API additions.** `GET /v1/events` (filters `area`, `source`, `from`, `to`, keyset `after`, `limit` ≤ 200), `GET /v1/events/{key}` (revision
+history and field evidence), `POST /v1/processing/claim|submit|fail` and `GET /v1/processing/status`. Tokens now have three scopes: `read`,
+`control` and `process`. Only a `process` token may claim or submit, and it may use nothing else; read and control tokens cannot submit results.
+The process token lives in `<db dir>/api-process-token` (mode 600). Result submissions may be 64 KB; every other body stays at 8 KB.
+
+**CLI.** `serve` also runs a local extraction worker (`--no-extract` to disable); `extract --db PATH | --url URL --token-file FILE [--once]` runs a
+worker locally or remotely; `events [--area ID] [--source KEY] [--limit N] | --event KEY`; `status` shows event and extraction counts.
+
+**Known product-quality backlog** (not addressed by 2C; row counts are not evidence of quality):
+1. Automatic discovery of previously unknown event sources in an area.
+2. Extraction accuracy: the City listing gave the multi-day carnival a 7:00 AM–11:00 PM span although its description lists different evening hours per day; the City adapter appends a California city only, so non-California street addresses stay partial; the stored `venue` is almost always a description of a location, not a venue name.
+3. Classification ambiguity.
+4. Missing or ambiguous locations: 8 of the 20 stored City events have no street address (`description_only`).
+5. Recurring events (each occurrence is its own candidate today).
+6. Rescheduling and cancellation (a changed time updates the event; a vanished event is not yet marked withdrawn).
+7. Source disappearance and withdrawal.
+8. Duplicate identity across sources (only same title, start and address merge).
+9. PDFs, scanned flyers and bulletins.
+10. Discovery freshness and source coverage (one live source today).
+
+---
+
 ## 1. Findings from the current code
 
 ### A. Reusable capabilities (EXISTING)
@@ -200,21 +267,16 @@ The integration (`client.py`, `hub.py`, `websocket_api.py`) and the card talk on
 
 ```mermaid
 flowchart LR
-  subgraph A["Discovery host (PLANNED service, EXISTING fetchers/adapters)"]
-    SCH["DiscoveryScheduler"] --> JOB[("discovery.db<br/>jobs, pages, candidates")]
-    FW["FetchWorker(s)<br/>EXISTING SafeFetcher / Fetcher + adapters"] --> JOB
-    JOB --> API["Discovery API v1<br/>(local or HTTP)"]
+  subgraph H["Discovery host: ONE process group, ONE database (discovery.db)"]
+    SCH["DiscoveryScheduler"] --> DB[("discovery.db<br/>jobs, pages, candidates,<br/>events, extractions, areas")]
+    FW["DiscoveryService<br/>EXISTING SafeFetcher + adapters"] --> DB
+    PROC["Processing contract v1<br/>(local or HTTP)"] --> DB
+    EQ["EventQueryService (read only)"] --> DB
+    DB --> API["HTTP API /v1 (tokens: read, control, process)"]
   end
-  subgraph B["Processing / HA host"]
-    XW["ExtractionWorker<br/>EXISTING parsers"] --> PDB[("events.db<br/>processing + read model")]
-    CW["Classifier EXISTING contract"] --> PDB
-    GW["Resolver PLANNED contract<br/>EXISTING media.py logic"] --> PDB
-    VW["Validator PLANNED<br/>EXISTING merge.py"] --> PDB
-    EW["Enrichers<br/>EXISTING media.py imagery"] --> PDB
-    Q["EventQueryService PLANNED"] --> PDB
-    HA["EXISTING integration + 20 cards"] --> Q
-  end
-  API -- "changes after seq N" --> XW
+  XW["ExtractionService<br/>no database; local or remote"] -- "claim / submit / fail" --> PROC
+  CW["Classifier, Resolver, Validator, Enricher (later)<br/>same pattern: contract in, result out"] -.-> PROC
+  HA["EXISTING integration + 20 cards"] -- "events, changes (read token)" --> API
 ```
 
 ---
@@ -223,11 +285,10 @@ flowchart LR
 
 | Database | Host | Owner (only writer) | Contents | Accessed by others through |
 |---|---|---|---|---|
-| `discovery.db` (+ `-wal`, `-shm`) | Discovery host, `<data>/discovery/` | `DiscoveryService` via `DiscoveryStore` | sources, schedules, URLs, pages, bounded content, fetch log, source candidates, evidence, jobs, metrics, change log, consumer checkpoints | `DiscoveryReader` (local adapter in process, or the HTTP API); never the file |
-| `events.db` | Processing/HA host, `<data>/events/` | `ProcessingService` (one writer) | change-feed checkpoint, extracted events, decisions (classification, resolution, validation), merged validated events, enrichment references, query indexes | `EventQueryService` (read connections) |
+| `discovery.db` (+ `-wal`, `-shm`) | Discovery host, `<data>/discovery/` | the database-owning service (`DiscoveryStore`, one writer) | sources, schedules, areas, URLs, pages, bounded content, fetch log, candidates, evidence, jobs, change log, **and (2C) normalized events, extraction results and revisions, processing work** | `DiscoveryReader`, `EventQueryService`, the Processing contract (in process or over the HTTP API); never the file |
 | `media/` files + `index.json` | Processing host | Enrichment (`MediaService`) | maps, photographs, tiles | `/api/v1/media/<name>` |
 
-Ownership rules: raw source material and crawl history exist **only** in `discovery.db`; derived decisions exist **only** in `events.db`; `events.db` stores the keys and content hashes of the discovery records it used, never copies of pages. Card preferences stay in Home Assistant user data.
+Ownership rules: there is **one** authoritative database. Raw source material, crawl history and derived events all live in `discovery.db`; components own their algorithms and in-memory state, never a database of their own; derived rows hold keys and content hashes of the evidence they came from, never copies of pages. Card preferences stay in Home Assistant user data. (The Phase A proposal of a second `events.db` was dropped in Milestone 2C.)
 
 ---
 
@@ -423,7 +484,7 @@ class DiscoveryControl:                   # what Presentation/administration may
     def set_mode(self, mode, intensity) -> None: ...
 
 # Processing host (PLANNED unless marked)
-class ProcessingService:                  # pulls changes, runs the pipeline, writes events.db, acknowledges
+class ProcessingService:                  # SUPERSEDED by the Processing contract (processing.py): workers claim work and submit results; the service writes discovery.db
     def __init__(self, reader: DiscoveryReader, store: "EventStore", extractor, classifier, resolver, validator, enrichers, clock): ...
 class EventQueryService:                  # the only path from cards to events
     def __init__(self, store: "EventStore"): ...
@@ -488,7 +549,7 @@ stateDiagram-v2
 ```mermaid
 sequenceDiagram
   participant D as DiscoveryService (discovery.db)
-  participant P as ProcessingService (events.db)
+  participant P as Worker (no database)
   participant Q as EventQueryService
   participant C as Card (via integration)
   D->>D: job complete: upsert candidate, append change seq=101
@@ -500,7 +561,7 @@ sequenceDiagram
   Q-->>C: events (read connection; never waits for P or D)
 ```
 
-- **Pull with consumer-held checkpoint**: processing stores `last_seq` in `events.db` in the **same transaction** as its derived writes, so a crash replays at most one batch; every upsert is idempotent (`candidate_key`, `payload_hash`), so replay creates no duplicates.
+- **Checkpoint with the result (as implemented in 2C)**: there is no worker-held checkpoint. Pending work is derived from the candidate's current `payload_hash` and the extractor version, and the checkpoint (`processing_work.done_hash`) commits in the **same transaction** as the extraction and the event, so a crash loses nothing and repeats at most one item; every write is idempotent.
 - **Acknowledgement** is advisory for retention and backlog metrics only; losing it loses nothing.
 - **Outage**: discovery keeps working and keeps the change log (bounded as above); processing retries `changes()` with backoff (5 s → 5 min) and catches up. If the log was pruned past its checkpoint, `resync_required` makes it page through current candidates by key instead.
 - **Rerunning a module**: processing can recompute any stage from `candidate`/`page` records (by key, through `DiscoveryReader`) without crawling again; results are versioned by implementation name (e.g. `classifier: keyword-lexicon`).
@@ -511,33 +572,24 @@ sequenceDiagram
 
 ```mermaid
 flowchart TB
-  subgraph One["Milestones 2A–2D: one computer (HA OS, Raspberry Pi 4)"]
-    subgraph App["Area Events app container (EXISTING)"]
-      E1["EXISTING Engine + API :8765"]
-      DS1["PLANNED DiscoveryService (thread group)"]
-      DB1[("discovery.db")]
-      PS1["PLANNED ProcessingService"]
-      EDB1[("events.db")]
-      DS1 --- DB1
-      PS1 --- EDB1
-      PS1 -- "LocalDiscoveryReader (in process)" --> DS1
-    end
-    HA1["Home Assistant Core: EXISTING integration + cards"] -- "HTTP /api/v1 (token)" --> E1
+  subgraph One["Milestones 2A-2C: one computer"]
+    DS1["Discovery service host: scheduler, discovery workers, extraction worker, API"] --- DB1[("discovery.db (the only database)")]
   end
+  HA1["Home Assistant Core: integration + cards (later milestone)"] -- "HTTP /v1 (token)" --> DS1
 ```
 
 ```mermaid
 flowchart LR
-  subgraph CA["Computer A: discovery host (later)"]
-    DS2["DiscoveryService + Scheduler"] --- DB2[("discovery.db")]
-    API2["Discovery API v1 (HTTPS, bearer token)"] --- DS2
+  subgraph CA["Computer A: the Discovery service host"]
+    DS2["Discovery, scheduler, EventQueryService, Processing contract"] --- DB2[("discovery.db")]
+    API2["HTTP API /v1 (bearer tokens)"] --- DS2
   end
-  subgraph CB["Computer B: HA host"]
-    PS2["ProcessingService"] --- EDB2[("events.db")]
-    Q2["EventQueryService"] --- EDB2
-    HA2["Integration + cards"] --> Q2
+  subgraph CB["Computer B: workers and Home Assistant"]
+    XW2["ExtractionService (HttpProcessingClient)"]
+    HA2["Integration + cards (async client)"]
   end
-  PS2 -- "HttpDiscoveryReader: changes / candidate / page / acknowledge" --> API2
+  XW2 -- "claim / submit / fail (process token)" --> API2
+  HA2 -- "events / changes (read token)" --> API2
 ```
 
 Remote rules: logical contracts are identical in both deployments (`LocalDiscoveryReader` and `HttpDiscoveryReader` implement one interface); the SQLite file is never shared over a network; every call carries `schema` and a bearer token (the EXISTING token mechanism in `server.py`); all calls are idempotent and paginated; batch size bounds memory on both sides.
@@ -548,7 +600,7 @@ Remote rules: logical contracts are identical in both deployments (`LocalDiscove
 
 | Concern | Design |
 |---|---|
-| Writers | SQLite allows **one active writer**. `discovery.db`: the writer is `DiscoveryStore.writer()`, used by the fetch workers' completion step and the scheduler, each holding `BEGIN IMMEDIATE` for milliseconds (no network, no parsing inside); `busy_timeout=5000` makes concurrent attempts wait instead of failing. `events.db`: only `ProcessingService` writes. |
+| Writers | SQLite allows **one active writer**. `discovery.db`: the writer is `DiscoveryStore.writer()`, used by the fetch workers' completion step and the scheduler, each holding `BEGIN IMMEDIATE` for milliseconds (no network, no parsing inside); `busy_timeout=5000` makes concurrent attempts wait instead of failing. Processing workers never write: they submit results through the Processing contract and the same single writer stores them. |
 | Readers | WAL lets readers proceed during writes. API handlers and `EventQueryService` open read-only connections per thread (`PRAGMA query_only=ON`); card reads never block discovery writes, and a long read never blocks the writer (only checkpointing waits, bounded by `wal_autocheckpoint`). |
 | Transaction owners | Job claim/complete/fail: `JobRepository` (called by `FetchWorker`); plan and prune: `DiscoveryScheduler`; source registration: `DiscoveryControl`; processing upserts and checkpoint: `ProcessingService`. |
 | Parsing | adapters and parsers run on the worker thread between claim and complete; their CPU time never holds a transaction. |
@@ -556,7 +608,7 @@ Remote rules: logical contracts are identical in both deployments (`LocalDiscove
 | Slow geocoder or imagery | they run in processing workers with their EXISTING rate limits; discovery is unaware of them. |
 | Database busy beyond the timeout | the operation is retried with jittered backoff up to 3 times; the job's lease is then left to expire (it will be re-fetched), and the failure is counted in `status()`. |
 | Database full / disk budget reached / I/O error | the scheduler enters `paused: storage` (no new claims, so no fetches whose results could not be stored), runs `prune()`, retries a probe write every 60 s, resumes automatically; `status()` and the app log say why. In-flight results are dropped and their jobs re-run later: nothing is acknowledged that was not written. |
-| Corrupt database | `PRAGMA quick_check` at start; on failure the file is moved aside and a new one created (discovery re-crawls); `events.db` keeps serving the last validated events meanwhile. |
+| Corrupt database | `PRAGMA quick_check` at start; on failure the file is moved aside and a new one created (discovery re-crawls and extraction re-derives every event from the new candidates). With one database there is no second copy to keep serving: back the file up (SQLite online backup or a copy while stopped). |
 | Host politeness | one `HostPolicy` per process enforces robots.txt, Crawl-delay and spacing for every worker; intensity changes the number of jobs, never these limits. |
 
 ---
@@ -585,9 +637,9 @@ The EXISTING workbench (`workbench.py`) gains a third input: `python scripts/wor
 |---|---|---|---|
 | **2A Store** | `DiscoveryStore` + repositories create `discovery.db` (migrations, WAL); a CLI seeds sources from `sources.json`, records a fetched page and its candidates, survives restart; workbench prints them | schema migrates from empty and is idempotent; pragmas set on every connection; foreign keys enforced; claim/complete/fail/lease-expiry semantics; restart recovery; duplicate completion is a no-op; prune keeps budgets; `sqlite3` import works in the app container | app unchanged; the store is not used by the runtime; rollback = revert the commit |
 | **2B Service (shadow)** | `DiscoveryService` with one fetch worker and the simple scheduler runs inside the app beside the EXISTING engine (`discovery_service: shadow`); registry sources' pages and candidates continuously enter SQLite; `/api/v1/discovery/status` | discovery continues while the engine runs a profile; a stalled downstream (fake consumer that never reads) does not stop discovery; restart keeps pending jobs; intensity/pause work; requests stay within HostPolicy limits; no change in card answers (byte comparison of `/api/v1/profiles/<id>`) | option `off` restores today exactly |
-| **2C Extraction worker** | `ProcessingService` consumes the change feed locally and runs the EXISTING extraction/normalization into `events.db`; workbench shows candidate → extracted event | replay of a batch creates no duplicates; a stalled extraction worker does not stop discovery; a crash mid-batch resumes from the checkpoint | feeds still come from the EXISTING engine |
+| **2C Extraction worker** | DONE (see 0c): an independent extraction worker consumes stored candidates through the Processing contract and the service writes normalized events into `discovery.db`; workbench shows candidate → extracted event | replay of a batch creates no duplicates; a stalled extraction worker does not stop discovery; a crash mid-batch resumes from the checkpoint | feeds still come from the EXISTING engine |
 | **2D Remote boundary** | `HttpDiscoveryReader` against the API of a second process (same machine, other port) | disconnect/reconnect loses no change; idempotent retries; schema version check; token required | local reader remains the default |
-| **2E Query store and cards** | classification, resolution, validation and enrichment write validated events; `EventQueryService` answers the EXISTING profile API from `events.db`; 20 card simulations | 20 concurrent simulated clients with different areas and filters get correct, independent results; reads do not block writes; byte-compatible API; HA runtime verification on the Pi | option switches the feed source back to the EXISTING engine |
+| **2E Query store and cards** | classification, resolution, validation and enrichment write validated events; `EventQueryService` answers the EXISTING profile API from `discovery.db`; 20 card simulations | 20 concurrent simulated clients with different areas and filters get correct, independent results; reads do not block writes; byte-compatible API; HA runtime verification on the Pi | option switches the feed source back to the EXISTING engine |
 
 Order note: 2C before 2D, because the remote boundary is easier to test once there is a real consumer; 2E last, since it is the only stage that changes what cards see.
 
@@ -607,7 +659,7 @@ Simulated (unit or process-level, in `tests/`):
 | Card reads do not block writes | a long-running read transaction during 100 writer commits; writer latency stays under the busy timeout |
 | Contention is bounded | many workers completing at once; no `database is locked` escapes; retries ≤ 3; p95 commit time measured |
 | Temporary database failure recovers | inject `sqlite3.OperationalError('database is locked')` and disk-full on the writer; service pauses, then resumes; no acknowledged record missing |
-| Remote disconnection loses no evidence | `HttpDiscoveryReader` with a transport that drops every third call; final `events.db` equals the local run |
+| Remote disconnection loses no evidence | `HttpDiscoveryReader` with a transport that drops every third call; the event tables equal the local run |
 | No prohibited mutable global state | a test scans new modules (AST) for module-level assignments of dict/list/set/objects other than constants, for `global` statements, and for module-level connections |
 | Replacement needs no consumer change | install an alternative `Classifier`, `Resolver` and `DiscoveryReader` through the composition root only; consumers' tests unchanged |
 
