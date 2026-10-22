@@ -100,3 +100,23 @@ Open items before building: confirm the USGS service terms (a short question to 
 - The precision sample is 60 venues; percentages carry wide margins.
 - I did not verify Google's storage terms from the source, nor Geoapify's storage terms, nor any USGS service terms; MapTiler, Stadia and Mapbox were not evaluated.
 - No Raspberry Pi measurement was made; the load figures are from the request sizes and times seen on this PC.
+
+## 8. Follow-up: USGS terms and finished samples (2026-10-21)
+
+**Terms.** USGS's own FAQ, "What are the terms of use/licensing of map services and data from The National Map?" (usgs.gov/faqs/what-are-terms-uselicensing-map-services-and-data-national-map), says: "Map services and data downloaded from The National Map are free and in the public domain. There are no restrictions; however, we request that the following acknowledgment statement of the originating agency be included in products and data derived from our map services when citing, copying, or reprinting": **"Map services and data available from U.S. Geological Survey, National Geospatial Program."** It states no caching restriction, no key, no account and no rate limit. Not found: a written rate limit or fair-use policy for `basemap.nationalmap.gov`, and whether the commercially licensed road data that some US Topo products contain (a caveat reported for the PDF product) affects the `USGSTopo` service. Both are worth one question to tnm_help@usgs.gov before shipping. Politeness in the meantime: one request per second, a descriptive User-Agent, results cached by position.
+
+**Provider choice.** USGS stays the pick: it is the only free, keyless service found whose own terms grant public-domain use and place no restriction on caching, and it needs no tile stitching or rendering stack. Alternatives considered and set aside: Google (billing, storage restrictions), OSM tile servers (bulk and offline use prohibited), Geoapify (key, mandatory credits, storage terms unstated), OpenFreeMap (free, keyless, open vector tiles, but they must be drawn by a vector renderer such as MapLibre, which the Alpine app cannot run; viable only for client-side maps).
+
+**Samples** (git-ignored, `review/location-imagery/samples/`, 640 x 360 JPEG, label size tuned with `dpi=150` so street names stay readable when the card shows them about 300 px wide; see `tests/at-card-size-300px.jpg`):
+
+| File | Event | Coordinates and how verified | JPEG |
+|---|---|---|---|
+| `sandiego-viejas-arena-graphite-520m.jpg` (+ `light`) | Weezer, Viejas Arena, 5500 Canyon Crest Dr, San Diego | 32.77381, -117.07454: the geocoder's POI named "Viejas Arena" (5500 Canyon Crest Drive), and Wikipedia's coordinates for Viejas Arena lie 7.9 m away | 31 KB (+26 KB) |
+| `austin-bass-concert-hall-graphite-520m.jpg` (+ `light`) | Ali Wong, Bass Concert Hall, 2350 Robert Dedman Dr, Austin | 30.28582, -97.73098: supplied by the UT Austin source; the geocoder's "Bass Concert Hall" POI is 29 m away | 32 KB (+29 KB) |
+
+WebP versions were 12 to 17 KB. Each image is one request of about 91 to 94 KB PNG taking 0.4 to 0.65 s from this PC; the pin, the "MAP" tag and the acknowledgment are drawn locally (Pillow and numpy, used only by the investigation script `experiments/location-imagery/make_samples.py`). The "graphite" look recolours the USGS colours (dark ground, light linework, orange main roads); "light" is USGS as served.
+
+**Accuracy limits.** The pin shows the venue's coordinates, which for a large building such as an arena or a concert hall is the building, not an entrance. USGS labels streets but rarely names buildings or businesses, so the venue name must come from the card, not the map. Coverage is the United States only.
+
+**Production sketch** (unchanged from section 6): do the recolour and pin in the card (CSS filter or a pre-tinted cache), or cache the plain JPEG and draw the pin, tag and credit as DOM elements; the second avoids any image library on the Pi 4 and keeps the credit as real text.
+
