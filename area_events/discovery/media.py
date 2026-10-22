@@ -532,6 +532,18 @@ class MediaStore:
         except OSError:
             return None
 
+    def has_file(self, name):
+        return bool(re.fullmatch(r"[a-z0-9][a-z0-9.-]{3,60}\.(svg|jpg)", name or "")) and os.path.isfile(os.path.join(self.files, name))
+
+    def intact(self, record):
+        """Is every file a verified record points at still stored? (A record whose files are gone must not be advertised.)"""
+        if not record.get("ok"):
+            return True
+        names = list((record.get("map") or {}).get("files", {}).values())
+        if record.get("photo"):
+            names.append(record["photo"].get("file"))
+        return bool(names) and all(self.has_file(name) for name in names)
+
     def prune(self):
         """Drop expired records, and files no record points at; bound the number of records."""
         now = self.clock()
@@ -727,7 +739,8 @@ class MediaService:
                 if candidate:
                     wanted[candidate["key"]][1] += 1
         records = self.store.index["records"]
-        todo = [(count, c) for c, count in wanted.values() if c["key"] not in records]
+        # a place is looked up again when it has no record, or when its stored files have gone missing (the record then cannot serve)
+        todo = [(count, c) for c, count in wanted.values() if c["key"] not in records or not self.store.intact(records[c["key"]])]
         todo.sort(key=lambda item: -item[0])
         done = 0
         for _, candidate in todo[:limit]:
@@ -751,7 +764,7 @@ class MediaService:
         for area, events in feeds:
             for event in events:
                 candidate = candidate_for(event, area)
-                if candidate and candidate["key"] not in have:
+                if candidate and (candidate["key"] not in have or not self.store.intact(have[candidate["key"]])):
                     keys.add(candidate["key"])
         return len(keys)
 
@@ -771,10 +784,15 @@ class MediaService:
                 continue
             media = {}
             photo = record.get("photo")
+            if photo and not self.store.has_file(photo["file"]):
+                photo = None  # never point the card at a file that is not there
             if photo:
                 media["photo"] = {"url": f"{MEDIA_URL}/{photo['file']}", "venue": photo["venue"], "creator": photo["creator"], "license": photo["license"],
                                   "license_url": photo["license_url"], "source_url": photo["source_url"], "attribution_required": photo["attribution_required"]}
             where = record["location"]
+            if not all(self.store.has_file(name) for name in record["map"]["files"].values()):
+                out.append({**event, "media": media} if media else event)
+                continue
             media["map"] = {"light": f"{MEDIA_URL}/{record['map']['files']['light']}", "dark": f"{MEDIA_URL}/{record['map']['files']['dark']}",
                             "confidence": where["confidence"], "precision": where["precision"], "approximate": where["approximate"], "credit": record["map"]["credit"]}
             out.append({**event, "media": media})

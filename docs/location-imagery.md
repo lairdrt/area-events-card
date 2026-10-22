@@ -76,3 +76,7 @@ The card reads the effective Home Assistant theme (`hass.themes.darkMode`) on ev
 ## Event text
 
 Sources sometimes leave HTML entities in what they publish ("Porto Vista Hotel &amp; Suites"). The engine decodes them once, where events enter (and for events cached before the fix), in the title, venue, address, description, organizer, price, neighbourhood, category tags and source label. Only complete entities are decoded (named, decimal and hexadecimal; unknown names and invalid numbers are left as written; "AT&T" and "Q&A" are untouched), a second pass happens only for a double-encoded entity ("&amp;amp;"), and web addresses and identifiers are never changed. Markup is not interpreted: the card shows every field as text.
+
+## Staying put
+
+A map that has loaded stays across polls, filters and background updates (a tile whose event is unchanged keeps its image element). It goes only when the app stops listing it, which happens when the event's location evidence changes. If the other theme's variant fails to load after a map has loaded, the card keeps the variant that loaded and tries again at the next theme change. A tile whose images all failed (a busy or restarting app) tries again on later polls, at least a minute apart and three times at most. The app lists a map or photograph only while its files are stored, and draws a place again if its files have gone.

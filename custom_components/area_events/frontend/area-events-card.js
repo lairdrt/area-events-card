@@ -9,7 +9,7 @@
  * visual editor; the filter chips are the viewer's own choices, saved per card instance (see "Preferences").
  */
 
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-ce1c4bd8";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-63f5f1e0";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
@@ -604,6 +604,8 @@ function safeMedia(raw, event) {
 const PIN_SVG = '<svg viewBox="0 0 30 40" aria-hidden="true" focusable="false"><path d="M15 39 L5 23 A13 13 0 1 1 25 23 Z" fill="#f08a24" stroke="#fff" stroke-width="2.4" stroke-linejoin="round"/>' +
   '<circle cx="15" cy="14" r="5.2" fill="#25282d"/></svg>';
 const MEDIA_BADGES = { venue: "VENUE", map: "MAP" };
+const IMAGE_RETRIES = 3;
+const IMAGE_RETRY_MS = 60000;
 const INFO_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/>' +
   '<path d="M12 11v6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="12" cy="7.2" r="1.5" fill="currentColor"/></svg>';
 // The credit a map must carry (OpenFreeMap's required text, the OpenStreetMap copyright page) lives behind a small info button on the tile.
@@ -812,8 +814,10 @@ class AreaEventsCard extends HTMLElement {
     }
     const after = JSON.stringify([this._status, this._feedError, this._feed && this._feed.key]);
     // Nothing new changes nothing on screen; new events are merged into the existing tiles in place.
-    if (before === after && this._els) this._updateHeader();
-    else this._applyData();
+    if (before === after && this._els) {
+      this._updateHeader();
+      if (reply && (this._tiles || []).some((tile) => this._retryable(tile))) this._applyData();
+    } else this._applyData();
 
     const state = reply && reply.state;
     const busy = reply && (state === "pending" || state === "discovering" || state === "unavailable" || reply.refreshing || this._discovering());
@@ -1061,6 +1065,12 @@ class AreaEventsCard extends HTMLElement {
     this._refreshFilters();
   }
 
+  /** A tile whose images all failed (a busy or restarting app, a dropped connection) may try again on a later poll, a few times and not at once. */
+  _retryable(tile) {
+    const failed = tile.el && tile.el._aeFailed;
+    return Boolean(failed) && (tile.retries || 0) < IMAGE_RETRIES && Date.now() - failed >= IMAGE_RETRY_MS;
+  }
+
   /**
    * Reconciles the tiles with the events: a tile whose event is unchanged keeps its element (so images do not
    * reload or flash), changed events get a new tile, vanished ones are removed, and the order follows the events.
@@ -1075,8 +1085,9 @@ class AreaEventsCard extends HTMLElement {
       used.add(key);
       const signature = JSON.stringify(event);
       const old = previous.get(key);
-      if (old && old.signature === signature) return old;
-      return { event, key, signature, el: this._renderEvent(event), matches: categoriesFor(event, extra) };
+      const same = old && old.signature === signature;
+      if (same && !this._retryable(old)) return old;
+      return { event, key, signature, el: this._renderEvent(event), matches: categoriesFor(event, extra), retries: same ? (old.retries || 0) + 1 : 0 };
     });
     this._tiles = tiles;
 
@@ -1370,6 +1381,9 @@ class AreaEventsCard extends HTMLElement {
     if (candidates.length) {
       let current = candidates.shift();
       const img = document.createElement("img");
+      let requested; // the address last given to the image, and the one that last loaded (img.src itself is the resolved absolute address)
+      let loaded;
+      const show = (url) => { requested = url; img.src = url; };
       const pin = this._el("span", "pin");
       pin.innerHTML = PIN_SVG;
       pin.hidden = true;
@@ -1434,6 +1448,7 @@ class AreaEventsCard extends HTMLElement {
       img.decoding = "async";
       img.referrerPolicy = "no-referrer";
       img.addEventListener("load", () => {
+        loaded = requested;
         img.className = "loaded";
         art.hidden = true;
         const badge = MEDIA_BADGES[current.kind];
@@ -1451,19 +1466,27 @@ class AreaEventsCard extends HTMLElement {
         tag.hidden = false;
         pin.hidden = chip.hidden = info.hidden = true;
         collapse(false);
+        if (current.kind === "map" && loaded && requested !== loaded) {
+          // the other theme's variant failed after this map had loaded: the map is still good, so keep showing the one that loaded
+          // (the next theme change tries again) instead of giving up on the map
+          show(loaded);
+          return;
+        }
+        loaded = undefined;
         current = candidates.shift();
         if (current) {
           img.alt = current.alt;
-          img.src = current.url();
+          show(current.url());
         } else {
           img.remove();
+          item._aeFailed = Date.now(); // every image failed: later polls may try again (see _retryImages)
         }
       });
       // a theme change swaps the map being shown for its other variant (only the one in use is ever requested)
       item._aeTheme = () => {
-        if (current && current.kind === "map" && img.src !== current.url()) img.src = current.url();
+        if (current && current.kind === "map" && requested !== current.url()) show(current.url());
       };
-      img.src = current.url();
+      show(current.url());
       image.append(img, pin, chip, info, credit);
     }
     if (event.category) image.append(this._el("span", "category", event.category));

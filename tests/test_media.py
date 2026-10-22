@@ -683,6 +683,8 @@ class Serving(unittest.TestCase):
         self.engine.media.store.index["records"][key] = {"ok": True, "at": 1.0, "venue": "Viejas Arena", "location": {"lat": 1, "lon": 2, "precision": "address", "confidence": "address", "approximate": True, "provenance": "x"},
                                                          "map": {"files": {"light": "mabcdef0123456789-light.svg", "dark": "mabcdef0123456789-dark.svg"}, "credit": media.MAP_CREDIT}}
         self.engine.media.store.index["saved_at"] = 1_800_000_100
+        for name in ("mabcdef0123456789-light.svg", "mabcdef0123456789-dark.svg"):
+            self.engine.media.store.put_file(name, b"<svg/>")
         shown = self.engine.snapshot("p1", since=feed["generated_at"])
         self.assertNotIn("unchanged", shown, "new imagery is sent even though the feed itself did not change")
         self.assertIn("media", shown["events"][0])
@@ -846,3 +848,46 @@ class HaServing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StoredFilesGoMissing(unittest.TestCase):
+    """A verified record whose files have gone from the store must not be advertised to the card (it would 404 and the card would
+    fall back to the illustration); the place is drawn again by the next cycle."""
+
+    setUp = Service.setUp
+    service = Service.service
+
+    def test_missing_map_files_are_not_advertised_and_are_drawn_again(self):
+        service = self.service(FakeFetcher(self.result, wiki=Wikimedia()))
+        service.cycle([(SD, [self.viejas])])
+        record = next(iter(service.store.index["records"].values()))
+        shown = service.annotate([self.viejas], SD)[0]["media"]
+        self.assertIn("map", shown)
+        for name in record["map"]["files"].values():
+            os.remove(os.path.join(service.store.files, name))
+        self.assertEqual(service.annotate([self.viejas], SD)[0].get("media", {}).get("map"), None, "no address of a file that is not there")
+        self.assertEqual(service.pending([(SD, [self.viejas])]), 1)
+        self.assertEqual(service.cycle([(SD, [self.viejas])]), 1)
+        again = service.annotate([self.viejas], SD)[0]["media"]
+        self.assertEqual(again["map"]["light"], shown["map"]["light"], "the same versioned name, now served again")
+        self.assertTrue(service.store.read_file(record["map"]["files"]["light"]))
+
+    def test_a_missing_photo_is_left_out_but_the_map_stays(self):
+        service = self.service(FakeFetcher(self.result, wiki=Wikimedia()))
+        service.cycle([(SD, [self.viejas])])
+        record = next(iter(service.store.index["records"].values()))
+        self.assertIn("photo", service.annotate([self.viejas], SD)[0]["media"])
+        os.remove(os.path.join(service.store.files, record["photo"]["file"]))
+        shown = service.annotate([self.viejas], SD)[0]["media"]
+        self.assertNotIn("photo", shown)
+        self.assertIn("map", shown)
+
+    def test_intact_records_and_refusals_are_left_alone(self):
+        service = self.service(FakeFetcher(self.result, wiki=Wikimedia()))
+        service.cycle([(SD, [self.viejas])])
+        before = service.stats["requests"]
+        self.assertEqual(service.cycle([(SD, [self.viejas])]), 0)
+        self.assertEqual(service.stats["requests"], before, "nothing is looked up for a place whose files are all there")
+        refused = {"venue": "Nowhere Hall", "address": "1 Nowhere St, San Diego"}
+        service.cycle([(SD, [refused])])
+        self.assertEqual(service.cycle([(SD, [refused])]), 0, "a cached refusal is not retried")

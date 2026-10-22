@@ -1251,8 +1251,91 @@ test("a map that fails after a theme change falls back without a broken image", 
   hass.themes = { darkMode: true };
   card.hass = hass;
   img.listeners.error({});
-  assert.equal(img.removed, true);
+  assert.equal(img.src, "/area_events/media/m0123456789abcdef-light.svg", "the variant that loaded stays; a failed swap does not cost the map");
+  assert.equal(img.removed, undefined);
+  img.listeners.load({});
+  assert.equal(tagOf(tile).textContent, "MAP");
+  assert.equal(pinOf(tile).hidden, false);
+  img.listeners.error({});
+  assert.equal(img.removed, true, "only when the loaded variant itself fails is the map given up");
   assert.equal(artOf(tile).hidden, false, "the illustration, no broken image");
+});
+
+test("a theme swap that fails is tried again at the next theme change", async () => {
+  const feed = makeFeed({ events: [withMedia("Weezer", { map: MEDIA().map })] });
+  const hass = themed(feed, false);
+  const card = await make({}, { hass });
+  const img = imgOf(tileFor(card, "Weezer"));
+  img.listeners.load({});
+  hass.themes = { darkMode: true };
+  card.hass = hass;
+  img.listeners.error({});
+  img.listeners.load({});
+  hass.themes = { darkMode: false };
+  card.hass = hass;
+  assert.equal(img.src, "/area_events/media/m0123456789abcdef-light.svg");
+  hass.themes = { darkMode: true };
+  card.hass = hass;
+  assert.equal(img.src, "/area_events/media/m0123456789abcdef-dark.svg");
+});
+
+test("a tile whose images all failed tries again on later polls, a few times, while the app still lists the map", async () => {
+  const feed = makeFeed({ events: [withMedia("Weezer", { map: MEDIA().map })] });
+  const card = await make({}, { hass: themed(feed, false) });
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const img = imgOf(tileFor(card, "Weezer"));
+      img.listeners.error({});
+      assert.equal(img.removed, true);
+      now += 5000;
+      await pollAgain(card);
+      assert.equal(imgOf(tileFor(card, "Weezer")), img, "not at once: the failure is respected for a minute");
+      now += 61000;
+      await pollAgain(card);
+      if (attempt < 3) {
+        assert.notEqual(imgOf(tileFor(card, "Weezer")), img, `attempt ${attempt}: a new image is requested`);
+        assert.equal(imgOf(tileFor(card, "Weezer")).src, "/area_events/media/m0123456789abcdef-light.svg");
+      }
+    }
+    const last = imgOf(tileFor(card, "Weezer"));
+    last.listeners.error({});
+    now += 61000;
+    await pollAgain(card);
+    assert.equal(imgOf(tileFor(card, "Weezer")), last, "after three retries the tile stays on its illustration");
+    assert.equal(artOf(tileFor(card, "Weezer")).hidden, false);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("a loaded map is not re-requested by polling, filtering or unchanged updates", async () => {
+  const feed = makeFeed({ events: [withMedia("Weezer", { map: MEDIA().map })] });
+  const card = await make({}, { hass: themed(feed, false) });
+  const tile = tileFor(card, "Weezer");
+  const img = imgOf(tile);
+  img.listeners.load({});
+  const before = created.img;
+  for (let i = 0; i < 3; i++) await pollAgain(card);
+  assert.equal(tileFor(card, "Weezer"), tile, "the same tile element");
+  assert.equal(imgOf(tile), img);
+  assert.equal(created.img, before, "no new image element was created");
+  assert.equal(img.src, "/area_events/media/m0123456789abcdef-light.svg");
+  assert.equal(tagOf(tile).textContent, "MAP");
+});
+
+test("a map that was corrected or removed by the app is replaced at once, never kept", async () => {
+  const withMap = makeFeed({ events: [withMedia("Weezer", { map: MEDIA().map })] });
+  let next = answer(withMap, { revision: 10 });
+  const card = await make({}, { reply: () => next });
+  imgOf(tileFor(card, "Weezer")).listeners.load({});
+  const without = makeFeed({ generated_at: withMap.generated_at, events: [event("Weezer", 2, { venue: "Viejas Arena", illustration: { category: "music" } })] });
+  next = answer(without, { revision: 11 });
+  await pollAgain(card);
+  assert.equal(imgOf(tileFor(card, "Weezer")), undefined, "the evidence is gone, so the map is gone");
+  assert.equal(artOf(tileFor(card, "Weezer")).hidden, false);
 });
 
 test("show_images: false shows no photographs, no maps and no badges", async () => {
@@ -1377,6 +1460,10 @@ test("the credit control follows the image that is showing: none for event photo
   assert.equal(creditButtonOf(tile).hidden, false, "the dark map keeps its credit control, pin and badge");
   assert.equal(pinOf(tile).hidden, false);
   assert.equal(tagOf(tile).textContent, "MAP");
+  img.listeners.error({});
+  assert.equal(img.src, "/area_events/media/m0123456789abcdef-light.svg", "a failed dark variant falls back to the loaded light one");
+  img.listeners.load({});
+  assert.equal(creditButtonOf(tile).hidden, false);
   img.listeners.error({});
   assert.equal(img.removed, true);
   assert.equal(creditButtonOf(tile).hidden, true, "no credit control on the illustration");
