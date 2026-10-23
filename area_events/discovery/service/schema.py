@@ -297,6 +297,31 @@ INSERT INTO sqlite_sequence (name, seq) VALUES ('changes', MAX((SELECT COALESCE(
                                                               (SELECT CAST(value AS INTEGER) FROM store_meta WHERE key = 'seq_before_3')));
 DELETE FROM store_meta WHERE key = 'seq_before_3';
 """),
+    (4, "media enrichment: resolved places and photographs, cached file metadata, per-candidate media", """
+CREATE TABLE media_records (
+  key          TEXT PRIMARY KEY CHECK (length(key) BETWEEN 3 AND 80),
+  ok           INTEGER NOT NULL CHECK (ok IN (0, 1)),
+  at           INTEGER NOT NULL,
+  record_json  TEXT NOT NULL                -- a verified place (map, venue photograph), a cached refusal, or a cached source photograph
+);
+
+CREATE TABLE media_files (
+  name         TEXT PRIMARY KEY CHECK (length(name) BETWEEN 5 AND 64),
+  media_type   TEXT NOT NULL,
+  bytes        INTEGER NOT NULL CHECK (bytes BETWEEN 1 AND 2000000),
+  stored_at    INTEGER NOT NULL              -- the bytes live in the managed media folder, named by content
+);
+
+CREATE TABLE candidate_media (
+  candidate_id INTEGER PRIMARY KEY REFERENCES candidates(candidate_id) ON DELETE CASCADE,
+  payload_hash TEXT NOT NULL,                -- the candidate revision this was made for
+  media_json   TEXT NOT NULL,                -- {"image", "photo", "map"}: what the card may show, with credits
+  illustration_json TEXT,                    -- the category illustration decision
+  complete     INTEGER NOT NULL CHECK (complete IN (0, 1)),   -- 1 once every lookup for this candidate has finished
+  updated_at   INTEGER NOT NULL
+);
+CREATE INDEX candidate_media_open ON candidate_media(complete, updated_at);
+"""),
 )
 
 LATEST = MIGRATIONS[-1][0]

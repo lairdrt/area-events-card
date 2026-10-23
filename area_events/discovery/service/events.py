@@ -40,6 +40,8 @@ class EventRecord:
     updated_at: int
     sources: tuple = ()
     candidates: tuple = ()
+    media: Optional[dict] = None            # {"image", "photo", "map"} with credits, from the media enrichment service; absent until it has run
+    illustration: Optional[dict] = None     # the category illustration decision (category, strength, reasons)
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,9 @@ def missing_fields(fields):
 
 
 class EventRepository:
+    def __init__(self, media=None):
+        self._media = media   # MediaRepository (optional): where an event's imagery is read from
+
     # --- writes (inside the processing transaction) ------------------------------------------------------------------
 
     def apply(self, tx, candidate_id, candidate_key, fields, extraction_id, now):
@@ -161,9 +166,10 @@ class EventRepository:
                                                            JOIN sources s ON s.source_id = c.source_id WHERE ec.event_id=? ORDER BY 1""", (row["event_id"],)))
         candidates = tuple(r[0] for r in connection.execute("""SELECT c.candidate_key FROM event_candidates ec JOIN candidates c USING (candidate_id)
                                                               WHERE ec.event_id=? ORDER BY ec.role DESC, c.candidate_key""", (row["event_id"],)))
+        media, illustration = self._media.for_event(connection, row["event_id"]) if self._media is not None else (None, None)
         return EventRecord(row["event_key"], row["title"], row["description"], row["starts_at"], row["ends_at"], row["timezone"], row["venue_name"],
                            row["location_text"], row["address"], row["location_status"], row["source_url"], row["status"], tuple(json.loads(row["missing_json"])),
-                           row["revision"], row["updated_at"], sources, candidates)
+                           row["revision"], row["updated_at"], sources, candidates, media, illustration)
 
     def query(self, connection, query):
         clauses, params = [], []

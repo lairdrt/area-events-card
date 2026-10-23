@@ -10,6 +10,7 @@
     POST  /v1/service/stop               control   graceful shutdown of the serving process
     GET   /v1/events?area=&source=&from=&to=&after=&limit=   read   normalized events (bounded pages; `after` is the previous page's cursor)
     GET   /v1/events/{key}               read      one event with its revision history and field evidence
+    GET   /v1/media/{name}               read      a cached picture (event photograph, venue photograph or map) by its content-derived name
     POST  /v1/processing/claim|submit|fail           process   an extraction worker's calls (a "process" token cannot read areas or events)
     GET   /v1/processing/status          read | process   work counts
 
@@ -42,6 +43,7 @@ MIN_TOKEN_LENGTH = 32
 AUTH_FAILURES = 5
 AUTH_WINDOW = 60
 AREA_PATH = re.compile(r"^/v1/areas/([A-Za-z0-9]{8,40})$")
+MEDIA_PATH = re.compile(r"^/v1/media/([a-z0-9][a-z0-9.-]{3,60}\.(?:svg|jpg|png|webp))$")
 SCOPES = ("read", "control", "process")
 
 
@@ -97,9 +99,9 @@ class ApiError(Exception):
 class DiscoveryApi:
     """Routes a request to the DiscoveryControl and DiscoveryReader contracts. Knows nothing about HTTP sockets."""
 
-    def __init__(self, control, reader, tokens: ApiTokens, clock, on_stop=None, processing=None, events=None):
+    def __init__(self, control, reader, tokens: ApiTokens, clock, on_stop=None, processing=None, events=None, media=None):
         self._control, self._reader, self._tokens, self._clock, self._on_stop = control, reader, tokens, clock, on_stop
-        self._processing, self._events = processing, events
+        self._processing, self._events, self._media = processing, events, media
         self._failures, self._failure_lock = {}, threading.Lock()
 
     def handle(self, method, target, headers, body, client):
@@ -171,6 +173,8 @@ class DiscoveryApi:
             return self._processing_route(method, path, query, headers, body, scope)
         if path == "/v1/events" or path.startswith("/v1/events/"):
             return self._events_route(method, path, query)
+        if path.startswith("/v1/media/"):
+            return self._media_route(method, path)
         if method == "GET" and path == "/v1/discovery/status":
             return 200, {"schema": CONTROL_SCHEMA, "status": to_jsonable(self._control.get_status())}
         if method == "GET" and path == "/v1/areas":
@@ -226,6 +230,19 @@ class DiscoveryApi:
                                                            "/v1/service/stop") or match
         raise ApiError(405 if known else 404, "method_not_allowed" if known else "not_found", "method not allowed" if known else "not found")
 
+
+    def _media_route(self, method, path):
+        """A cached picture. The name is matched against a strict pattern and looked up by name only: no path from a request ever reaches the file system."""
+        if self._media is None:
+            raise ApiError(404, "not_found", "this service does not serve media")
+        if method != "GET":
+            raise ApiError(405, "method_not_allowed", "method not allowed")
+        match = MEDIA_PATH.match(path)
+        found = self._media.read(match.group(1)) if match else None
+        if found is None:
+            raise ApiError(404, "not_found", "no such picture")
+        data, kind = found
+        return 200, {"_binary": data, "_content_type": kind, "_headers": {"Cache-Control": "public, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff"}}
 
     def _events_route(self, method, path, query):
         if self._events is None:
@@ -312,11 +329,14 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _send(self, status, payload):
         extra = payload.pop("_headers", {}) if isinstance(payload, dict) else {}
-        raw = (json.dumps(payload) + "\n").encode()
+        binary = payload.pop("_binary", None) if isinstance(payload, dict) else None
+        kind = payload.pop("_content_type", None) if binary is not None else None
+        raw = binary if binary is not None else (json.dumps(payload) + "\n").encode()
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Type", kind or "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Cache-Control", "no-store")
+        if "Cache-Control" not in extra:
+            self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         for name, value in extra.items():
             self.send_header(name, value)

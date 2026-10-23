@@ -125,6 +125,10 @@ class DiscoveryHub:
         page = await self._read.events(area=area["area_key"], starts_from=starts_from, starts_to=starts_to, after=after, limit=limit)
         return {"events": to_feed_events(page), "next_cursor": page.get("next_cursor"), "latest_seq": page.get("latest_seq"), "area": self._area_view(area)}
 
+    async def media(self, name):
+        """A cached picture (bytes, content type), straight from the service. Pictures are immutable by name, so the browser caches them; the hub keeps nothing."""
+        return await self._read.media(name)
+
     async def event(self, event_key):
         detail = await self._read.event(event_key)
         return {"event": to_feed_events({"events": [detail["event"]]})[0], "history": detail.get("history", []), "evidence": detail.get("evidence", {}),

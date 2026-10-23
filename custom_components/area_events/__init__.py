@@ -18,6 +18,7 @@ from .const import CARD_URL, CONF_CA_FILE, CONF_CONTROL_TOKEN, CONF_READ_TOKEN, 
 from .coordinator import AreaEventsConfigEntry, DiscoveryCoordinator, RuntimeData
 from .discovery_client import DiscoveryAuthError, DiscoveryConnectionError, DiscoveryControlClient
 from .hub import DiscoveryHub
+from .media_view import AreaEventsMediaView
 from .photos import PHOTOS_URL, load_index
 
 CARD_FILE = Path(__file__).parent / "frontend" / "area-events-card.js"
@@ -43,6 +44,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: AreaEventsConfigEntry)
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Serve the card and register its WebSocket commands once; every config entry shares them."""
     websocket_api.async_register(hass)
+    hass.http.register_view(AreaEventsMediaView(hass))
     await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL, str(CARD_FILE), cache_headers=False)])
     # The card loads on every dashboard without a Lovelace resource; the query changes with the file so browsers refetch it.
     version = await hass.async_add_executor_job(lambda: CARD_FILE.stat().st_mtime_ns)

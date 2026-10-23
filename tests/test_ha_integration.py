@@ -144,8 +144,13 @@ def install_stand_ins():
     module("homeassistant")
     components = module("homeassistant.components", websocket_api=websocket_api)
     components.frontend = module("homeassistant.components.frontend", add_extra_js_url=mock.Mock())
-    components.http = module("homeassistant.components.http", StaticPathConfig=lambda *args, **kwargs: (args, kwargs))
-    module("aiohttp", ClientError=OSError)
+    components.http = module("homeassistant.components.http", StaticPathConfig=lambda *args, **kwargs: (args, kwargs), HomeAssistantView=type("HomeAssistantView", (), {}))
+
+    class Response:
+        def __init__(self, body=None, status=200, content_type=None, headers=None):
+            self.body, self.status, self.content_type, self.headers = body, status, content_type, headers or {}
+
+    module("aiohttp", ClientError=OSError, web=types.SimpleNamespace(Response=Response))
     module("homeassistant.config_entries", ConfigFlow=FakeConfigFlow, OptionsFlow=FakeOptionsFlow, ConfigFlowResult=dict, ConfigEntry=Subscriptable,
            ConfigEntryState=types.SimpleNamespace(LOADED="loaded"))
     module("homeassistant.core", HomeAssistant=object, callback=lambda func: func)
@@ -169,6 +174,7 @@ feed_module = importlib.import_module("area_events_ha.feed")
 hub_module = importlib.import_module("area_events_ha.hub")
 flow_module = importlib.import_module("area_events_ha.config_flow")
 coordinator_module = importlib.import_module("area_events_ha.coordinator")
+media_view_module = importlib.import_module("area_events_ha.media_view")
 websocket_module = importlib.import_module("area_events_ha.websocket_api")
 spec = importlib.util.spec_from_file_location("area_events_ha_init", os.path.join(ROOT, "__init__.py"), submodule_search_locations=[ROOT])
 init = importlib.util.module_from_spec(spec)
@@ -532,6 +538,122 @@ class SharedSettings(Service):
         with self.assertRaises(client_module.DiscoveryAuthError):
             run(client_module.DiscoveryControlClient(UrllibSession(), self.url, READ_TOKEN).check_control())
         self.assertEqual(self.built.control.get_status().settings.revision, 1)
+
+
+JPEG = b"\xff\xd8\xff\xe0" + b"photo" * 400
+
+
+class Imagery(Service):
+    """The pictures path through the real service API and the integration: cached by the service, relayed by name, never by path or token."""
+
+    def setUp(self):
+        super().setUp()
+        store = self.built.enrichment._resolver.store
+        store.put_file("p0123456789abcdef01234567.jpg", JPEG)
+        store.put_file("mabcdef0123456789-light.svg", b"<svg xmlns='http://www.w3.org/2000/svg'/>")
+        with self.built.store.read() as connection:
+            self.candidate = connection.execute("SELECT candidate_id, payload_hash FROM candidates WHERE candidate_key LIKE 'sandiego_gov:%' ORDER BY candidate_id LIMIT 1").fetchone()
+        self.built.media_work.finish([{"candidate_id": self.candidate["candidate_id"], "payload_hash": self.candidate["payload_hash"], "complete": True,
+                                       "illustration": {"category": "markets", "strength": "strong", "reasons": ["title"], "fallback": False},
+                                       "media": {"image": {"url": "/area_events/media/p0123456789abcdef01234567.jpg", "credit": "City of San Diego", "license": "as published by the source",
+                                                           "source_url": "https://www.sandiego.gov/event/e0"},
+                                                 "map": {"light": "/area_events/media/mabcdef0123456789-light.svg", "dark": "/area_events/media/mabcdef0123456789-light.svg",
+                                                         "approximate": True, "confidence": "address", "precision": "address", "credit": "OpenFreeMap © OpenMapTiles Data from OpenStreetMap"}}}])
+
+    def test_the_hub_relays_a_cached_picture_and_refuses_what_is_not_one(self):
+        async def scenario():
+            hub = self.hub()
+            data, kind = await hub.media("p0123456789abcdef01234567.jpg")
+            with self.assertRaises(client_module.DiscoveryRequestError) as missing:
+                await hub.media("p0000000000000000000000ff.jpg")
+            with self.assertRaises(client_module.DiscoveryRequestError):
+                await hub.media("..%2fdiscovery.db")
+            with self.assertRaises(client_module.DiscoveryAuthError):
+                await self.hub(read_token="x" * 40).media("p0123456789abcdef01234567.jpg")
+            return data, kind, missing.exception.status
+
+        data, kind, status = run(scenario())
+        self.assertEqual((data, kind, status), (JPEG, "image/jpeg", 404))
+
+    def test_the_card_receives_the_picture_as_a_local_address_with_its_credit_and_never_a_service_address_or_token(self):
+        async def scenario():
+            hub = self.hub()
+            inbox = Inbox()
+            await hub.subscribe("San Diego", inbox)
+            return inbox.last
+
+        view = run(scenario())
+        with_image = [e for e in view["events"] if e["images"]][0]
+        self.assertEqual(with_image["images"], ["/area_events/media/p0123456789abcdef01234567.jpg"])
+        self.assertEqual(with_image["image_credit"], {"text": "City of San Diego", "license": "as published by the source", "source_url": "https://www.sandiego.gov/event/e0"})
+        self.assertTrue(with_image["media"]["map"]["approximate"])
+        self.assertEqual(with_image["illustration"]["category"], "markets")
+        others = [e for e in view["events"] if not e["images"]]
+        self.assertTrue(others and all(e["media"] is None for e in others), "events without imagery say so; the card falls back to its illustration")
+        text = json.dumps(view)
+        for secret in (READ_TOKEN, CONTROL_TOKEN, PROCESS_TOKEN, self.url):
+            self.assertNotIn(secret, text)
+
+    def test_the_adapter_maps_media_without_adding_anything(self):
+        bare = {"event_key": "ev-1", "title": "T", "starts_at": 1_800_000_000, "sources": ["ut_austin"], "location_status": "unknown"}
+        event = feed_module.to_feed_event(bare)
+        self.assertEqual((event["images"], event["image_credit"], event["media"], event["illustration"]), ([], None, None, None))
+        shown = feed_module.to_feed_event({**bare, "media": {"photo": {"url": "/area_events/media/pabc.jpg"}}, "illustration": {"category": "music"}})
+        self.assertEqual((shown["images"], list(shown["media"]), shown["illustration"]), ([], ["photo"], {"category": "music"}))
+
+
+class MediaView(unittest.TestCase):
+    """The Home Assistant view that relays pictures (against stand-ins; the real-HA run is the on-device check)."""
+
+    def view(self, hub=None, loaded=True):
+        entry = types.SimpleNamespace(state="loaded" if loaded else "setup_error", runtime_data=types.SimpleNamespace(hub=hub))
+        return media_view_module.AreaEventsMediaView(types.SimpleNamespace(config_entries=types.SimpleNamespace(async_entries=lambda domain: [entry])))
+
+    def hub(self, answer=None, error=None):
+        calls = []
+
+        class Hub:
+            async def media(self, name):
+                calls.append(name)
+                if error:
+                    raise error
+                return answer
+
+        hub = Hub()
+        hub.calls = calls
+        return hub
+
+    def get(self, view, name):
+        return run(view.get(None, name))
+
+    def test_a_picture_is_relayed_with_a_type_from_its_name_and_a_year_of_caching(self):
+        hub = self.hub((JPEG, "text/html"))   # whatever the upstream header says, the name decides
+        answer = self.get(self.view(hub), "p0123456789abcdef01234567.jpg")
+        self.assertEqual((answer.status, answer.body, answer.content_type), (200, JPEG, "image/jpeg"))
+        self.assertIn("immutable", answer.headers["Cache-Control"])
+        self.assertEqual(answer.headers["X-Content-Type-Options"], "nosniff")
+        svg = self.get(self.view(self.hub((b"<svg/>", "image/svg+xml"))), "mabcdef0123456789-light.svg")
+        self.assertIn("sandbox", svg.headers["Content-Security-Policy"])
+
+    def test_only_picture_names_are_answered_and_the_service_is_not_asked_about_anything_else(self):
+        hub = self.hub((JPEG, "image/jpeg"))
+        view = self.view(hub)
+        for bad in ("../../etc/passwd", "p0123.jpg/../x", "UPPER.jpg", "a.exe", "noextension", "p" * 80 + ".jpg", "..", "x.jpg\x00"):
+            self.assertEqual(self.get(view, bad).status, 404, bad)
+        self.assertEqual(hub.calls, [])
+
+    def test_missing_pictures_and_an_unreachable_service_are_told_apart(self):
+        self.assertEqual(self.get(self.view(self.hub(error=client_module.DiscoveryRequestError(404, "not_found", "x"))), "p0123456789abcdef01234567.jpg").status, 404)
+        down = self.get(self.view(self.hub(error=client_module.DiscoveryConnectionError("down"))), "p0123456789abcdef01234567.jpg")
+        self.assertEqual((down.status, down.headers["Retry-After"]), (503, "30"))
+        self.assertEqual(self.get(self.view(self.hub(error=client_module.DiscoveryAuthError(401, "no"))), "p0123456789abcdef01234567.jpg").status, 503)
+        self.assertEqual(self.get(self.view(None, loaded=False), "p0123456789abcdef01234567.jpg").status, 503)
+
+    def test_the_view_is_public_by_design_and_says_why(self):
+        view = self.view()
+        self.assertFalse(view.requires_auth)
+        self.assertEqual(view.url, "/area_events/media/{name}")
+        self.assertIn("<img> cannot authenticate", open(os.path.join(ROOT, "media_view.py"), encoding="utf-8").read().replace("an <img> cannot", "an <img> cannot"))
 
 
 class Tokens(unittest.TestCase):
@@ -925,7 +1047,7 @@ class WebSocket(Service):
         async def register(configs):
             paths.extend(configs)
 
-        hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=register), async_add_executor_job=lambda func, *a: asyncio.sleep(0, func(*a)), data={})
+        hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=register, register_view=lambda view: None), async_add_executor_job=lambda func, *a: asyncio.sleep(0, func(*a)), data={})
         before = len(REGISTERED)
         self.assertTrue(run(init.async_setup(hass, {})))
         self.assertEqual(len(REGISTERED) - before, 10)
@@ -941,7 +1063,7 @@ class WebSocket(Service):
 
 
 class NoGlobalState(unittest.TestCase):
-    ALLOWED = ("frozenset", "tuple", "types.MappingProxyType", "logging.getLogger", "itertools.count")
+    ALLOWED = ("frozenset", "tuple", "types.MappingProxyType", "logging.getLogger", "itertools.count", "re.compile")
 
     def test_the_integration_modules_hold_no_mutable_module_level_state(self):
         for name in sorted(os.listdir(ROOT)):
@@ -959,7 +1081,7 @@ class NoGlobalState(unittest.TestCase):
                         self.assertTrue(callee in self.ALLOWED or callee.startswith("vol.") or callee.startswith("cv."), f"{name}: module-level call {callee}")
 
     def test_the_removed_legacy_modules_are_gone(self):
-        for name in ("client.py", "profile.py", "media_view.py"):
+        for name in ("client.py", "profile.py"):
             self.assertFalse(os.path.exists(os.path.join(ROOT, name)), name)
 
     def test_the_integration_never_touches_a_database(self):

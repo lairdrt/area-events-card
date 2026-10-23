@@ -646,8 +646,8 @@ class MediaStore:
 class MediaService:
     """Finds, verifies, draws and caches location imagery for the places in the current feeds."""
 
-    def __init__(self, folder, fetcher, clock=time.time, sleep=time.sleep, nominatim_interval=NOMINATIM_INTERVAL):
-        self.store = MediaStore(os.path.join(folder, "media"), clock)
+    def __init__(self, folder, fetcher, clock=time.time, sleep=time.sleep, nominatim_interval=NOMINATIM_INTERVAL, store=None):
+        self.store = store if store is not None else MediaStore(os.path.join(folder, "media"), clock)   # a different store (the database-backed one) may be injected
         self.fetcher, self.clock, self.sleep = fetcher, clock, sleep
         self.nominatim_interval, self._nominatim_at = nominatim_interval, 0.0
         self._overpass_at = 0.0

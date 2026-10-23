@@ -134,6 +134,23 @@ class DiscoveryControlClient:
         """One event with its revision history and field evidence."""
         return await self._request("GET", f"/v1/events/{quote(event_key, safe='')}")
 
+    async def media(self, name):
+        """(bytes, content type) of a cached picture by its name. The service decides what exists; this only carries it, with the read token."""
+        try:
+            async with asyncio.timeout(TIMEOUT_SECONDS):
+                async with self._session.request("GET", f"{self._base}/v1/media/{quote(name, safe='')}", headers={"Authorization": f"Bearer {self._token}"},
+                                                 **({"ssl": self._ssl} if self._ssl is not None else {})) as response:
+                    status, kind, data = response.status, response.headers.get("Content-Type", ""), await response.read()
+        except _NETWORK_ERRORS as error:
+            raise DiscoveryConnectionError(f"could not reach the Discovery Service at {self._base}: {error or type(error).__name__}") from error
+        if status in (401, 403):
+            raise DiscoveryAuthError(status, "the Discovery Service rejected the token")
+        if status == 404:
+            raise DiscoveryRequestError(404, "not_found", "no such picture")
+        if status >= 400 or not data or len(data) > 2_000_000:
+            raise DiscoveryConnectionError(f"the Discovery Service answered {status} for a picture")
+        return data, kind
+
     async def processing(self):
         """Extraction work counts (how much stored evidence is not yet an event)."""
         return await self._request("GET", "/v1/processing/status")

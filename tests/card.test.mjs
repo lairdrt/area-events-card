@@ -1402,6 +1402,32 @@ test("show_images: false shows no photographs, no maps and no badges", async () 
   assert.equal(tagOf(tile).textContent, "Illustration");
 });
 
+test("a cached event photograph from this integration is used and credited; no other local path is accepted", async () => {
+  const photo = "/area_events/media/p0123456789abcdef01234567.jpg";
+  const credit = { text: "UT Austin Events", license: "as published by the source", source_url: "https://calendar.utexas.edu/event/x" };
+  const withPhoto = event("With photo", 1, { images: [photo, "/area_events/media/../x.jpg", "/api/secret.jpg", "/area_events/media/pABC.jpg", "/area_events/media/p0123456789abcdef01234567.exe"], image_credit: credit });
+  const card = await make({}, { feed: makeFeed({ events: [withPhoto] }) });
+  assert.deepEqual(card._normalizeEvent(withPhoto).images, [photo]);
+  assert.deepEqual(card._normalizeEvent(withPhoto).imageCredit, { text: "UT Austin Events", license: "as published by the source", sourceUrl: "https://calendar.utexas.edu/event/x" });
+  const img = imgOf(tileFor(card, "With photo"));
+  assert.ok(img && img.src === photo, "the cached photograph is the first picture tried");
+  assert.equal(card._normalizeEvent({ ...withPhoto, image_credit: { text: "x", source_url: "javascript:alert(1)" } }).imageCredit.sourceUrl, "", "a credit link is https only");
+  assert.equal(card._normalizeEvent({ ...withPhoto, image_credit: "text" }).imageCredit, undefined);
+});
+
+test("1, 2, 3, 4 and 20 events: every event is one tile in the same grid, which sets no widths of its own", async () => {
+  for (const count of [1, 2, 3, 4, 20]) {
+    const events = Array.from({ length: count }, (_, i) => event(`Event number ${i}`, i + 1, { illustration: { category: "music" } }));
+    const card = await make({}, { feed: makeFeed({ events }) });
+    const grid = byClass(card.shadowRoot, "grid");
+    assert.equal(grid.length, 1, `${count} events`);
+    assert.equal(byClass(card.shadowRoot, "event").length, count);
+    assert.equal(grid[0].attrs.style, undefined, "no inline sizing: the stylesheet's equal columns decide the widths");
+  }
+  const styles = fs.readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  assert.doesNotMatch(styles, /\.event \{[^}]*(flex-grow|grid-column|width: 100%)/, "a tile never claims more than its column");
+});
+
 test("a venue photograph without a stated creator is credited to Wikimedia Commons, and links stay on Wikimedia and Creative Commons", async () => {
   const media = MEDIA();
   media.photo.creator = "";

@@ -122,6 +122,8 @@ def cmd_serve(args):
         app.host.start()
         if not args.no_extract:
             app.extraction.start()
+        if not args.no_media:
+            app.enrichment.start()
         host, port = server.address[:2]
         print(f"discovery service running: database {os.path.normpath(args.db)}", flush=True)
         print(f"control API {server.scheme}://{host}:{port}/v1/  (bearer token in {os.path.normpath(token_path)})" + (f"; recovered {recovered} expired lease(s)" if recovered else ""), flush=True)
@@ -320,6 +322,7 @@ def cmd_status(args):
         status = app.reader.status()
         control = app.control.get_status()
         work = app.processing.status(StoredCandidateExtractor.name, StoredCandidateExtractor.version)
+        app_media = app.media_work.status()
     finally:
         app.close()
     s = control.settings
@@ -335,6 +338,9 @@ def cmd_status(args):
     print(f"candidates    {status.candidates}; evidence {status.evidence}; latest change {status.changes_latest_seq}")
     print(f"jobs          ready {status.jobs.ready}, running {status.jobs.leased}, completed {status.jobs.done}, retrying {status.jobs.retrying}, failed {status.jobs.failed}")
     print(f"last success  {_when(status.last_success_at)}")
+    media = app_media
+    print(f"media         {media['candidates_with_media']} candidates enriched ({media['complete']} finished); {media['verified_places']} verified places with maps; "
+          f"{media['files']} cached files ({_size(media['file_bytes'])})")
     print(f"events        {work.events} normalized; extraction pending {work.pending}, leased {work.leased}, retrying {work.retrying}, given up {work.failed}; "
           f"results {dict(work.extractions) or '-'}")
     return 0
@@ -402,6 +408,7 @@ def main(argv=None):
     serve.add_argument("--tls-cert", help="certificate file: serve https (required beyond loopback)")
     serve.add_argument("--tls-key", help="private key file for --tls-cert")
     serve.add_argument("--allow-plain-remote", action="store_true", help="allow a non-loopback bind WITHOUT TLS (tokens cross the network in plain text)")
+    serve.add_argument("--no-media", action="store_true", help="do not run the media enrichment worker (no event photographs, venue photographs or maps)")
     serve.add_argument("--no-extract", action="store_true", help="do not run the local extraction worker (run `extract` separately or remotely)")
     stop = add("stop", "ask a running service to stop gracefully")
     stop.add_argument("--bind", default="127.0.0.1")

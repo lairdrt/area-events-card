@@ -540,11 +540,14 @@ class _Call:
             req = urllib.request.Request(self.url, data=data, method=self.method, headers={**self.headers, **({"Content-Type": "application/json"} if data else {})})
             try:
                 with urllib.request.urlopen(req, timeout=10, **({"context": self.ssl} if self.ssl else {})) as response:
-                    return response.status, response.read()
+                    return response.status, response.read(), dict(response.getheaders())
             except urllib.error.HTTPError as error:
-                return error.code, error.read()
-        self.status, self.raw = await asyncio.to_thread(send)
+                return error.code, error.read(), dict(error.headers)
+        self.status, self.raw, self.headers = await asyncio.to_thread(send)   # from here on `headers` are the response's
         return self
+
+    async def read(self):
+        return self.raw
 
     async def __aexit__(self, *exc):
         return False

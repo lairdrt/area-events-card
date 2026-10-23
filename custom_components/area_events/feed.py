@@ -34,6 +34,8 @@ def to_feed_event(event):
     zone = event.get("timezone")
     sources = event.get("sources") or []
     status = event.get("location_status") or "unknown"
+    media = event.get("media") or {}
+    image = media.get("image")
     return {
         "id": event["event_key"],
         "title": event["title"],
@@ -49,6 +51,10 @@ def to_feed_event(event):
         "verified": False,
         "verification": {"status": "unverified", "evidence": [], "missing": list(event.get("missing") or []),
                          "note": "Read from the source's own listing; not independently confirmed."},
+        "images": [image["url"]] if image else [],
+        "image_credit": {"text": image.get("credit"), "license": image.get("license"), "source_url": image.get("source_url")} if image else None,
+        "media": {key: media[key] for key in ("photo", "map") if media.get(key)} or None,
+        "illustration": event.get("illustration"),
         "location_status": status,
         "location_verified": status == "address",
         "revision": event.get("revision"),

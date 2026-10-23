@@ -10,7 +10,7 @@
  * visual editor; the filter chips are the viewer's own choices, saved per card instance (see "Preferences").
  */
 
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-f59e576a";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-603bfcd1";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
@@ -620,6 +620,20 @@ function artFor(event) {
  * credits itself; the map files are vector images in a light and a graphite variant with the same geography.
  */
 const MEDIA_FILE = /^\/area_events\/media\/[a-z0-9][a-z0-9-]*(\.light|\.dark)?\.(svg|jpg)$/;
+// a photograph the event's source supplied, cached and served by this integration (never a path from anywhere else)
+const EVENT_PHOTO_FILE = /^\/area_events\/media\/p[a-f0-9]{24}\.(jpg|png|webp)$/;
+/** The credit for an event's own picture, as plain text and a link only to the page it came from (https). */
+function safeImageCredit(raw) {
+  if (!raw || typeof raw !== "object") return undefined;
+  const text = (value, max) => (typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "");
+  let sourceUrl = "";
+  try {
+    const url = new URL(raw.source_url);
+    if (url.protocol === "https:") sourceUrl = url.href;
+  } catch { /* no usable link */ }
+  const credit = { text: text(raw.text, 80), license: text(raw.license, 60), sourceUrl };
+  return credit.text ? credit : undefined;
+}
 function safeMedia(raw, event) {
   if (!raw || typeof raw !== "object") return undefined;
   const text = (value, max = 120) => (typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "");
@@ -938,7 +952,8 @@ class AreaEventsCard extends HTMLElement {
       category: event.category || categories[0],
       categories,
       images: [...new Set([event.image, event.image_url, ...(Array.isArray(event.images) ? event.images : [])]
-        .filter((url) => typeof url === "string" && /^https?:\/\//i.test(url.trim())).map((url) => url.trim()))],
+        .filter((url) => typeof url === "string" && (/^https?:\/\//i.test(url.trim()) || EVENT_PHOTO_FILE.test(url.trim()))).map((url) => url.trim()))],
+      imageCredit: safeImageCredit(event.image_credit),
       description: event.description,
       venue: event.venue,
       media: safeMedia(event.media, event),
@@ -1425,7 +1440,7 @@ class AreaEventsCard extends HTMLElement {
     const place = media && media.map && media.map.venue;
     const candidates = [];
     if (this._settings.showImages) {
-      for (const url of event.images) candidates.push({ kind: "event", url: () => url, alt: `Image for ${event.title || "this event"}` });
+      for (const url of event.images) candidates.push({ kind: "event", url: () => url, alt: `Image for ${event.title || "this event"}`, credit: event.imageCredit });
       if (media && media.photo) candidates.push({ kind: "venue", url: () => media.photo.url, alt: `Photograph of the venue${media.photo.venue ? `, ${media.photo.venue}` : ""}, not of the event`, photo: media.photo });
       if (media && media.map) {
         candidates.push({ kind: "map", url: () => (this._isDark() ? media.map.dark : media.map.light), map: media.map,
@@ -1470,7 +1485,7 @@ class AreaEventsCard extends HTMLElement {
         // what the image that is showing needs around it: a pin and the map credit, or the photograph's credit
         credit.replaceChildren();
         collapse(false);
-        info.hidden = current.kind !== "map" && current.kind !== "venue";
+        info.hidden = current.kind !== "map" && current.kind !== "venue" && !(current.kind === "event" && current.credit);
         info.setAttribute("aria-label", current.kind === "map" ? "Map credits and licence" : "Photo credit and licence");
         info.title = info.getAttribute("aria-label");
         pin.hidden = current.kind !== "map";
@@ -1486,6 +1501,14 @@ class AreaEventsCard extends HTMLElement {
             const source = this._el("a", "", " · Wikimedia Commons");
             Object.assign(source, { href: sourceUrl, target: "_blank", rel: "noopener noreferrer" });
             credit.append(source);
+          }
+        } else if (current.kind === "event" && current.credit) {
+          credit.append(document.createTextNode(`Photo: ${current.credit.text}`));
+          if (current.credit.license) credit.append(this._el("span", "note", current.credit.license));
+          if (current.credit.sourceUrl) {
+            const source = this._el("a", "", "Event page");
+            Object.assign(source, { href: current.credit.sourceUrl, target: "_blank", rel: "noopener noreferrer" });
+            credit.append(document.createTextNode(" · "), source);
           }
         } else if (current.kind === "map") {
           credit.append(document.createTextNode("Map: "));
