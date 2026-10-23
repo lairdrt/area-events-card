@@ -16,6 +16,7 @@ and the work is done again, so nothing is acknowledged that was not stored.
 """
 import hashlib
 import json
+import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -131,6 +132,8 @@ class DiscoveryService:
             return RunReport(job["job_key"], "stale_lease", requests=fetcher.requests, error="the lease expired or was taken over; nothing was written")
         except StorageUnavailable as error:
             return self._pause(error, job["job_key"], fetcher.requests)
+        except sqlite3.IntegrityError as error:   # a defect in what was about to be stored: nothing was written; release the job with backoff and say why
+            return self._release(job, token, fetcher, FetchError(f"storing the results failed: {error}"), "store_failed")
         self.pause_seconds = 0
         return RunReport(job["job_key"], "completed", requests=fetcher.requests, details_reused=int(result.notes.get("detail_reused", 0)),
                          notes={k: v for k, v in result.notes.items() if not isinstance(v, (list, dict))}, **counts)
@@ -155,18 +158,20 @@ class DiscoveryService:
         self.last_storage_error = str(error)[:200]
         return RunReport(job_key, "storage_unavailable", requests=requests, error=f"{error} (pausing {self.pause_seconds} s; the job will be repeated)")
 
-    def _release(self, job, token, fetcher, error):
+    def _release(self, job, token, fetcher, error, outcome="fetch_failed"):
         now = self._now()
         try:
             with self.store.write() as tx:
                 if self.jobs.lease_valid(tx, job["job_id"], token, now):
                     for fetch in fetcher.fetches:  # what was tried is history worth keeping, even when the run failed
+                        if fetch.outcome == "ok":
+                            continue   # its content was not stored, and an 'ok' fetch must name stored content
                         page_id, _ = self.pages.touch(tx, fetch.url, job["source_id"], "other", now)
                         self.pages.record_fetch(tx, page_id, job["job_id"], now, fetch.outcome, error=fetch.error)
                 state = self.jobs.fail(tx, job["job_id"], token, now, error, self.config.backoff_base_s, self.config.backoff_cap_s, self._interval(tx, job))
         except StorageUnavailable as storage_error:
             return self._pause(storage_error, job["job_key"], fetcher.requests)
-        return RunReport(job["job_key"], "fetch_failed", requests=fetcher.requests, error=f"{error} (job {state or 'not released: lease lost'})")
+        return RunReport(job["job_key"], outcome, requests=fetcher.requests, error=f"{error} (job {state or 'not released: lease lost'})")
 
     def _interval(self, connection, job):
         return int(connection.execute("SELECT interval_s FROM sources WHERE source_id=?", (job["source_id"],)).fetchone()[0])
@@ -229,7 +234,7 @@ class DiscoveryService:
     def _store(self, tx, job, source, plan, now):
         counts = dict(pages_seen=0, pages_new=0, content_new=0, content_unchanged=0, candidates_seen=0, candidates_new=0, candidates_changed=0,
                       candidates_unchanged=0, evidence_written=0, changes_appended=0)
-        page_ids = {}
+        page_ids, stored_as = {}, {}   # stored_as: the content hash fetched -> the hash actually kept (a page whose readable text is unchanged keeps its old snapshot)
         for entry in plan["pages"]:
             fetch = entry["fetch"]
             page_id, new = self.pages.touch(tx, fetch.url, source["source_id"], entry["role"], now)
@@ -242,6 +247,7 @@ class DiscoveryService:
                 final_url = fetch.final_url if fetch.final_url != fetch.url else None
                 if known_fingerprint == entry["fingerprint"] and known_digest:
                     counts["content_unchanged"] += 1  # same readable text: keep the stored snapshot, record only the fetch
+                    stored_as[entry["digest"]] = known_digest
                     entry["digest"] = known_digest
                     self.pages.record_fetch(tx, page_id, job["job_id"], now, "ok", fetch.http_status, entry["size"], known_digest, fetch.media_type, final_url)
                 else:
@@ -269,7 +275,7 @@ class DiscoveryService:
                                                            item["starts_at"], event, item["digest"], now)
             counts[f"candidates_{outcome}"] += 1
             if outcome != "unchanged":
-                rows = [(f, k, q, page_ids.get(canonical_url(u)) if u else None, d, n) for f, k, q, u, d, n in item["evidence"]]
+                rows = [(f, k, q, page_ids.get(canonical_url(u)) if u else None, stored_as.get(d, d), n) for f, k, q, u, d, n in item["evidence"]]
                 counts["evidence_written"] += self.candidates.replace_evidence(tx, candidate_id, rows)
                 self.changes.append(tx, "candidate", event["id"], item["digest"], now)
                 counts["changes_appended"] += 1

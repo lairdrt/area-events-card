@@ -139,7 +139,7 @@ class DiscoveryStatus:
 class RunReport:
     """What one job run did. Counts are of this run only."""
     job_key: Optional[str]
-    outcome: str                    # 'completed' | 'nothing_due' | 'fetch_failed' | 'stale_lease' | 'storage_unavailable' | 'paused'
+    outcome: str                    # 'completed' | 'nothing_due' | 'fetch_failed' | 'stale_lease' | 'storage_unavailable' | 'paused' | 'store_failed'
     requests: int = 0
     pages_seen: int = 0
     pages_new: int = 0

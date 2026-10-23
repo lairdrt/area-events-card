@@ -1,6 +1,7 @@
 """The Discovery Service and its SQLite store: schema, identity, jobs and leases, atomic and idempotent writes, recovery, retention,
 the reader contract, the shared host policy, and concurrent readers. Deterministic: a fixed clock and saved pages, no network."""
 import ast
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import sqlite3
@@ -17,7 +18,7 @@ from discovery.core import FetchError
 from discovery.safe import BlockedError, HostPolicy, Response, SafeFetcher
 from discovery.service import app as app_module
 from discovery.service import repositories, store as store_module
-from discovery.service.contracts import CandidateQuery
+from discovery.service.contracts import AdapterResult, CandidateQuery
 from discovery.service.repositories import JobRepository, PageRepository, RetentionPolicy, SourceRepository, SourceSpec
 from discovery.service.schema import LATEST
 from discovery.service.service import DiscoveryConfig, job_key_for
@@ -215,6 +216,47 @@ class Running(Fixture):
         self.clock.t += 3600
         report = built.service.run_once()
         self.assertEqual((report.content_new, report.changes_appended >= 1), (1, True))
+
+    def test_evidence_of_a_changed_candidate_points_at_the_stored_snapshot_when_the_page_text_did_not_change(self):
+        """Found on the real Cubi: new markup with the same readable text keeps the old snapshot, so evidence must not name the new, unstored content."""
+        class Stub:
+            adapter, extractor, method, venue = "sandiego_gov", "stub@v1", "adapter", "Hall A"
+
+            def crawl(self, fetcher, previous, options):
+                fetcher.get(options["url"])
+                start = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(timespec="seconds")
+                return AdapterResult([{"id": "sandiego_gov:stub@1", "title": "Event 0", "start": start, "venue": self.venue, "url": None, "description": "About Event 0."}], {})
+
+            @staticmethod
+            def page_role(url, base_url):
+                return "listing"
+
+        pages = city_pages(1)
+        built = self.build(pages)
+        stub = Stub()
+        built.service.adapters["sandiego_gov"] = stub
+        built.service.register_source(SPEC)
+        self.assertEqual(built.service.run_once().outcome, "completed")
+        stub.venue = "Hall B"                                                                                  # the candidate changes ...
+        pages[CITY_URL] = pages[CITY_URL].replace("<html>", '<html><div class="view-dom-id-a1b2c3"></div>')   # ... on a page with new markup and the same text
+        self.clock.t += 3600
+        report = built.service.run_once()
+        self.assertEqual((report.outcome, report.candidates_changed, report.content_unchanged), ("completed", 1, 1), report.error)
+        orphans = self.count("evidence", "content_hash IS NOT NULL AND content_hash NOT IN (SELECT content_hash FROM contents)")
+        self.assertEqual(orphans, 0, "every evidence row names content that is stored")
+        self.assertGreater(self.count("evidence", "field='title'"), 0)
+
+    def test_an_unexpected_storage_error_releases_the_job_with_backoff_instead_of_leaving_it_leased(self):
+        built = self.build(city_pages(1))
+        built.service.register_source(SPEC)
+        with mock.patch.object(built.service, "_store", side_effect=sqlite3.IntegrityError("FOREIGN KEY constraint failed")):
+            report = built.service.run_once()
+        self.assertEqual(report.outcome, "store_failed")
+        self.assertIn("FOREIGN KEY", report.error)
+        with built.store.read() as connection:
+            job = connection.execute("SELECT state, attempts, lease_token FROM jobs").fetchone()
+        self.assertEqual((job["state"], job["attempts"], job["lease_token"]), ("ready", 1, None), "released with a failed attempt, not held until the lease expires")
+        self.assertEqual(self.count("candidates"), 0, "nothing of the failed run was written")
 
 
 class Jobs(Fixture):
