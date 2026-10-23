@@ -1,0 +1,546 @@
+{
+ "events": [
+  {
+   "event": {
+    "id": 53427603180845,
+    "title": "Comics and Zines: Staff Picks from the Benson Collection",
+    "url": "https://lib.utexas.edu/events",
+    "updated_at": "2026-10-23T06:23:08-05:00",
+    "created_at": "2026-07-14T14:38:57-05:00",
+    "facebook_id": null,
+    "first_date": "2026-07-21",
+    "last_date": "2027-03-12",
+    "hashtag": "",
+    "urlname": "comics-and-zines-staff-picks-from-the-benson-collection",
+    "user_id": 44137414050035,
+    "directions": "",
+    "allows_reviews": true,
+    "allows_attendance": true,
+    "location": "",
+    "room_number": "Nettie Lee Benson Latin American Collection, Second Floor Gallery Space",
+    "location_name": "Benson Latin American Collection",
+    "status": "live",
+    "experience": "inperson",
+    "stream_url": null,
+    "stream_info": null,
+    "stream_embed_code": null,
+    "created_by": 44137414050035,
+    "updated_by": 53700773967525,
+    "conference_event_id": null,
+    "kind": "standalone",
+    "address": "2300 Red River Street, Austin, TX 78712-1469",
+    "school_id": 69,
+    "campus_id": null,
+    "recurring": true,
+    "free": false,
+    "private": false,
+    "verified": true,
+    "rejected": false,
+    "sponsored": false,
+    "venue_id": 122686,
+    "ticket_url": null,
+    "ticket_cost": null,
+    "has_register": false,
+    "keywords": [],
+    "tags": [],
+    "description": "<p><i>Comics &amp; Zines: Staff Picks from the Benson Collection</i>, on view from July 21, 2026 to March 12, 2027, explores Latin American and U.S. Latinx visual culture through the unique perspectives of the Benson staff who build, process, and care for these archives.</p>\r\n\r\n<p>&nbsp;</p>\r\n\r\n<p>The display shows how creators combine the structure of comics with the independent nature of handcrafted zines. Visitors will see how artists use these accessible print formats to bypass censorship, q",
+    "description_text": "Comics & Zines: Staff Picks from the Benson Collection, on view from July 21, 2026 to March 12, 2027, explores Latin American and U.S. Latinx visual culture through the unique perspectives of the Benson staff who build, process, and care for these archives.\n\n \n\nThe display shows how creators combine the structure of comics with the independent nature of handcrafted zines. Visitors will see how artists use these accessible print formats to bypass censorship, question mainstream media, and address",
+    "photo_id": 53427610999320,
+    "speaker_ids": [],
+    "feedback_enabled": true,
+    "feedback_goal_ids": [
+     36157712329674,
+     36157732300761,
+     36157741711873,
+     36157754951232
+    ],
+    "featured_section_ids": [],
+    "detail_views": 2021,
+    "featured": false,
+    "publish_status": "published",
+    "geo": {
+     "latitude": "30.284239",
+     "longitude": "-97.727669",
+     "street": "2300 Red River Street",
+     "city": "Austin",
+     "state": "TX",
+     "country": "US",
+     "zip": "78712"
+    },
+    "departments": [
+     {
+      "id": 47748479591650,
+      "name": "University of Texas Libraries"
+     }
+    ],
+    "filters": {
+     "event_target_audience": [
+      {
+       "name": "Students",
+       "id": 24848
+      },
+      {
+       "name": "Staff",
+       "id": 24849
+      },
+      {
+       "name": "Faculty",
+       "id": 24850
+      },
+      {
+       "name": "Alumni",
+       "id": 24851
+      },
+      {
+       "name": "General Public",
+       "id": 24853
+      }
+     ],
+     "event_types": [
+      {
+       "name": "World & Culture",
+       "id": 24837
+      }
+     ]
+    },
+    "custom_fields": {},
+    "event_instances": [
+     {
+      "event_instance": {
+       "id": 53427603248524,
+       "event_id": 53427603180845,
+       "start": "2026-10-23T09:00:00-05:00",
+       "end": null,
+       "ranking": 0.04,
+       "all_day": false,
+       "num_attending": 0
+      }
+     }
+    ],
+    "localist_url": "https://calendar.utexas.edu/event/comics-and-zines-staff-picks-from-the-benson-collection",
+    "localist_ics_url": "https://calendar.utexas.edu/event/comics-and-zines-staff-picks-from-the-benson-collection.ics",
+    "photo_url": "https://localist-images.azureedge.net/photos/53427610999320/huge/5b62c95c8ca8c2ead615730dd53c3ff26a35ff88.jpg",
+    "photo_caption": null,
+    "venue_url": "https://calendar.utexas.edu/benson_latin_american_collection_104"
+   }
+  },
+  {
+   "event": {
+    "id": 53511611721496,
+    "title": "Adraint Bereal: As It Appears",
+    "url": "https://utvac.org/event/adraint-bereal-as-it-appears?date=",
+    "updated_at": "2026-10-23T06:24:47-05:00",
+    "created_at": "2026-07-24T02:32:13-05:00",
+    "facebook_id": null,
+    "first_date": "2026-10-16",
+    "last_date": "2027-03-05",
+    "hashtag": null,
+    "urlname": "adraint-bereal-as-it-appears",
+    "user_id": null,
+    "directions": null,
+    "allows_reviews": true,
+    "allows_attendance": true,
+    "location": "Visual Arts Center, Art Building (ART)",
+    "room_number": null,
+    "location_name": "Visual Arts Center, Art Building (ART)",
+    "status": "live",
+    "experience": "inperson",
+    "stream_url": null,
+    "stream_info": null,
+    "stream_embed_code": null,
+    "created_by": null,
+    "updated_by": 54117871822764,
+    "conference_event_id": null,
+    "kind": "standalone",
+    "address": "2301 San Jacinto Blvd, Austin TX 78712",
+    "school_id": 69,
+    "campus_id": null,
+    "recurring": true,
+    "free": false,
+    "private": false,
+    "verified": true,
+    "rejected": false,
+    "sponsored": false,
+    "venue_id": 107595,
+    "ticket_url": null,
+    "ticket_cost": null,
+    "has_register": false,
+    "keywords": [],
+    "tags": [],
+    "description": "<p><span>In 2019, while attending the University of Texas, artist Adraint Bereal began creating a visual and discursive archive of Black student life on campus. Seeking to counter the systemic invisibility of his peers, Bereal embedded himself within the campus community, documenting personal histories in photographs and interviews. He called this project </span><span class=\"italic\">The Black Yearbook</span><span>. </span><span class=\"italic\">Adraint Bereal: As It Appears</span> expands on <span",
+    "description_text": "In 2019, while attending the University of Texas, artist Adraint Bereal began creating a visual and discursive archive of Black student life on campus. Seeking to counter the systemic invisibility of his peers, Bereal embedded himself within the campus community, documenting personal histories in photographs and interviews. He called this project The Black Yearbook. Adraint Bereal: As It Appears expands on The Black Yearbook, juxtaposing archival images, texts, and video from UT and Austin repos",
+    "photo_id": 53511611674391,
+    "speaker_ids": [],
+    "feedback_enabled": false,
+    "feedback_goal_ids": [],
+    "featured_section_ids": [],
+    "detail_views": 603,
+    "featured": false,
+    "publish_status": "published",
+    "geo": {
+     "latitude": "30.286256",
+     "longitude": "-97.732996",
+     "street": "2301 San Jacinto Boulevard",
+     "city": "Austin",
+     "state": "TX",
+     "country": "US",
+     "zip": "78705"
+    },
+    "departments": [
+     {
+      "id": 47748598588893,
+      "name": "Visual Arts Center"
+     },
+     {
+      "id": 47748619205969,
+      "name": "Department of Art & Art History"
+     },
+     {
+      "id": 47748653246172,
+      "name": "College of Fine Arts"
+     }
+    ],
+    "filters": {
+     "event_import_type": [
+      {
+       "name": "COFA",
+       "id": 32750722016348
+      },
+      {
+       "name": "COFA/Visual Arts Center",
+       "id": 32750727075614
+      }
+     ],
+     "event_target_audience": [
+      {
+       "name": "Students",
+       "id": 24848
+      },
+      {
+       "name": "General Public",
+       "id": 24853
+      }
+     ],
+     "event_types": [
+      {
+       "name": "Arts & Humanities",
+       "id": 24829
+      }
+     ]
+    },
+    "custom_fields": {
+     "on_view": "Yes"
+    },
+    "event_instances": [
+     {
+      "event_instance": {
+       "id": 53511611898665,
+       "event_id": 53511611721496,
+       "start": "2026-10-23T00:00:00-05:00",
+       "end": null,
+       "ranking": 0.04,
+       "all_day": true,
+       "num_attending": 0
+      }
+     }
+    ],
+    "localist_url": "https://calendar.utexas.edu/event/adraint-bereal-as-it-appears",
+    "localist_ics_url": "https://calendar.utexas.edu/event/adraint-bereal-as-it-appears.ics",
+    "photo_url": "https://localist-images.azureedge.net/photos/53511611674391/huge/3e31c2271451d4af71b59538d9f67639b010d2d3.jpg",
+    "photo_caption": "Photo of Black students at the University of Texas at Austin at a party for what seems to be UT&#039;s homecoming.",
+    "venue_url": "https://calendar.utexas.edu/visual_arts_center_art_building_art_968"
+   }
+  },
+  {
+   "event": {
+    "id": 53626633858087,
+    "title": "BCBSTX Fitness Discount Program: Enrollment Fee Waived",
+    "url": "https://hr.utexas.edu/events/bcbstx-fitness-discount-program-enrollment-fee-waived",
+    "updated_at": "2026-10-23T02:56:49-05:00",
+    "created_at": "2026-08-06T02:33:16-05:00",
+    "facebook_id": null,
+    "first_date": "2026-08-06",
+    "last_date": "2026-10-31",
+    "hashtag": null,
+    "urlname": "bcbstx-fitness-discount-program-enrollment-fee-waived",
+    "user_id": null,
+    "directions": "",
+    "allows_reviews": true,
+    "allows_attendance": true,
+    "location": "",
+    "room_number": null,
+    "location_name": "",
+    "status": "live",
+    "experience": "inperson",
+    "stream_url": null,
+    "stream_info": null,
+    "stream_embed_code": null,
+    "created_by": null,
+    "updated_by": 54170089390195,
+    "conference_event_id": null,
+    "kind": "standalone",
+    "address": "",
+    "school_id": 69,
+    "campus_id": null,
+    "recurring": true,
+    "free": false,
+    "private": false,
+    "verified": true,
+    "rejected": false,
+    "sponsored": false,
+    "venue_id": null,
+    "ticket_url": null,
+    "ticket_cost": null,
+    "has_register": false,
+    "keywords": [],
+    "tags": [
+     "Healthpoint Wellness"
+    ],
+    "description": "<p>New Member Special: Pay No Enrollment Fee When you Join the Fitness Program starting in August and running through the end of October.</p><p>Beginning August 1, new members can join the Fitness Program without paying the $19 enrollment fee. Sign up by October 31 to get this great deal!<br><br>The Fitness Program offers flexible options and access to a nationwide network of fitness locations.</p><p>Other features of the Fitness Program include: </p><p>• Online enrollment and tracking. <br>• Au",
+    "description_text": "New Member Special: Pay No Enrollment Fee When you Join the Fitness Program starting in August and running through the end of October.\n\nBeginning August 1, new members can join the Fitness Program without paying the $19 enrollment fee. Sign up by October 31 to get this great deal!\n\nThe Fitness Program offers flexible options and access to a nationwide network of fitness locations.\n\nOther features of the Fitness Program include: \n\n• Online enrollment and tracking. \n• Automatic monthly payment wit",
+    "photo_id": null,
+    "speaker_ids": [],
+    "feedback_enabled": false,
+    "feedback_goal_ids": [],
+    "featured_section_ids": [],
+    "detail_views": 755,
+    "featured": false,
+    "publish_status": "published",
+    "geo": {
+     "latitude": null,
+     "longitude": null,
+     "street": null,
+     "city": null,
+     "state": null,
+     "country": null,
+     "zip": null
+    },
+    "departments": [
+     {
+      "id": 52328511750852,
+      "name": "Human Resources"
+     }
+    ],
+    "filters": {
+     "event_target_audience": [
+      {
+       "name": "Staff",
+       "id": 24849
+      }
+     ]
+    },
+    "custom_fields": {},
+    "event_instances": [
+     {
+      "event_instance": {
+       "id": 54015989177024,
+       "event_id": 53626633858087,
+       "start": "2026-10-23T00:00:00-05:00",
+       "end": "2026-10-23T23:59:00-05:00",
+       "ranking": 0.04,
+       "all_day": false,
+       "num_attending": 0
+      }
+     }
+    ],
+    "localist_url": "https://calendar.utexas.edu/event/bcbstx-fitness-discount-program-enrollment-fee-waived",
+    "localist_ics_url": "https://calendar.utexas.edu/event/bcbstx-fitness-discount-program-enrollment-fee-waived.ics",
+    "photo_url": "https://localist-images.azureedge.net/photos/50959692926893/huge/2ba6bbeec68c8aa8c5b620c33edf7d958a5b1d7c.jpg",
+    "photo_caption": null
+   }
+  },
+  {
+   "event": {
+    "id": 53874376713105,
+    "title": "Student Affairs Meeting",
+    "url": "https://studentgovernment.utexas.edu/events/student-affairs-meeting",
+    "updated_at": "2026-10-23T02:56:50-05:00",
+    "created_at": "2026-09-03T02:36:00-05:00",
+    "facebook_id": null,
+    "first_date": "2026-09-04",
+    "last_date": "2026-12-04",
+    "hashtag": null,
+    "urlname": "student-affairs-meeting",
+    "user_id": null,
+    "directions": "",
+    "allows_reviews": true,
+    "allows_attendance": true,
+    "location": "",
+    "room_number": null,
+    "location_name": "",
+    "status": "live",
+    "experience": "inperson",
+    "stream_url": null,
+    "stream_info": null,
+    "stream_embed_code": null,
+    "created_by": null,
+    "updated_by": null,
+    "conference_event_id": null,
+    "kind": "standalone",
+    "address": "",
+    "school_id": 69,
+    "campus_id": null,
+    "recurring": true,
+    "free": false,
+    "private": false,
+    "verified": true,
+    "rejected": false,
+    "sponsored": false,
+    "venue_id": null,
+    "ticket_url": null,
+    "ticket_cost": null,
+    "has_register": false,
+    "keywords": [],
+    "tags": [],
+    "description": "N/A",
+    "description_text": "N/A",
+    "photo_id": null,
+    "speaker_ids": [],
+    "feedback_enabled": false,
+    "feedback_goal_ids": [],
+    "featured_section_ids": [],
+    "detail_views": 403,
+    "featured": false,
+    "publish_status": "published",
+    "geo": {
+     "latitude": null,
+     "longitude": null,
+     "street": null,
+     "city": null,
+     "state": null,
+     "country": null,
+     "zip": null
+    },
+    "filters": {
+     "event_target_audience": [
+      {
+       "name": "Students",
+       "id": 24848
+      }
+     ],
+     "event_types": [
+      {
+       "name": "Campus & Community",
+       "id": 24831
+      }
+     ]
+    },
+    "custom_fields": {},
+    "event_instances": [
+     {
+      "event_instance": {
+       "id": 53874376808348,
+       "event_id": 53874376713105,
+       "start": "2026-10-23T13:00:00-05:00",
+       "end": "2026-10-23T14:00:00-05:00",
+       "ranking": 0.04,
+       "all_day": false,
+       "num_attending": 0
+      }
+     }
+    ],
+    "localist_url": "https://calendar.utexas.edu/event/student-affairs-meeting",
+    "localist_ics_url": "https://calendar.utexas.edu/event/student-affairs-meeting.ics",
+    "photo_url": "https://localist-images.azureedge.net/photos/49728527286832/huge/86a07ea75a17cb8e9b9f5f851366f19ec726cb93.jpg",
+    "photo_caption": "Join UTMRC for a welcome and training session"
+   }
+  },
+  {
+   "event": {
+    "id": 50830946535493,
+    "title": "AHA BLS Provider (CPR)",
+    "url": "https://nursing.utexas.edu/events/aha-bls-provider-cpr-oct-2026",
+    "updated_at": "2026-10-23T02:57:14-05:00",
+    "created_at": "2025-09-24T02:46:02-05:00",
+    "facebook_id": null,
+    "first_date": "2025-10-03",
+    "last_date": "2026-10-30",
+    "hashtag": null,
+    "urlname": "aha-bls-provider-cpr-3971",
+    "user_id": null,
+    "directions": "",
+    "allows_reviews": true,
+    "allows_attendance": true,
+    "location": "NUR - various",
+    "room_number": null,
+    "location_name": "NUR - various",
+    "status": "live",
+    "experience": "inperson",
+    "stream_url": null,
+    "stream_info": null,
+    "stream_embed_code": null,
+    "created_by": null,
+    "updated_by": null,
+    "conference_event_id": null,
+    "kind": "standalone",
+    "address": "",
+    "school_id": 69,
+    "campus_id": null,
+    "recurring": true,
+    "free": false,
+    "private": false,
+    "verified": true,
+    "rejected": false,
+    "sponsored": false,
+    "venue_id": null,
+    "ticket_url": null,
+    "ticket_cost": null,
+    "has_register": false,
+    "keywords": [],
+    "tags": [
+     "faculty",
+     "training",
+     "staff",
+     "Current Students"
+    ],
+    "description": "<p><strong>Dates/Times/Locations:</strong></p><ul>\n<li>\n<strong>Friday, October 2, 2026</strong> | 8:30 AM – 12:30 PM | NUR 5.178</li>\n<li>\n<strong>Friday, October 16, 2026</strong> | 8:30 AM – 12:30 PM | NUR 5.178</li>\n<li>\n<strong>Friday, October 23, 2026</strong> | 8:30 AM – 12:30 PM | NUR 5.178</li>\n<li>\n<strong>Friday, October 23, 2026</strong> | 2:00 PM – 6:00 PM | NUR 5.178</li>\n<li>\n<strong>Friday, October 30, 2026</strong> | 8:30 AM – 12:30 PM | NUR 1.106</li>\n</ul><p>All courses are he",
+    "description_text": "Dates/Times/Locations:\n\nFriday, October 2, 2026 | 8:30 AM – 12:30 PM | NUR 5.178Friday, October 16, 2026 | 8:30 AM – 12:30 PM | NUR 5.178Friday, October 23, 2026 | 8:30 AM – 12:30 PM | NUR 5.178Friday, October 23, 2026 | 2:00 PM – 6:00 PM | NUR 5.178Friday, October 30, 2026 | 8:30 AM – 12:30 PM | NUR 1.106All courses are held at UT Austin School of Nursing – (View Map).\n\nParking: Parking is available in Trinity Garage (TRG) for a fee. We are unable to validate parking.\n\n​Cost: \n\n$10 – Nursing Fa",
+    "photo_id": 50525188849439,
+    "speaker_ids": [],
+    "feedback_enabled": false,
+    "feedback_goal_ids": [],
+    "featured_section_ids": [],
+    "detail_views": 607,
+    "featured": false,
+    "publish_status": "published",
+    "geo": {
+     "latitude": null,
+     "longitude": null,
+     "street": null,
+     "city": null,
+     "state": null,
+     "country": null,
+     "zip": null
+    },
+    "filters": {},
+    "custom_fields": {},
+    "event_instances": [
+     {
+      "event_instance": {
+       "id": 54122130912203,
+       "event_id": 50830946535493,
+       "start": "2026-10-23T08:30:00-05:00",
+       "end": "2026-10-23T12:30:00-05:00",
+       "ranking": 0.04,
+       "all_day": false,
+       "num_attending": 0
+      }
+     }
+    ],
+    "localist_url": "https://calendar.utexas.edu/event/aha-bls-provider-cpr-3971",
+    "localist_ics_url": "https://calendar.utexas.edu/event/aha-bls-provider-cpr-3971.ics",
+    "photo_url": "https://localist-images.azureedge.net/photos/50525188849439/huge/c3958b7311d69934ea1d236402791c78c3fbf271.jpg",
+    "photo_caption": null
+   }
+  }
+ ],
+ "page": {
+  "current": 1,
+  "size": 100,
+  "total": 2
+ },
+ "date": {
+  "first": "2026-10-23",
+  "last": "2026-11-06"
+ }
+}

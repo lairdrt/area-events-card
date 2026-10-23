@@ -178,7 +178,7 @@ class DiscoveryService:
 
     def _prepare(self, source, adapter, fetcher, result):
         """Everything slow, before the write transaction: bodies hashed and compressed, payload hashes, evidence located."""
-        pages, texts = [], {}
+        pages, texts, feeds = [], {}, set()
         for fetch in fetcher.fetches:
             entry = {"fetch": fetch, "role": adapter.page_role(fetch.url, source["base_url"]), "digest": None}
             if fetch.outcome == "ok" and fetch.body is not None:
@@ -189,6 +189,12 @@ class DiscoveryService:
                     # pages carry random ids and tokens; their readable text decides whether they changed
                     entry["fingerprint"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
                     texts[fetch.url] = (digest, text)
+                elif (fetch.media_type or "").startswith("application/json"):
+                    # a JSON feed (an API page): its string values are the readable text, searched for every event the feed lists
+                    text = evidence_text.squeeze(" . ".join(self._json_strings(fetch.body)))
+                    entry["fingerprint"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                    texts[fetch.url] = (digest, text)
+                    feeds.add(fetch.url)
             pages.append(entry)
         candidates = []
         for event in result.candidates:
@@ -197,13 +203,31 @@ class DiscoveryService:
                 starts_at = int(datetime.fromisoformat(event["start"]).timestamp())
             except (KeyError, TypeError, ValueError):
                 starts_at = None
-            candidates.append({"event": event, "digest": digest, "starts_at": starts_at, "evidence": self._evidence(event, source["base_url"], texts)})
+            candidates.append({"event": event, "digest": digest, "starts_at": starts_at, "evidence": self._evidence(event, source["base_url"], texts, feeds)})
         return {"pages": pages, "candidates": candidates}
 
     @staticmethod
-    def _evidence(event, base_url, texts):
+    def _json_strings(body, limit=2_000_000):
+        """The string values of a JSON document, in order (bounded); an unreadable document has none."""
+        try:
+            stack, found, size = [json.loads(body)], [], 0
+        except ValueError:
+            return []
+        while stack and size < limit:
+            value = stack.pop()
+            if isinstance(value, str):
+                found.append(value)
+                size += len(value)
+            elif isinstance(value, dict):
+                stack.extend(reversed(list(value.values())))
+            elif isinstance(value, list):
+                stack.extend(reversed(value))
+        return found
+
+    @staticmethod
+    def _evidence(event, base_url, texts, feeds=()):
         """Evidence rows (field, kind, quote, url, content_hash, note): a quote only where the value is found verbatim in a page read."""
-        listing = [(url, d, t) for url, (d, t) in texts.items() if url.split("?")[0].rstrip("/") == base_url.split("?")[0].rstrip("/")]
+        listing = [(url, d, t) for url, (d, t) in texts.items() if url.split("?")[0].rstrip("/") == base_url.split("?")[0].rstrip("/") or url in feeds]
         own = [(url, d, t) for url, (d, t) in texts.items() if url == event.get("url")]
 
         def find(value, places):

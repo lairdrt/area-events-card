@@ -1,0 +1,294 @@
+{
+ "events": [
+  {
+   "event": {
+    "id": 54054287967611,
+    "title": "Fortlandia",
+    "url": "https://www.wildflower.org/fortlandia",
+    "updated_at": "2026-10-23T06:46:33-05:00",
+    "created_at": "2026-09-23T10:38:25-05:00",
+    "facebook_id": null,
+    "first_date": "2026-10-02",
+    "last_date": "2027-01-31",
+    "hashtag": "Family Kids Forts Outdoors Nature",
+    "urlname": "fortlandia-6277",
+    "user_id": 49517516918753,
+    "directions": "",
+    "allows_reviews": false,
+    "allows_attendance": true,
+    "location": "",
+    "room_number": "",
+    "location_name": "Lady Bird Johnson Wildflower Center",
+    "status": "live",
+    "experience": "inperson",
+    "stream_url": null,
+    "stream_info": null,
+    "stream_embed_code": null,
+    "created_by": 49517516918753,
+    "updated_by": 54168407714811,
+    "conference_event_id": null,
+    "kind": "standalone",
+    "address": "4801 La Crosse Avenue, Austin, TX 78739",
+    "school_id": 69,
+    "campus_id": null,
+    "recurring": true,
+    "free": false,
+    "private": false,
+    "verified": true,
+    "rejected": false,
+    "sponsored": false,
+    "venue_id": 99096,
+    "ticket_url": null,
+    "ticket_cost": null,
+    "has_register": false,
+    "keywords": [],
+    "tags": [],
+    "description": "<p>Climb upon, crawl through and explore a brand-new lineup of locally designed forts at the Lady Bird Johnson Wildflower Center this fall. From a giant cicada to a scalable armadillo, this year&#39;s secret hideouts are sure to inspire a childlike sense of wonder in visitors of all ages. Get out in nature while the weather is nice. Your secret hideout awaits!</p>\r\n",
+    "description_text": "Climb upon, crawl through and explore a brand-new lineup of locally designed forts at the Lady Bird Johnson Wildflower Center this fall. From a giant cicada to a scalable armadillo, this year's secret hideouts are sure to inspire a childlike sense of wonder in visitors of all ages. Get out in nature while the weather is nice. Your secret hideout awaits!",
+    "photo_id": 54054288202229,
+    "speaker_ids": [],
+    "feedback_enabled": false,
+    "feedback_goal_ids": [],
+    "featured_section_ids": [],
+    "detail_views": 660,
+    "featured": false,
+    "publish_status": "published",
+    "geo": {
+     "latitude": "30.185383",
+     "longitude": "-97.873199",
+     "street": "4801 La Crosse Avenue",
+     "city": "Austin",
+     "state": "TX",
+     "country": "US",
+     "zip": "78739"
+    },
+    "filters": {
+     "event_target_audience": [
+      {
+       "name": "Families",
+       "id": 24852
+      }
+     ],
+     "event_types": [
+      {
+       "name": "Sports & Recreation",
+       "id": 24836
+      }
+     ]
+    },
+    "custom_fields": {},
+    "event_instances": [
+     {
+      "event_instance": {
+       "id": 54054287998353,
+       "event_id": 54054287967611,
+       "start": "2026-10-23T09:00:00-05:00",
+       "end": "2026-10-23T16:00:00-05:00",
+       "ranking": 0.04,
+       "all_day": false,
+       "num_attending": 0
+      }
+     }
+    ],
+    "localist_url": "https://calendar.utexas.edu/event/fortlandia-6277",
+    "localist_ics_url": "https://calendar.utexas.edu/event/fortlandia-6277.ics",
+    "photo_url": "https://localist-images.azureedge.net/photos/54054288202229/huge/b4252f9b6dd33f128c9ac86e71cf91918d6c7a47.jpg",
+    "photo_caption": "Fortlandia",
+    "venue_url": "https://calendar.utexas.edu/lady_bird_johnson_wildflower_center_670"
+   }
+  },
+  {
+   "event": {
+    "id": 54251975514068,
+    "title": "UT Yearbook FREE Graduation Portraits",
+    "url": "https://sites.utexas.edu/cactus/news/",
+    "updated_at": "2026-10-23T06:56:34-05:00",
+    "created_at": "2026-10-15T18:54:08-05:00",
+    "facebook_id": null,
+    "first_date": "2026-10-19",
+    "last_date": "2026-10-30",
+    "hashtag": "",
+    "urlname": "ut-yearbook-free-graduation-portraits",
+    "user_id": 50418150677374,
+    "directions": "",
+    "allows_reviews": false,
+    "allows_attendance": true,
+    "location": "",
+    "room_number": "HSM 3.302",
+    "location_name": "William Randolph Hearst Building (HSM)",
+    "status": "live",
+    "experience": "inperson",
+    "stream_url": null,
+    "stream_info": null,
+    "stream_embed_code": null,
+    "created_by": 50418150677374,
+    "updated_by": 54295824066675,
+    "conference_event_id": null,
+    "kind": "standalone",
+    "address": "2504C WHITIS AVE , Austin, Texas 78705",
+    "school_id": 69,
+    "campus_id": null,
+    "recurring": true,
+    "free": false,
+    "private": false,
+    "verified": true,
+    "rejected": false,
+    "sponsored": false,
+    "venue_id": 91506,
+    "ticket_url": null,
+    "ticket_cost": null,
+    "has_register": false,
+    "keywords": [],
+    "tags": [],
+    "description": "<p><b>Official University of Texas graduation portraits for the Cactus Yearbook will be held on campus Oct. 19-30</b>. Spots fill up quickly, so make your appointment today! See below for instructions.</p>\r\n\r\n<p>&nbsp;</p>\r\n\r\n<p>Cactus, our award-winning annual publication, is the permanent record of student life at UT. If you&rsquo;re graduating December 2026 to August 2027, we want to be sure that your free yearbook portrait is included in the upcoming edition to be remembered with your classm",
+    "description_text": "Official University of Texas graduation portraits for the Cactus Yearbook will be held on campus Oct. 19-30. Spots fill up quickly, so make your appointment today! See below for instructions.\n\n \n\nCactus, our award-winning annual publication, is the permanent record of student life at UT. If you’re graduating December 2026 to August 2027, we want to be sure that your free yearbook portrait is included in the upcoming edition to be remembered with your classmates, faculty and friends.\n\n \n\nWhile sc",
+    "photo_id": 54251992764523,
+    "speaker_ids": [],
+    "feedback_enabled": false,
+    "feedback_goal_ids": [],
+    "featured_section_ids": [],
+    "detail_views": 152,
+    "featured": false,
+    "publish_status": "published",
+    "geo": {
+     "latitude": "30.289162",
+     "longitude": "-97.740715",
+     "street": "2504 Whitis Avenue",
+     "city": "Austin",
+     "state": "TX",
+     "country": "US",
+     "zip": "78705"
+    },
+    "filters": {
+     "event_target_audience": [
+      {
+       "name": "Students",
+       "id": 24848
+      }
+     ],
+     "event_types": [
+      {
+       "name": "Campus & Community",
+       "id": 24831
+      }
+     ]
+    },
+    "custom_fields": {},
+    "event_instances": [
+     {
+      "event_instance": {
+       "id": 54251975519193,
+       "event_id": 54251975514068,
+       "start": "2026-10-23T09:00:00-05:00",
+       "end": "2026-10-23T17:00:00-05:00",
+       "ranking": 0.04,
+       "all_day": false,
+       "num_attending": 0
+      }
+     }
+    ],
+    "localist_url": "https://calendar.utexas.edu/event/ut-yearbook-free-graduation-portraits",
+    "localist_ics_url": "https://calendar.utexas.edu/event/ut-yearbook-free-graduation-portraits.ics",
+    "photo_url": "https://localist-images.azureedge.net/photos/54251992764523/huge/43f4f6cffc0512ec427a4f7db866d6c579ce8bb4.jpg",
+    "photo_caption": "Cactus Yearbook",
+    "venue_url": "https://calendar.utexas.edu/hearst"
+   }
+  },
+  {
+   "event": {
+    "id": 54122125459403,
+    "title": "Bridging the Gap: Professional Development for First-Generation and International Grad Students",
+    "url": "https://gradcareer.utexas.edu/events/bridgingthegap",
+    "updated_at": "2026-10-23T02:39:42-05:00",
+    "created_at": "2026-10-01T02:39:41-05:00",
+    "facebook_id": null,
+    "first_date": "2026-10-23",
+    "last_date": "2026-10-23",
+    "hashtag": null,
+    "urlname": "bridging-the-gap-professional-development-for-first-generation-and-international-grad-students",
+    "user_id": null,
+    "directions": "",
+    "allows_reviews": true,
+    "allows_attendance": true,
+    "location": "Peter T. Flawn Academic Center (FAC) 2.142 - Classroom C",
+    "room_number": null,
+    "location_name": "Peter T. Flawn Academic Center (FAC) 2.142 - Classroom C",
+    "status": "live",
+    "experience": "inperson",
+    "stream_url": null,
+    "stream_info": null,
+    "stream_embed_code": null,
+    "created_by": null,
+    "updated_by": null,
+    "conference_event_id": null,
+    "kind": "standalone",
+    "address": "",
+    "school_id": 69,
+    "campus_id": null,
+    "recurring": false,
+    "free": false,
+    "private": false,
+    "verified": true,
+    "rejected": false,
+    "sponsored": false,
+    "venue_id": null,
+    "ticket_url": null,
+    "ticket_cost": null,
+    "has_register": false,
+    "keywords": [],
+    "tags": [
+     "international",
+     "Graduate Students",
+     "First-Gen"
+    ],
+    "description": "<p>Looking for a clear roadmap to access campus resources as you begin your graduate journey at UT Austin?</p><p>You don’t need to figure it all out on your own! Join us for a practical workshop designed for first-generation and international graduate students in their first or second year who want to better understand and navigate graduate life.</p><p>In this hands-on workshop, we’ll help you find and make the most of the academic, financial, health and community resources that support graduate",
+    "description_text": "Looking for a clear roadmap to access campus resources as you begin your graduate journey at UT Austin?\n\nYou don’t need to figure it all out on your own! Join us for a practical workshop designed for first-generation and international graduate students in their first or second year who want to better understand and navigate graduate life.\n\nIn this hands-on workshop, we’ll help you find and make the most of the academic, financial, health and community resources that support graduate students at ",
+    "photo_id": 48730284064278,
+    "speaker_ids": [],
+    "feedback_enabled": false,
+    "feedback_goal_ids": [],
+    "featured_section_ids": [],
+    "detail_views": 72,
+    "featured": false,
+    "publish_status": "published",
+    "geo": {
+     "latitude": null,
+     "longitude": null,
+     "street": null,
+     "city": null,
+     "state": null,
+     "country": null,
+     "zip": null
+    },
+    "filters": {},
+    "custom_fields": {},
+    "event_instances": [
+     {
+      "event_instance": {
+       "id": 54122125460428,
+       "event_id": 54122125459403,
+       "start": "2026-10-23T11:00:00-05:00",
+       "end": "2026-10-23T12:30:00-05:00",
+       "ranking": 0.14,
+       "all_day": false,
+       "num_attending": 0
+      }
+     }
+    ],
+    "localist_url": "https://calendar.utexas.edu/event/bridging-the-gap-professional-development-for-first-generation-and-international-grad-students",
+    "localist_ics_url": "https://calendar.utexas.edu/event/bridging-the-gap-professional-development-for-first-generation-and-international-grad-students.ics",
+    "photo_url": "https://localist-images.azureedge.net/photos/48730284064278/huge/0f2457468857ca8bd2a9cfd827df9a6b56f6b48d.jpg",
+    "photo_caption": "Career and Life Design logo"
+   }
+  }
+ ],
+ "page": {
+  "current": 2,
+  "size": 100,
+  "total": 2
+ },
+ "date": {
+  "first": "2026-10-23",
+  "last": "2026-11-06"
+ }
+}

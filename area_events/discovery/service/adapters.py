@@ -3,7 +3,7 @@
 An adapter reads a source only through the fetcher it is given (a RecordingFetcher over the shared-policy SafeFetcher) and returns
 candidates: the event dicts the existing adapter already produces. It never stores anything itself.
 """
-from ..sources import sandiego_gov
+from ..sources import localist, sandiego_gov
 from .contracts import AdapterResult
 
 
@@ -25,3 +25,24 @@ class CityOfSanDiegoAdapter:
     @staticmethod
     def page_role(url, base_url):
         return "listing" if url.split("?")[0].rstrip("/") == base_url.split("?")[0].rstrip("/") else "detail"
+
+
+class LocalistAdapter:
+    """Any Localist calendar (EXISTING `sources/localist.py`, unchanged): the site's public, key-less JSON API, paged. One adapter serves every
+    Localist site; each is its own source, with the site address as its base URL and its `days`, `max_pages` and `timezone` as options.
+    The timezone is the calendar's own (the API gives each time with its UTC offset; the zone name is only recorded, never used to guess a time)."""
+
+    adapter = "localist"
+    extractor = "sources/localist@v1"
+    method = "adapter"
+
+    def crawl(self, fetcher, previous, options):
+        zone = options.get("timezone")
+        events, notes = localist.discover(fetcher, previous, details=False, days=int(options.get("days", 14)), max_pages=int(options.get("max_pages", 5)),
+                                          source_id=options["source_key"], source_name=options.get("name", "Localist"), url=options["url"],
+                                          location={"timezone": zone} if zone else None)
+        return AdapterResult(events, notes)
+
+    @staticmethod
+    def page_role(url, base_url):
+        return "feed"

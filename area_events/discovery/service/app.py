@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from ..safe import HostPolicy, SafeFetcher
 from ..sources import sandiego_gov
-from .adapters import CityOfSanDiegoAdapter
+from .adapters import CityOfSanDiegoAdapter, LocalistAdapter
 from .api import ApiTokens, DiscoveryApi, DiscoveryApiServer
 from .areas import AreaRepository, SettingsRepository
 from .control import LocalDiscoveryControl
@@ -35,6 +35,9 @@ from .store import DiscoveryStore
 KNOWN_SOURCES = types.MappingProxyType({  # read-only
     "san-diego-city": SourceSpec("sandiego_gov", "sandiego_gov", sandiego_gov.NAME, sandiego_gov.LISTING_URL,
                                  options=(("pages", 2), ("max_details_per_run", 10)), interval_s=3600),
+    # Austin: the University of Texas at Austin's public events calendar (Localist, key-less JSON API; exact times with UTC offsets, venues, many with addresses)
+    "ut-austin": SourceSpec("ut_austin", "localist", "UT Austin Events", "https://calendar.utexas.edu",
+                            options=(("days", 14), ("max_pages", 5), ("timezone", "America/Chicago")), interval_s=3600),
 })
 
 
@@ -76,7 +79,7 @@ def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None,
     pacing = AreaPacing(areas, settings, scheduler_config)
     scheduler = DiscoveryScheduler(store, areas, settings, jobs, changes, clock, pacing)
     config = config or DiscoveryConfig(require_area=service_gate)
-    service = DiscoveryService(store, sources, pages, candidates, jobs, changes, Retention(changes, event_repository), client, {"sandiego_gov": CityOfSanDiegoAdapter()}, clock,
+    service = DiscoveryService(store, sources, pages, candidates, jobs, changes, Retention(changes, event_repository), client, {"sandiego_gov": CityOfSanDiegoAdapter(), "localist": LocalistAdapter()}, clock,
                                config, worker_id, pacing=pacing if service_gate else None, gate=scheduler if service_gate else None)
     reader = LocalDiscoveryReader(store, sources, pages, candidates, jobs, changes, clock)
     host = DiscoveryHost(service, scheduler, clock, host_config)
