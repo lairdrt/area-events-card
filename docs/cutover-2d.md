@@ -53,3 +53,15 @@ Use whichever matches how far the cutover got.
 - **Git baseline:** the previous integration also exists in the protected tag `area-events-imagery-runtime-accepted-2026-10-22` (`git show <tag>:custom_components/area_events/...`); do not move the tag.
 
 The Cubi service is independent of all of this: it keeps running (or stopped) regardless of what happens in Home Assistant, and rolling back Home Assistant does not touch its database.
+
+## Executed 2026-10-23
+
+Done with approval: certificate placed at `/config/area_events_cert.pem` (public part only), `deploy-ha.ps1 -SkipApp` (Core restart, back online after 85 s, the three obsolete modules removed after the backup), the old `hassio` entry (it was in `migration_error`) removed through the REST API, the new entry created through the real config flow (HTTPS, certificate file, read and control tokens; state `loaded`), and the `test_2` dashboard saved through `lovelace/config/save` with a San Diego card (`area: San Diego`) and a second view with an Austin card.
+
+Checked on the live system: the integration's WebSocket commands, 20 simultaneous card subscriptions, no card-triggered crawl, administrator pause/resume, refusal of a temporary non-administrator (removed afterwards), a stale revision, an outage (Discovery stopped with `systemctl --user stop`) with an honest unavailable view and automatic recovery, an entry reload with Discovery's process unchanged, and no tokens in the Home Assistant log or in the served card.
+
+Not verified: how the card looks in a browser, a real event revision (the City listing did not change), and a reboot of the Cubi.
+
+Defect found and fixed on the way (commit `96cad6e`): a crawl of a page whose markup changed but whose text did not, together with a changed event, failed with a foreign-key error and rolled back. Evidence now names the stored snapshot, and an unexpected storage error releases the job with backoff.
+
+Unrelated, pre-existing and left alone: Home Assistant's own configuration still has the legacy `area_events_sync` shell command and automation, which fail every 30 minutes (`destination folder does not exist: /config/www/area-events-card`). They belong to the earlier bridge and can be removed by the owner.
