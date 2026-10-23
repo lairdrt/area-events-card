@@ -26,6 +26,7 @@ REFUSAL_TTL = 14 * 86400
 MAX_RECORDS = 4000
 MILES_PER_KM = 0.621371
 MEDIA_SCHEMA = "discovery.media.v1"
+ENRICHMENT_VERSION = 2   # 2: maps carry a short place label; candidates enriched under an older version are enriched again (places and pictures stay cached)
 
 
 def content_type_of(name):
@@ -55,11 +56,11 @@ class MediaRepository:
     def forget_files(self, tx, names):
         tx.executemany("DELETE FROM media_files WHERE name=?", [(n,) for n in names])
 
-    def save_candidate_media(self, tx, candidate_id, payload_hash, media, illustration, complete, now):
-        tx.execute("""INSERT INTO candidate_media (candidate_id, payload_hash, media_json, illustration_json, complete, updated_at) VALUES (?, ?, ?, ?, ?, ?)
-                      ON CONFLICT(candidate_id) DO UPDATE SET payload_hash=excluded.payload_hash, media_json=excluded.media_json,
-                        illustration_json=excluded.illustration_json, complete=excluded.complete, updated_at=excluded.updated_at""",
-                   (candidate_id, payload_hash, json.dumps(media, ensure_ascii=False), json.dumps(illustration, ensure_ascii=False) if illustration else None, 1 if complete else 0, now))
+    def save_candidate_media(self, tx, candidate_id, payload_hash, media, illustration, complete, now, version=ENRICHMENT_VERSION):
+        tx.execute("""INSERT INTO candidate_media (candidate_id, payload_hash, media_json, illustration_json, complete, updated_at, version) VALUES (?, ?, ?, ?, ?, ?, ?)
+                      ON CONFLICT(candidate_id) DO UPDATE SET payload_hash=excluded.payload_hash, media_json=excluded.media_json, illustration_json=excluded.illustration_json,
+                        complete=excluded.complete, updated_at=excluded.updated_at, version=excluded.version""",
+                   (candidate_id, payload_hash, json.dumps(media, ensure_ascii=False), json.dumps(illustration, ensure_ascii=False) if illustration else None, 1 if complete else 0, now, version))
 
     def for_event(self, connection, event_id):
         """The media of an event's primary candidate: (media dict, illustration dict) or (None, None)."""
@@ -75,8 +76,8 @@ class MediaRepository:
                                      FROM candidates c JOIN sources s USING (source_id) LEFT JOIN candidate_media m ON m.candidate_id = c.candidate_id
                                      WHERE c.starts_at >= :floor
                                        AND EXISTS (SELECT 1 FROM area_sources x JOIN areas a USING (area_id) WHERE x.source_id = c.source_id AND a.enabled = 1)
-                                       AND (m.candidate_id IS NULL OR m.payload_hash <> c.payload_hash OR (m.complete = 0 AND m.updated_at <= :retry))
-                                     ORDER BY c.starts_at, c.candidate_id LIMIT :limit""", {"floor": floor, "retry": retry_before, "limit": limit}).fetchall()
+                                       AND (m.candidate_id IS NULL OR m.payload_hash <> c.payload_hash OR m.version < :version OR (m.complete = 0 AND m.updated_at <= :retry))
+                                     ORDER BY c.starts_at, c.candidate_id LIMIT :limit""", {"floor": floor, "retry": retry_before, "limit": limit, "version": ENRICHMENT_VERSION}).fetchall()
 
     def area_of(self, connection, source_id):
         row = connection.execute("""SELECT a.* FROM area_sources x JOIN areas a USING (area_id) WHERE x.source_id=? AND a.enabled=1 ORDER BY a.area_id LIMIT 1""", (source_id,)).fetchone()
@@ -236,7 +237,8 @@ class LocalMediaWork:
         now = int(self._clock())
         with self._store.write() as tx:
             for item in results:
-                self._repository.save_candidate_media(tx, item["candidate_id"], item["payload_hash"], item["media"], item.get("illustration"), item["complete"], now)
+                self._repository.save_candidate_media(tx, item["candidate_id"], item["payload_hash"], item["media"], item.get("illustration"), item["complete"], now,
+                                                      item.get("version", ENRICHMENT_VERSION))
 
     def status(self):
         with self._store.read() as connection:

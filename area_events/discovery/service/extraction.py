@@ -23,9 +23,10 @@ from .. import evidence as evidence_text
 from .. import textloc
 from .control import ValidationFailed
 from .processing import LeaseLost, StaleResult
+from .text import decode_entities
 
 EXTRACTOR = "stored-candidate"
-VERSION = 1
+VERSION = 2   # 2: character references in source text (&#039;) are decoded once; stored candidates and evidence keep the source's exact text
 
 
 class ProcessingUnavailable(Exception):
@@ -33,7 +34,7 @@ class ProcessingUnavailable(Exception):
 
 
 def _text(value, limit):
-    value = re.sub(r"[ \t\r\f\v]+", " ", str(value or "")).strip()
+    value = re.sub(r"[ \t\r\f\v]+", " ", decode_entities(value)).strip()
     value = re.sub(r"\n\s*\n+", "\n\n", value)
     return value[:limit] or None
 

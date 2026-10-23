@@ -1241,7 +1241,7 @@ test("image priority: event photo, venue photo, map, illustration, each handing 
   img.listeners.load({});
   assert.equal(tagOf(tile).textContent, "MAP");
   assert.equal(pinOf(tile).hidden, false);
-  assert.equal(text(chipOf(tile)), "Viejas Arena (approximate)");
+  assert.equal(text(chipOf(tile)), "Viejas Arena", "the badge names the place only; the approximation stays in the data, the alt text and the credit note");
   assert.match(plain(creditOf(tile)), /OpenFreeMap © OpenMapTiles Data from OpenStreetMap/);
   img.listeners.error({});
   assert.equal(img.removed, true, "then no broken image");
@@ -1426,6 +1426,80 @@ test("1, 2, 3, 4 and 20 events: every event is one tile in the same grid, which 
   }
   const styles = fs.readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
   assert.doesNotMatch(styles, /\.event \{[^}]*(flex-grow|grid-column|width: 100%)/, "a tile never claims more than its column");
+});
+
+test("an event's time is shown in the event's own time zone, not the viewer's, across daylight-saving changes and midnight", async () => {
+  const card = await make({}, { feed: makeFeed({ events: [] }) });
+  const from = (viewer) => (value, zone) => { card._viewerZone = () => viewer; return card._formatDate(value, zone).replace(/ /g, " "); };
+  const pacific = from("America/Los_Angeles");
+  // Austin, viewed from California: the source's 1:00 PM is 1:00 PM Central, not 11:00 AM
+  assert.equal(pacific("2026-10-23T13:00:00-05:00", "America/Chicago"), "Oct 23, 2026, 1:00 PM CDT");
+  // the same instant for a San Diego event in a San Diego viewer's zone: no zone name needed
+  assert.equal(pacific("2026-10-23T10:00:00-07:00", "America/Los_Angeles"), "Oct 23, 2026, 10:00 AM");
+  // viewed from Texas, a San Diego event keeps its own clock and says so
+  const central = from("America/Chicago");
+  assert.equal(central("2026-10-23T10:00:00-07:00", "America/Los_Angeles"), "Oct 23, 2026, 10:00 AM PDT");
+  assert.equal(central("2026-10-23T13:00:00-05:00", "America/Chicago"), "Oct 23, 2026, 1:00 PM");
+  // late evening stays on the event's own day
+  assert.equal(pacific("2026-10-24T23:30:00-05:00", "America/Chicago"), "Oct 24, 2026, 11:30 PM CDT");
+  assert.equal(pacific("2026-10-25T00:15:00-05:00", "America/Chicago"), "Oct 25, 2026, 12:15 AM CDT");
+  // daylight saving ends in Texas on 1 November 2026 at 2:00 AM: the offset the event carries and the zone name follow it
+  assert.equal(pacific("2026-11-01T00:30:00-05:00", "America/Chicago"), "Nov 1, 2026, 12:30 AM CDT");
+  assert.equal(pacific("2026-11-01T12:00:00-06:00", "America/Chicago"), "Nov 1, 2026, 12:00 PM CST");
+  // in California it ends the same day (2:00 AM) for a San Diego event
+  assert.equal(central("2026-11-01T12:00:00-08:00", "America/Los_Angeles"), "Nov 1, 2026, 12:00 PM PST");
+  // spring: Central time starts on 8 March 2026
+  assert.equal(pacific("2026-03-08T09:00:00-05:00", "America/Chicago"), "Mar 8, 2026, 9:00 AM CDT");
+  // a missing or unknown zone falls back to the viewer's own clock, safely
+  for (const bad of [undefined, null, "", "Not/AZone", 7, "x".repeat(80)]) assert.match(pacific("2026-10-23T13:00:00-05:00", bad), /^Oct 23, 2026, 11:00 AM$/);
+  assert.equal(pacific("garbage", "America/Chicago"), "garbage");
+  // the tile itself uses the event's zone
+  const austin = event("Austin talk", 1, { start: "2026-10-23T13:00:00-05:00", timezone: "America/Chicago", end: "2026-10-23T17:00:00-05:00" });
+  card._viewerZone = () => "America/Los_Angeles";
+  assert.equal(card._normalizeEvent(austin).timezone, "America/Chicago");
+  assert.equal(card._normalizeEvent({ ...austin, timezone: "Nope/Zone" }).timezone, undefined);
+  assert.equal(new Date(card._normalizeEvent(austin).start).getTime(), Date.parse("2026-10-23T18:00:00Z"), "the stored instant is untouched");
+});
+
+test("map badges name a place and never a sentence; the approximation is kept in the data", async () => {
+  const mediaFor = (label) => ({ map: { light: "/area_events/media/m0123456789abcdef-light.svg", dark: "/area_events/media/m0123456789abcdef-dark.svg", approximate: true, confidence: "address", precision: "address", label } });
+  const sentence = "The Little Italy Mercato operates on West Date Street from the cul de sac at Kettner to India Street, every Saturday morning.";
+  const cases = [
+    [{ venue: sentence }, "Little Italy Mercato", "Little Italy Mercato"],        // the service's label wins
+    [{ venue: sentence }, "W Date St", "W Date St"],
+    [{ venue: "Cactus Cafe, Texas Union" }, undefined, "Cactus Cafe"],             // no label: a venue that reads like a name is used (first part)
+    [{ venue: sentence }, undefined, ""],                                          // a sentence is never a badge
+    [{ venue: "Ray Street to Granada Avenue along North Park Way including the intersection of 29th Street." }, undefined, ""],
+    [{ venue: "On the corner of Balboa Drive and Eighth Drive." }, undefined, ""],
+    [{}, undefined, ""],
+    [{ venue: sentence }, sentence, ""],                                           // a sentence sent as a label is refused too
+  ];
+  for (const [fields, label, expected] of cases) {
+    const raw = mediaFor(label);
+    const shown = safeMedia(raw, fields);
+    assert.equal(shown.map.venue, expected, JSON.stringify([fields.venue && fields.venue.slice(0, 30), label]));
+    assert.equal(shown.map.approximate, true, "the confidence flag is kept whatever the label");
+  }
+  const feed = makeFeed({ events: [event("Little Italy Mercato (Saturday)", 1, { venue: sentence, media: mediaFor("Little Italy Mercato"), illustration: { category: "farmers_market" } })] });
+  const card = await make({}, { feed });
+  const tile = tileFor(card, "Little Italy Mercato (Saturday)");
+  const chip = byClass(tile, "venue-chip")[0];
+  const img = imgOf(tile);
+  if (img && img.listeners && img.listeners.load) img.listeners.load({});
+  assert.doesNotMatch(text(tile), /approximate\)/, "no '(approximate)' suffix is shown");
+  assert.ok(!chip || !/operates|\./.test(chip.textContent), "the badge is not a sentence");
+});
+
+test("source text is shown as text only: decoded entities and markup-like characters never become elements", async () => {
+  const title = "Children's <img src=x onerror=alert(1)> & \"Friends\" <script>alert(1)</script>";
+  const before = created.img;
+  const card = await make({}, { feed: makeFeed({ events: [event(title, 1, { description: "<b>bold</b> &lt;i&gt; Café — ñ", venue: "Cactus Café" })] }) });
+  const tile = tileFor(card, title);
+  assert.ok(tile, "the title is shown exactly as given");
+  assert.equal(text(byClass(tile, "title")[0]), title);
+  assert.match(text(tile), /<b>bold<\/b> &lt;i&gt; Café — ñ/);
+  assert.equal(walk(tile).filter((el) => el.tag === "script" || (el.tag === "img" && el.attrs && el.attrs.onerror)).length, 0);
+  assert.ok(created.img - before <= 1, "no image element was made from the title's text");
 });
 
 test("a venue photograph without a stated creator is credited to Wikimedia Commons, and links stay on Wikimedia and Creative Commons", async () => {

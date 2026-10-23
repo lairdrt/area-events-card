@@ -322,6 +322,9 @@ CREATE TABLE candidate_media (
 );
 CREATE INDEX candidate_media_open ON candidate_media(complete, updated_at);
 """),
+    (5, "media enrichment version per candidate (maps gain a short place label)", """
+ALTER TABLE candidate_media ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+"""),
 )
 
 LATEST = MIGRATIONS[-1][0]

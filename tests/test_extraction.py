@@ -19,7 +19,7 @@ from discovery.service import app as app_module
 from discovery.service.api import ApiTokens
 from discovery.service.control import CreateAreaRequest, NotFound, ValidationFailed
 from discovery.service.events import EventQuery
-from discovery.service.extraction import (ExtractionConfig, ExtractionService, HttpProcessingClient, LocalProcessingClient, ProcessingUnavailable, StoredCandidateExtractor)
+from discovery.service.extraction import (VERSION, ExtractionConfig, ExtractionService, HttpProcessingClient, LocalProcessingClient, ProcessingUnavailable, StoredCandidateExtractor)
 from discovery.service.host import HostConfig
 from discovery.service.processing import LeaseLost, StaleResult
 from discovery.service.repositories import SourceSpec, payload_hash
@@ -234,7 +234,7 @@ class Pipeline(Fixture):
         self.drain(built)
         urls = len(self.client.urls)
         newer = StoredCandidateExtractor()
-        newer.version = 2
+        newer.version = VERSION + 1
         service = ExtractionService(LocalProcessingClient(built.processing), newer, self.clock, worker_id="v2")
         report = self.drain(built, service)
         self.assertEqual((report.submitted, sorted(set(report.outcomes))), (7, ["unchanged"]), "the same algorithm gives the same events: nothing is rewritten")
@@ -347,7 +347,7 @@ class Processing(Fixture):
         self.discover(self.built)
 
     def claim(self, limit=1, lease_s=60, worker="w1"):
-        return self.built.processing.claim(worker, NAME, 1, limit, lease_s).items
+        return self.built.processing.claim(worker, NAME, VERSION, limit, lease_s).items
 
     def result(self, item):
         return StoredCandidateExtractor().extract(dataclasses.asdict(item))
@@ -364,10 +364,10 @@ class Processing(Fixture):
         item = self.claim()[0]
         with mock.patch.object(self.built.processing._changes, "append", side_effect=RuntimeError("disk full")):
             with self.assertRaises(RuntimeError):
-                self.built.processing.submit(item.candidate_key, NAME, 1, item.lease_token, self.result(item))
+                self.built.processing.submit(item.candidate_key, NAME, VERSION, item.lease_token, self.result(item))
         self.assertEqual((self.count("extractions"), self.count("events"), self.count("event_candidates")), (0, 0, 0), "nothing of the failed attempt remains")
         self.assertEqual(self.count("processing_work", "state='leased'"), 1, "and the item is still leased, so it can be retried")
-        ack = self.built.processing.submit(item.candidate_key, NAME, 1, item.lease_token, self.result(item))
+        ack = self.built.processing.submit(item.candidate_key, NAME, VERSION, item.lease_token, self.result(item))
         self.assertEqual((ack.outcome, ack.event_revision, self.count("events"), self.count("processing_work", "state='done'")), ("created", 1, 1, 1))
 
     def test_a_crashed_worker_loses_nothing_and_its_old_lease_is_useless(self):
@@ -376,8 +376,8 @@ class Processing(Fixture):
         self.clock.t += 31
         retaken = [i for i in self.claim(limit=20, worker="second") if i.candidate_key == item.candidate_key][0]
         with self.assertRaises(LeaseLost):
-            self.built.processing.submit(item.candidate_key, NAME, 1, item.lease_token, self.result(item))
-        ack = self.built.processing.submit(retaken.candidate_key, NAME, 1, retaken.lease_token, self.result(retaken))
+            self.built.processing.submit(item.candidate_key, NAME, VERSION, item.lease_token, self.result(item))
+        ack = self.built.processing.submit(retaken.candidate_key, NAME, VERSION, retaken.lease_token, self.result(retaken))
         self.assertEqual(ack.outcome, "created")
 
     def test_a_result_from_an_older_revision_never_overwrites_newer_evidence(self):
@@ -386,21 +386,21 @@ class Processing(Fixture):
         self.built.service.make_due("sandiego_gov")
         self.assertIn("completed", [r.outcome for r in self.built.service.run_until_idle(10)])
         with self.assertRaises(StaleResult):
-            self.built.processing.submit(item.candidate_key, NAME, 1, item.lease_token, self.result(item))
+            self.built.processing.submit(item.candidate_key, NAME, VERSION, item.lease_token, self.result(item))
         self.assertEqual((self.count("extractions"), self.count("events")), (0, 0))
         fresh = [i for i in self.claim(limit=20) if i.candidate_key == item.candidate_key][0]
         self.assertNotEqual(fresh.payload_hash, item.payload_hash)
-        self.assertEqual(self.built.processing.submit(fresh.candidate_key, NAME, 1, fresh.lease_token, self.result(fresh)).outcome, "created")
+        self.assertEqual(self.built.processing.submit(fresh.candidate_key, NAME, VERSION, fresh.lease_token, self.result(fresh)).outcome, "created")
 
     def test_repeated_submissions_are_acknowledged_without_duplicating_anything(self):
         item = self.claim()[0]
         result = self.result(item)
-        first = self.built.processing.submit(item.candidate_key, NAME, 1, item.lease_token, result)
-        again = self.built.processing.submit(item.candidate_key, NAME, 1, item.lease_token, result)
+        first = self.built.processing.submit(item.candidate_key, NAME, VERSION, item.lease_token, result)
+        again = self.built.processing.submit(item.candidate_key, NAME, VERSION, item.lease_token, result)
         self.assertEqual((first.replayed, again.replayed, again.event_key, again.extraction_id), (False, True, first.event_key, first.extraction_id))
         self.assertEqual((self.count("extractions"), self.count("events"), self.count("changes", "entity='event'")), (1, 1, 1))
         with self.assertRaises(LeaseLost):  # a different result on a used lease is not accepted
-            self.built.processing.submit(item.candidate_key, NAME, 1, item.lease_token, {**result, "issues": ["changed"]})
+            self.built.processing.submit(item.candidate_key, NAME, VERSION, item.lease_token, {**result, "issues": ["changed"]})
 
     def test_invalid_results_are_refused_and_write_nothing(self):
         item = self.claim()[0]
@@ -412,15 +412,15 @@ class Processing(Fixture):
         for result in bad:
             with self.subTest(str(result)[:50]):
                 with self.assertRaises(ValidationFailed):
-                    self.built.processing.submit(item.candidate_key, NAME, 1, item.lease_token, result)
+                    self.built.processing.submit(item.candidate_key, NAME, VERSION, item.lease_token, result)
         self.assertEqual((self.count("extractions"), self.count("events")), (0, 0))
-        self.assertEqual(self.built.processing.submit(item.candidate_key, NAME, 1, item.lease_token, good).outcome, "created")
+        self.assertEqual(self.built.processing.submit(item.candidate_key, NAME, VERSION, item.lease_token, good).outcome, "created")
 
     def test_failures_back_off_and_stop_after_the_last_attempt_until_the_source_changes(self):
         outcomes = []
         for attempt in range(4):
             item = [i for i in self.claim(limit=20) if i.candidate_key.startswith("sandiego_gov:e0@")][0]
-            outcomes.append(self.built.processing.fail(item.candidate_key, NAME, 1, item.lease_token, "boom")["state"])
+            outcomes.append(self.built.processing.fail(item.candidate_key, NAME, VERSION, item.lease_token, "boom")["state"])
             self.assertNotIn(item.candidate_key, [i.candidate_key for i in self.claim(limit=20)], "not offered again before its retry time")
             self.clock.t += 300 * 2 ** attempt + 1
         self.assertEqual(outcomes, ["retrying", "retrying", "retrying", "failed"])
@@ -430,7 +430,7 @@ class Processing(Fixture):
         self.built.service.make_due("sandiego_gov")
         self.built.service.run_until_idle(10)
         self.assertIn(item.candidate_key, [i.candidate_key for i in self.claim(limit=20)], "a new source revision makes it pending again")
-        status = self.built.processing.status(NAME, 1)
+        status = self.built.processing.status(NAME, VERSION)
         self.assertEqual(status.failed, 0)
 
 
@@ -496,7 +496,7 @@ class Isolation(Fixture):
         built = self.build()
         self.two_areas(built)
         self.discover(built)
-        built.processing.claim("dying", NAME, 1, 20, 60)  # claimed everything, then the process died
+        built.processing.claim("dying", NAME, VERSION, 20, 60)  # claimed everything, then the process died
         self.assertEqual(self.drain(built).claimed, 0)
         self.clock.t += 61
         built.close()
@@ -558,7 +558,7 @@ class EventApi(Fixture):
         self.assertEqual(self.call("GET", "/v1/events", token=None)[0], 401)
 
     def test_only_a_processing_token_can_submit_results_and_it_can_do_nothing_else(self):
-        claim = {"worker": "w", "extractor": NAME, "version": 1, "limit": 1}
+        claim = {"worker": "w", "extractor": NAME, "version": VERSION, "limit": 1}
         for token in (READ_TOKEN, CONTROL_TOKEN):
             self.assertEqual(self.call("POST", "/v1/processing/claim", token=token, body=claim)[0], 403, "read and control tokens cannot process")
         status, claimed = self.call("POST", "/v1/processing/claim", token=PROCESS_TOKEN, body={**claim, "extractor": "other-extractor"})
@@ -569,7 +569,7 @@ class EventApi(Fixture):
         self.assertEqual(self.call("POST", "/v1/areas", token=PROCESS_TOKEN, body={})[0], 403)
         self.assertEqual(self.call("POST", "/v1/discovery/pause", token=PROCESS_TOKEN, body={})[0], 403)
         result = StoredCandidateExtractor().extract(item)
-        submit = {"extractor": "other-extractor", "version": 1, "candidate_key": item["candidate_key"], "lease_token": item["lease_token"], "result": result}
+        submit = {"extractor": "other-extractor", "version": VERSION, "candidate_key": item["candidate_key"], "lease_token": item["lease_token"], "result": result}
         self.assertEqual(self.call("POST", "/v1/processing/submit", token=READ_TOKEN, body=submit)[0], 403)
         self.assertEqual(self.call("POST", "/v1/processing/submit", token=PROCESS_TOKEN, body={**submit, "lease_token": "guess"})[1]["error"]["code"], "lease_lost")
         self.assertEqual(self.call("POST", "/v1/processing/submit", token=PROCESS_TOKEN, body={**submit, "sql": "x"})[0], 400)
@@ -592,7 +592,7 @@ class EventApi(Fixture):
         self.assertEqual((report.submitted, sorted(set(report.outcomes))), (7, ["unchanged"]))
         self.assertEqual(client.status("remote-extractor", 1)["done"], 7)
         with self.assertRaises(ProcessingUnavailable) as caught:
-            HttpProcessingClient(f"http://{host}:{port}", "w" * 40).status(NAME, 1)
+            HttpProcessingClient(f"http://{host}:{port}", "w" * 40).status(NAME, VERSION)
         self.assertNotIn("w" * 40, str(caught.exception))
 
 

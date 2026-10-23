@@ -21,7 +21,8 @@ from dataclasses import dataclass
 from .. import classifiers, images
 from ..core import FetchError
 from ..safe import BlockedError
-from .media_store import MAX_FILE_BYTES, inside_area
+from .media_store import ENRICHMENT_VERSION, MAX_FILE_BYTES, inside_area
+from .text import place_label
 
 log = logging.getLogger("area-events.enrichment")
 PHOTO_TYPES = ("image/jpeg", "image/png", "image/webp")
@@ -137,11 +138,13 @@ class MediaEnrichmentService:
             annotated = self._resolver.annotate(events, area)
             for item, event, shown in zip(group, events, annotated):
                 media = dict(shown.get("media") or {})
+                if media.get("map"):
+                    media["map"] = {**media["map"], "label": place_label(event)}   # a short place name, or None: never a sentence
                 image, finished = self._photos.cache(event, item["source_name"])
                 if image:
                     media["image"] = image
                 places_done = self._resolver.pending([(area, [event])]) == 0
-                results.append({"candidate_id": item["candidate_id"], "payload_hash": item["payload_hash"], "media": media, "illustration": event.get("illustration"),
+                results.append({"candidate_id": item["candidate_id"], "payload_hash": item["payload_hash"], "media": media, "version": ENRICHMENT_VERSION, "illustration": event.get("illustration"),
                                 "complete": finished and places_done})
         if results:
             self._work.finish(results)

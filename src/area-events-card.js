@@ -623,6 +623,16 @@ const MEDIA_FILE = /^\/area_events\/media\/[a-z0-9][a-z0-9-]*(\.light|\.dark)?\.
 // a photograph the event's source supplied, cached and served by this integration (never a path from anywhere else)
 const EVENT_PHOTO_FILE = /^\/area_events\/media\/p[a-f0-9]{24}\.(jpg|png|webp)$/;
 /** The credit for an event's own picture, as plain text and a link only to the page it came from (https). */
+/** An IANA time zone name this browser knows, else undefined (then the viewer's own zone is used). */
+function validZone(name) {
+  if (typeof name !== "string" || !name || name.length > 64) return undefined;
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: name });
+    return name;
+  } catch {
+    return undefined;
+  }
+}
 function safeImageCredit(raw) {
   if (!raw || typeof raw !== "object") return undefined;
   const text = (value, max) => (typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "");
@@ -633,6 +643,12 @@ function safeImageCredit(raw) {
   } catch { /* no usable link */ }
   const credit = { text: text(raw.text, 80), license: text(raw.license, 60), sourceUrl };
   return credit.text ? credit : undefined;
+}
+// A badge names a place; it is never a sentence. The service sends a short `label`; for older answers the venue text is used only if it reads like a name.
+const SENTENCE_WORDS = /\b(is|are|was|were|will|operates?|located|takes? place|between|along|including|vehicles?|this|there|inside|outside)\b/i;
+function shortPlace(value) {
+  const first = typeof value === "string" ? value.replace(/\s+/g, " ").trim().split(",")[0].trim() : "";
+  return first.length >= 2 && first.length <= 60 && first.split(" ").length <= 8 && !/[.!?]$/.test(first) && !SENTENCE_WORDS.test(first) ? first : "";
 }
 function safeMedia(raw, event) {
   if (!raw || typeof raw !== "object") return undefined;
@@ -646,17 +662,17 @@ function safeMedia(raw, event) {
     }
   };
   const out = {};
-  const venue = text(event && event.venue, 80).split(",")[0].trim();
+  const venue = shortPlace(event && event.venue);
   const photo = raw.photo;
   if (photo && MEDIA_FILE.test(photo.url) && /\.jpg$/.test(photo.url)) {
     out.photo = {
-      url: photo.url, venue: text(photo.venue, 80).split(",")[0].trim() || venue, creator: text(photo.creator), license: text(photo.license, 40),
+      url: photo.url, venue: shortPlace(photo.venue) || venue, creator: text(photo.creator), license: text(photo.license, 40),
       licenseUrl: link(photo.license_url, "creativecommons.org"), sourceUrl: link(photo.source_url, "wikimedia.org"),
     };
   }
   const map = raw.map;
   if (map && MEDIA_FILE.test(map.light) && MEDIA_FILE.test(map.dark) && /\.svg$/.test(map.light) && /\.svg$/.test(map.dark)) {
-    out.map = { light: map.light, dark: map.dark, approximate: map.approximate === true, credit: text(map.credit, 80) || "OpenFreeMap © OpenMapTiles Data from OpenStreetMap", venue };
+    out.map = { light: map.light, dark: map.dark, approximate: map.approximate === true, credit: text(map.credit, 80) || "OpenFreeMap © OpenMapTiles Data from OpenStreetMap", venue: shortPlace(map.label) || venue };
   }
   return out.photo || out.map ? out : undefined;
 }
@@ -948,6 +964,7 @@ class AreaEventsCard extends HTMLElement {
       title: event.title,
       start: event.start,
       end: event.end,
+      timezone: validZone(event.timezone),
       location: event.location || [event.venue, event.address].filter(Boolean).join(", "),
       category: event.category || categories[0],
       categories,
@@ -971,11 +988,19 @@ class AreaEventsCard extends HTMLElement {
     return this._usesInline() ? undefined : this._feed && this._feed.generatedAt;
   }
 
-  _formatDate(value) {
+  _viewerZone() {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  }
+
+  /** A time as people read it. With `zone` (an event's own IANA time zone) the time is shown there, not in the viewer's zone, with the zone's short name when it differs. */
+  _formatDate(value, zone) {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value || "";
     const locale = this._hass && this._hass.locale && this._hass.locale.language;
-    return date.toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
+    const known = validZone(zone);
+    if (!known) return date.toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
+    if (known === this._viewerZone()) return date.toLocaleString(locale, { dateStyle: "medium", timeStyle: "short", timeZone: known });
+    return date.toLocaleString(locale, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: known, timeZoneName: "short" });
   }
 
   _ago(ms) {
@@ -1490,7 +1515,7 @@ class AreaEventsCard extends HTMLElement {
         info.title = info.getAttribute("aria-label");
         pin.hidden = current.kind !== "map";
         chip.hidden = current.kind !== "map" || !place;
-        if (!chip.hidden) chip.textContent = `${place}${current.map.approximate ? " (approximate)" : ""}`;
+        if (!chip.hidden) chip.textContent = place;   // the position's confidence stays in the data and the credit note; the card says once, at the top, that areas are matched by source
         if (current.kind === "venue") {
           const { creator, license, licenseUrl, sourceUrl } = current.photo;
           credit.append(document.createTextNode(`Photo: ${creator || "Wikimedia Commons"} · `));
@@ -1570,7 +1595,7 @@ class AreaEventsCard extends HTMLElement {
 
     const body = this._el("div", "body");
     body.append(this._el("div", "title", event.title || "Untitled event"));
-    if (event.start) body.append(this._meta("mdi:calendar-clock", this._formatDate(event.start)));
+    if (event.start) body.append(this._meta("mdi:calendar-clock", this._formatDate(event.start, event.timezone)));
     if (event.location) body.append(this._meta("mdi:map-marker", event.location));
     if (event.locationStatus === "description_only" || event.locationStatus === "unknown") {
       body.append(this._meta("mdi:help-circle-outline", event.location ? "The location is the source's own description and is not verified." : "The source gave no location."));
