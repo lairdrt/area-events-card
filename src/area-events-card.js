@@ -26,7 +26,7 @@ globalThis.__AREA_EVENTS_CARD_LOAD__ = { build: AREA_EVENTS_CARD_BUILD, started:
  * and secondary backgrounds are identical. Verification, category and filter
  * state are always conveyed by icon or text, never by color alone.
  *
- * Layout: auto-fit columns, 220px minimum tile width, capped at four, so the
+ * Layout: auto-fill columns (empty columns stay empty, so a tile never grows when there are few events), 220px minimum tile width, capped at four, so the
  * column count follows the card width (not the viewport). No breakpoints and
  * no font scaling; the header only rearranges using a container query on the
  * card's own width.
@@ -107,7 +107,7 @@ const STYLES = `
   .no-match { padding: 12px 4px; color: var(--secondary-text-color); }
   .grid {
     display: grid; gap: 8px;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, max(220px, (100% - 3 * 8px) / 4)), 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, max(220px, (100% - 3 * 8px) / 4)), 1fr));
   }
   .event {
     display: flex; flex-direction: column; min-width: 0; overflow: hidden;
@@ -1059,7 +1059,7 @@ class AreaEventsCard extends HTMLElement {
     root.replaceChildren();
 
     const style = document.createElement("style");
-    style.textContent = STYLES + (this._settings.columns ? `\n  .grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, max(160px, (100% - ${(this._settings.columns - 1) * 8}px) / ${this._settings.columns})), 1fr)); }` : "");
+    style.textContent = STYLES + (this._settings.columns ? `\n  .grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, max(160px, (100% - ${(this._settings.columns - 1) * 8}px) / ${this._settings.columns})), 1fr)); }` : "");
     const card = document.createElement("ha-card");
     const wrap = this._el("div", "wrap");
 

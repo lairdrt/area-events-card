@@ -248,6 +248,17 @@ test("a configuration error is retried slowly, not hammered", async () => {
   assert.ok(delays.includes(300000), "5 min after a permanent error");
 });
 
+test("few results never stretch the tiles: the grid keeps its empty columns (auto-fill, not auto-fit)", () => {
+  const source = fs.readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  const rules = source.match(/grid-template-columns:[^;]*;/g) || [];
+  assert.ok(rules.length >= 2, "the default grid rule and the 'columns' override");
+  for (const rule of rules) {
+    assert.match(rule, /repeat\(auto-fill,/, rule);
+    assert.doesNotMatch(rule, /auto-fit/, rule);
+  }
+  assert.match(source, /\.image \{[^}]*aspect-ratio: 16 \/ 9/, "a tile's picture keeps its proportions, so equal widths mean equal heights");
+});
+
 test("inline events keep working and Verified only when verified is true", async () => {
   const { shadowRoot: root } = await make({ demo: true, events: [{ title: "A", verified: true }, { title: "B" }] });
   const out = text(root);
