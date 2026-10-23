@@ -44,6 +44,10 @@
 .PARAMETER CoreRecoveryTimeoutSeconds
   How long, counted from the restart request, Home Assistant Core may take to go down and become healthy again. Default 180 (a Raspberry Pi 4 needs about 90).
 
+.PARAMETER SkipApp
+  Deploy only the integration and the card: the Area Events app is not compared, rebuilt, started or verified, and -AppsShare is not needed.
+  Use this since Milestone 2D, when events come from the Discovery Service and the earlier Home Assistant app is no longer used.
+
 .PARAMETER SkipCoreRestart
   Install and rebuild the app but leave Home Assistant Core running (the integration then loads at its next restart).
 
@@ -66,6 +70,7 @@ param(
   [switch]$Force,
   [switch]$SkipBuild,
   [switch]$SkipCoreRestart,
+  [switch]$SkipApp,
   [int]$AppTimeoutSeconds = 900,
   [Alias("CoreTimeoutSeconds")]
   [int]$CoreRecoveryTimeoutSeconds = 180
@@ -150,6 +155,26 @@ function Test-FolderCurrent([string]$Source, [string]$Destination) {
     if ((Get-NormalizedHash (Join-Path $Source $relative)) -ne (Get-NormalizedHash $target)) { return $false }
   }
   return $true
+}
+
+# Modules of the earlier (profile-driven) integration. Nothing imports them any more; the copy does not delete, so a cutover removes them by name,
+# only from the integration folder, only when this checkout no longer has them, and only after install-ha.ps1 has backed the old folder up.
+$script:ObsoleteIntegrationFiles = @("client.py", "profile.py", "media_view.py")
+
+function Get-ObsoleteFiles([string]$Source, [string]$Destination) {
+  <# The obsolete module names that exist on the share and not in this checkout. Reads only. #>
+  $found = @()
+  foreach ($name in $script:ObsoleteIntegrationFiles) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Source $name)) -and (Test-Path -LiteralPath (Join-Path $Destination $name) -PathType Leaf)) { $found += $name }
+  }
+  return $found
+}
+
+function Remove-ObsoleteFiles([string]$Source, [string]$Destination) {
+  <# Deletes exactly the files Get-ObsoleteFiles reports (never a wildcard, never outside $Destination). Returns their names. #>
+  $names = @(Get-ObsoleteFiles $Source $Destination)
+  foreach ($name in $names) { Remove-Item -LiteralPath (Join-Path $Destination $name) -Force }
+  return $names
 }
 
 # --- Home Assistant access ------------------------------------------------------------------------------------
@@ -286,11 +311,15 @@ function Test-FinalState {
   $config = & $GetConfig
   if ($config.state -ne "RUNNING") { throw "Home Assistant reports state $($config.state), not RUNNING." }
   if ($config.components -notcontains "area_events") { throw "The Area Events integration is not loaded in Home Assistant (check Settings > Devices & services and the Core log)." }
-  $app = & $GetApp
-  Assert-AppIdentity $app $script:AppSlug $script:AppName
-  if ($app.state -ne "started") { throw "The Area Events app is '$($app.state)', not started." }
+  $appState = "not checked"
+  if ($GetApp) {
+    $app = & $GetApp
+    Assert-AppIdentity $app $script:AppSlug $script:AppName
+    if ($app.state -ne "started") { throw "The Area Events app is '$($app.state)', not started." }
+    $appState = $app.state
+  }
   Wait-Until "the served card to carry build $Expected" { $script:Served = & $GetServedBuild; $script:Served -eq $Expected } $BuildWaitSeconds $BuildPollSeconds
-  return [pscustomobject]@{ Version = $config.version; AppState = $app.state; Build = $Expected }
+  return [pscustomobject]@{ Version = $config.version; AppState = $appState; Build = $Expected }
 }
 
 function Get-AppInfo { Invoke-Supervisor "/addons/$script:AppSlug/info" "get" 30 }
@@ -302,8 +331,9 @@ function Get-CardBuildFromHa {
 # --- main -----------------------------------------------------------------------------------------------------
 
 function Invoke-Deployment {
-  if (-not $AppsShare) { throw "Pass -AppsShare, the Home Assistant local apps share (for example .\scripts\deploy-ha.ps1 -AppsShare X:\)." }
-  foreach ($share in @($AppsShare, $ConfigShare)) { if (-not (Test-Path -LiteralPath $share)) { throw "$share is not reachable. Map the Home Assistant share first." } }
+  if (-not $AppsShare -and -not $SkipApp) { throw "Pass -AppsShare, the Home Assistant local apps share (for example .\scripts\deploy-ha.ps1 -AppsShare X:\), or -SkipApp to deploy only the integration and the card." }
+  if ($SkipApp) { $AppsShare = $null }
+  foreach ($share in @($AppsShare, $ConfigShare)) { if ($share -and -not (Test-Path -LiteralPath $share)) { throw "$share is not reachable. Map the Home Assistant share first." } }
   if (-not (Test-Path -LiteralPath (Join-Path $ConfigShare "configuration.yaml"))) { throw "$ConfigShare does not look like the Home Assistant config share (no configuration.yaml). Pass -ConfigShare." }
 
   $script:Token = Get-Token $TokenFile
@@ -324,9 +354,10 @@ function Invoke-Deployment {
   if (-not $expected) { throw "The card in the integration is not built (no build identifier). Run npm run build." }
   Write-Host "   card build: $expected"
   $integrationCurrent = Test-FolderCurrent (Join-Path $script:Repo "custom_components\area_events") (Join-Path $ConfigShare "custom_components\area_events")
-  $appCurrent = Test-FolderCurrent (Join-Path $script:Repo "area_events") (Join-Path $AppsShare "area_events")
-  $needIntegration = $Force -or -not $integrationCurrent
-  $needApp = $Force -or -not $appCurrent
+  $appCurrent = if ($SkipApp) { $true } else { Test-FolderCurrent (Join-Path $script:Repo "area_events") (Join-Path $AppsShare "area_events") }
+  $obsolete = @(Get-ObsoleteFiles (Join-Path $script:Repo "custom_components\area_events") (Join-Path $ConfigShare "custom_components\area_events"))
+  $needIntegration = $Force -or -not $integrationCurrent -or $obsolete.Count -gt 0
+  $needApp = -not $SkipApp -and ($Force -or -not $appCurrent)
   Write-Host ("   integration on the share: {0}; app on the share: {1}" -f $(if ($integrationCurrent) { "up to date" } else { "differs" }), $(if ($appCurrent) { "up to date" } else { "differs" }))
 
   $info = $null
@@ -335,9 +366,11 @@ function Invoke-Deployment {
     try { $api = Invoke-HaRest GET "/api/" }
     catch { throw "Could not reach Home Assistant at $script:BaseUrl with the access token: $($_.Exception.Message). Check HA_URL, that Home Assistant is running, and that the token is valid (Profile > Security)." }
     Write-Host "   Home Assistant API: $($api.message)"
+    if (-not $SkipApp) {
     $info = Get-AppInfo
     Assert-AppIdentity $info $script:AppSlug $script:AppName
     Write-Host "   app $($info.slug) ('$($info.name)'): state $($info.state), version $($info.version), update available: $($info.update_available)"
+    }
   } else {
     Write-Host "   (Home Assistant access is not configured; the app and Core are not checked in this dry run.)" -ForegroundColor Yellow
   }
@@ -346,12 +379,13 @@ function Invoke-Deployment {
   $plan = @()
   if ($needIntegration -or $needApp) { $plan += "run install-ha.ps1 (backup, copy, verify)" }
   if ($needApp) { $plan += "reload the local apps and rebuild/update ONLY app $script:AppSlug, then wait for it to start" }
+  if ($obsolete.Count) { $plan += "remove the obsolete integration modules $($obsolete -join ', ') from the share (after the backup)" }
   if ($needIntegration -and -not $SkipCoreRestart) { $plan += "restart Home Assistant Core once and wait for the API" }
   if (-not $plan) { $plan += "nothing to install: the shares already match this checkout (use -Force to redeploy)" }
-  $plan += "verify the app, the integration and the served card build $expected"
+  $plan += $(if ($SkipApp) { "verify the integration and the served card build $expected (the app is not touched)" } else { "verify the app, the integration and the served card build $expected" })
   foreach ($item in $plan) { if ($DryRun) { Write-Plan $item } else { Write-Host "   - $item" } }
   if ($DryRun) {
-    if ($needIntegration -or $needApp) { & (Join-Path $PSScriptRoot "install-ha.ps1") -ConfigShare $ConfigShare -AppsShare $AppsShare -DryRun -SkipBuild }
+    if ($needIntegration -or $needApp) { $installArgs = @{ ConfigShare = $ConfigShare; DryRun = $true; SkipBuild = $true }; if ($AppsShare) { $installArgs.AppsShare = $AppsShare }; & (Join-Path $PSScriptRoot "install-ha.ps1") @installArgs }
     Write-Host ""; Write-Host "Dry run: Home Assistant and the shares were not changed."
     return
   }
@@ -360,8 +394,11 @@ function Invoke-Deployment {
   try {
     if ($needIntegration -or $needApp) {
       Write-Step "Install files"
-      & (Join-Path $PSScriptRoot "install-ha.ps1") -ConfigShare $ConfigShare -AppsShare $AppsShare -SkipBuild
+      $installArgs = @{ ConfigShare = $ConfigShare; SkipBuild = $true }; if ($AppsShare) { $installArgs.AppsShare = $AppsShare }
+      & (Join-Path $PSScriptRoot "install-ha.ps1") @installArgs
       if (-not $?) { throw "install-ha.ps1 failed" }
+      $removed = @(Remove-ObsoleteFiles (Join-Path $script:Repo "custom_components\area_events") (Join-Path $ConfigShare "custom_components\area_events"))
+      if ($removed.Count) { Write-Host "   removed obsolete integration modules: $($removed -join ', ')" }
     }
 
     if ($needApp) {
@@ -395,7 +432,7 @@ function Invoke-Deployment {
     }
 
     Write-Step "Verify"
-    $state = Test-FinalState -GetConfig { Invoke-HaRest GET "/api/config" 20 } -GetApp { $script:AppNow = $null; Wait-Until "the Supervisor to answer for the app again" { $script:AppNow = Get-AppInfo; $true } 60 3; $script:AppNow } -GetServedBuild { Get-CardBuildFromHa } -Expected $expected
+    $state = Test-FinalState -GetConfig { Invoke-HaRest GET "/api/config" 20 } -GetApp $(if ($SkipApp) { $null } else { { $script:AppNow = $null; Wait-Until "the Supervisor to answer for the app again" { $script:AppNow = Get-AppInfo; $true } 60 3; $script:AppNow } }) -GetServedBuild { Get-CardBuildFromHa } -Expected $expected
     Write-Host "   Home Assistant $($state.Version): RUNNING; integration loaded; app $($state.AppState); card build $expected served"
     Write-Host ""
     Write-Host ("Deployment complete {0} refresh the HA dashboard." -f [char]0x2014) -ForegroundColor Green

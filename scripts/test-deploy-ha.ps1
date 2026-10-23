@@ -161,6 +161,37 @@ Check "the restart is requested from exactly one place, with the recovery timeou
   if ($text -notmatch "CoreRecoveryTimeoutSeconds = 180") { throw "default timeout is not 180" }
 }
 
+Check "-SkipApp deploys the integration without the app: no app share, no Supervisor app call, no app check" {
+  $text = Get-Content -Raw -LiteralPath $script
+  foreach ($needle in @('[switch]$SkipApp', 'if ($SkipApp) { $AppsShare = $null }', '$needApp = -not $SkipApp -and', '-GetApp $(if ($SkipApp) { $null }')) {
+    if (-not $text.Contains($needle)) { throw "missing: $needle" }
+  }
+  $result = Test-FinalState -GetConfig { [pscustomobject]@{ state = "RUNNING"; components = @("area_events"); version = "2026.10.2" } } -GetApp $null -GetServedBuild { "AREA-EVENTS x" } -Expected "AREA-EVENTS x"
+  if ($result.AppState -ne "not checked") { throw "the app was checked" }
+  Expect-Throw { Test-FinalState -GetConfig { [pscustomobject]@{ state = "RUNNING"; components = @("area_events") } } -GetApp $null -GetServedBuild { "other" } -Expected "AREA-EVENTS x" -BuildWaitSeconds 1 -BuildPollSeconds 1 } "Timed out"
+}
+
+Check "obsolete integration modules are removed by name, only when the checkout lacks them, and nothing else" {
+  $root = Join-Path ([IO.Path]::GetTempPath()) ("aed-obsolete-" + [guid]::NewGuid().ToString("N"))
+  $source = Join-Path $root "source"; $share = Join-Path $root "share"
+  New-Item -ItemType Directory -Force -Path $source, (Join-Path $share "frontend") | Out-Null
+  try {
+    foreach ($name in @("__init__.py", "hub.py", "client.py", "profile.py", "media_view.py", "keep-me.txt")) { [IO.File]::WriteAllText((Join-Path $share $name), "x") }
+    [IO.File]::WriteAllText((Join-Path $share "frontend\client.py"), "x")   # same name in a subfolder: not touched
+    [IO.File]::WriteAllText((Join-Path $source "__init__.py"), "x")
+    $found = @(Get-ObsoleteFiles $source $share)
+    if (($found -join ",") -ne "client.py,profile.py,media_view.py") { throw "found: $($found -join ',')" }
+    if (-not (Test-Path (Join-Path $share "client.py"))) { throw "finding must not delete" }
+    [IO.File]::WriteAllText((Join-Path $source "client.py"), "x")   # a module the checkout still has is never removed
+    if ((@(Get-ObsoleteFiles $source $share) -join ",") -ne "profile.py,media_view.py") { throw "a module still in the checkout was offered for removal" }
+    Remove-Item (Join-Path $source "client.py")
+    $removed = @(Remove-ObsoleteFiles $source $share)
+    if ($removed.Count -ne 3) { throw "removed $($removed.Count)" }
+    foreach ($kept in @("__init__.py", "hub.py", "keep-me.txt", "frontend\client.py")) { if (-not (Test-Path (Join-Path $share $kept))) { throw "$kept was removed" } }
+    if (@(Get-ObsoleteFiles $source $share).Count) { throw "still offered after removal" }
+  } finally { Remove-Item -Recurse -Force $root }
+}
+
 Check "private category photographs are copied with the integration only when they exist (and are never special-cased)" {
   $root = Join-Path ([IO.Path]::GetTempPath()) ("aed-photos-" + [guid]::NewGuid().ToString("N"))
   $integration = Join-Path $root "area_events"
