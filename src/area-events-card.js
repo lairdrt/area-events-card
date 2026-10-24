@@ -428,6 +428,7 @@ function readSettings(config) {
   const known = DEFAULT_CATEGORIES.filter((c) => c.id !== OTHER_ID);
   const categories = new Set();
   for (const token of wanted) {
+    if (token.toLowerCase() === "history") continue;   // the retired built-in category: dropped, never converted (if it was the only one, all categories show)
     const match = known.find((c) => c.id === token.toLowerCase() || normalizeText(c.name) === normalizeText(token)) ||
       (normalizeText(token) === normalizeText("Other") ? DEFAULT_CATEGORIES.at(-1) : undefined);
     if (!match) throw new Error(`Unknown category '${token}'. Use: ${known.map((c) => c.id).join(", ")}, other.`);

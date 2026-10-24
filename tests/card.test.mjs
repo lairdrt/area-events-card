@@ -376,6 +376,16 @@ test("keywords match whole words only", () => {
   assert.deepEqual([...categoriesFor({ title: "Farmers Markets" })], ["markets"]);
 });
 
+test("the retired history category id is dropped from saved filters and card config, never converted", () => {
+  const custom = [{ id: "c_abc123", name: "History", keywords: ["history"] }];
+  const mixed = normalizePrefs({ v: 1, selected: ["history", "markets", "craft-fair", "c_abc123", "music"], custom });
+  assert.deepEqual(mixed.selected, ["markets", "craft-fair", "c_abc123", "music"], "other valid selections, including a user-defined category named History, are kept in order");
+  assert.deepEqual(normalizePrefs({ v: 1, selected: ["history"], custom: [] }).selected, [], "only history saved: no filter, so every event shows");
+  assert.deepEqual(readSettings({ area: "Austin", categories: ["history", "markets"] }).categories, new Set(["markets"]));
+  assert.equal(readSettings({ area: "Austin", categories: ["History"] }).categories, undefined, "only history configured: all categories");
+  assert.throws(() => readSettings({ area: "Austin", categories: ["nonsense"] }), /Unknown category/);
+});
+
 test("Craft Fair replaced History: genuine craft fairs match it, unrelated fairs and old history events do not", () => {
   const m = (e) => [...categoriesFor(e)].sort();
   assert.ok(DEFAULT_CATEGORIES.some((c) => c.id === "craft-fair" && c.name === "Craft Fair"));
