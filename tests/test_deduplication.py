@@ -7,6 +7,7 @@
 import dataclasses
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -16,9 +17,10 @@ import unittest
 
 from discovery.service.contracts import CleanEvent, DecisionRejected, LeaseLost
 from discovery.service.deduplication import Association, Decision, ExistingEvent, Incoming
-from discovery.service.deduplication.exact import ExactMatch, identity_of
+from discovery.service.deduplication.exact import ExactMatch
 from discovery.service.deduplication.tolerant import TolerantMatch
 from discovery.service.extraction import VERSION, ExtractionService, LocalProcessingClient, StoredCandidateExtractor
+from discovery.service.events import EventQuery
 from discovery.service.processing import ProcessingService
 from tests.db import database
 from tests.inmemory import InMemoryProcessing
@@ -30,30 +32,28 @@ NAME = StoredCandidateExtractor.name
 START = 1893477600   # 2030-01-01T06:00:00Z
 
 
-def clean(title="Harbor Concert", starts_at=START, address="500 Harbor Drive, San Diego, CA", venue="Harbor Hall", ends_at=None):
-    return CleanEvent(title, starts_at, ends_at, "America/Los_Angeles", None, venue, None, address, None, "address" if address else "venue" if venue else "unknown", (), "partial")
+def clean(title="Harbor Concert", starts_at=START, address="500 Harbor Drive, San Diego, CA", venue="Harbor Hall", ends_at=None, location_text=None):
+    return CleanEvent(title, starts_at, ends_at, "America/Los_Angeles", None, venue, location_text, address, None, "address" if address else "venue" if venue else "unknown", (), "partial")
 
 
-def known(event_key, event, identity=None):
-    return ExistingEvent(event_key, event.title, event.starts_at, event.ends_at, event.venue_name, event.address, identity, 1)
+def known(event_key, event):
+    return ExistingEvent(event_key, event.title, event.starts_at, event.ends_at, event.venue_name, event.address, event.location_text, 1)
 
 
 class Lookup:
     def __init__(self, *events):
         self.events = events
 
-    def by_identity(self, identity):
-        return tuple(e for e in self.events if e.identity == identity)
-
-    def starting_between(self, earliest, latest):
-        return tuple(e for e in self.events if earliest <= e.starts_at <= latest)
+    def starting_between(self, earliest, latest, after=None, limit=100):
+        events = sorted((e for e in self.events if earliest <= e.starts_at <= latest), key=lambda e: (e.starts_at, e.event_key))
+        if after is not None:
+            events = [e for e in events if (e.starts_at, e.event_key) > after]
+        return tuple(events[:limit])
 
 
 class NoLookup:
-    def by_identity(self, identity):
+    def starting_between(self, *args, **kwargs):
         raise AssertionError("a candidate that already has a place needs no lookup")
-
-    starting_between = by_identity
 
 
 STRATEGIES = {"exact": ExactMatch, "tolerant": TolerantMatch}
@@ -64,47 +64,46 @@ class Interface(unittest.TestCase):
         for name, make in STRATEGIES.items():
             with self.subTest(name):
                 strategy = make()
-                self.assertEqual((strategy.name, strategy.version), (name, 1))
+                self.assertEqual((strategy.name, strategy.version), (name, 2))
                 decision = strategy.decide(Incoming("src:a", clean(), None), Lookup())
                 self.assertIsInstance(decision, Decision)
                 self.assertEqual((decision.action, decision.event_key), ("create", None))
-                self.assertTrue(decision.identity)
+                self.assertIsNone(decision.event_key)
 
     def test_a_candidate_that_already_has_a_place_keeps_it_under_either_strategy(self):
         for name, make in STRATEGIES.items():
             with self.subTest(name):
                 primary = make().decide(Incoming("src:a", clean(), Association("ev-1", "primary")), NoLookup())
-                self.assertEqual((primary.action, primary.event_key, bool(primary.identity)), ("update", "ev-1", True), "the primary description revises its event")
+                self.assertEqual((primary.action, primary.event_key), ("update", "ev-1"), "the primary description revises its event")
                 secondary = make().decide(Incoming("src:b", clean(), Association("ev-1", "duplicate")), NoLookup())
-                self.assertEqual((secondary.action, secondary.event_key, secondary.identity), ("keep", "ev-1", None), "a secondary description never rewrites the event")
+                self.assertEqual((secondary.action, secondary.event_key), ("keep", "ev-1"), "a secondary description never rewrites the event")
 
 
 class Exact(unittest.TestCase):
     def test_the_same_title_start_and_address_are_one_event_however_they_are_written(self):
         first = clean()
-        existing = known("ev-1", first, identity_of(first.title, first.starts_at, first.address))
+        existing = known("ev-1", first)
         for variant in (clean(title="HARBOR concert!", address="500 harbor drive, san diego, ca"), clean(title=" Harbor  Concert ", address="500 Harbor Drive San Diego CA")):
             decision = ExactMatch().decide(Incoming("other:b", variant, None), Lookup(existing))
             self.assertEqual((decision.action, decision.event_key), ("link", "ev-1"))
 
     def test_a_different_date_place_or_title_is_a_different_event(self):
         first = clean()
-        existing = known("ev-1", first, identity_of(first.title, first.starts_at, first.address))
+        existing = known("ev-1", first)
         for other in (clean(starts_at=START + 86400), clean(address="900 Other Street, San Diego, CA"), clean(title="Harbor Concert II")):
             self.assertEqual(ExactMatch().decide(Incoming("other:b", other, None), Lookup(existing)).action, "create")
 
     def test_incomplete_location_evidence_is_never_matched(self):
-        first = clean(address=None)
-        existing = known("ev-1", first, identity_of(first.title, first.starts_at, first.address))
-        self.assertIsNone(existing.identity)
-        decision = ExactMatch().decide(Incoming("other:b", clean(address=None), None), Lookup(existing))
-        self.assertEqual((decision.action, decision.identity), ("create", None), "nothing is invented to make a placeless description comparable")
+        first = clean(address=None, venue=None)
+        existing = known("ev-1", first)
+        decision = ExactMatch().decide(Incoming("other:b", clean(address=None, venue=None), None), Lookup(existing))
+        self.assertEqual(decision.action, "create", "nothing is invented to make a placeless description comparable")
 
 
 class Tolerant(unittest.TestCase):
     def existing(self, **kwargs):
         event = clean(**kwargs)
-        return known("ev-1", event, TolerantMatch().identity(event))
+        return known("ev-1", event)
 
     def test_a_start_within_the_window_and_the_same_place_is_one_event(self):
         decision = TolerantMatch(window_s=900).decide(Incoming("o:b", clean(starts_at=START + 600), None), Lookup(self.existing()))
@@ -117,6 +116,17 @@ class Tolerant(unittest.TestCase):
         self.assertEqual(strategy.decide(Incoming("o:b", clean(address=None, venue="Harbor Hall"), None), Lookup(self.existing())).action, "link")
         self.assertEqual(strategy.decide(Incoming("o:b", clean(address=None, venue="Elsewhere Hall"), None), Lookup(self.existing())).action, "create")
         self.assertEqual(strategy.decide(Incoming("o:b", clean(address=None, venue=None), None), Lookup(self.existing())).action, "create", "no place at all: not matched")
+
+
+class LookupPagination(unittest.TestCase):
+    def test_both_strategies_search_past_the_first_200_events(self):
+        unrelated = [known(f"ev-{i:03}", clean(title=f"Other {i}")) for i in range(250)]
+        target = known("zz-target", clean())
+        lookup = Lookup(*(unrelated + [target]))
+        for strategy in (ExactMatch(), TolerantMatch()):
+            with self.subTest(strategy=strategy.name):
+                decision = strategy.decide(Incoming("new:candidate", clean(), None), lookup)
+                self.assertEqual((decision.action, decision.event_key), ("link", "zz-target"))
 
 
 def run_in_memory(strategy, candidates):
@@ -145,7 +155,7 @@ class ProcessingOnAnotherPersistence(unittest.TestCase):
 
     def test_duplicates_within_one_batch_and_against_existing_events(self):
         exact = run_in_memory(ExactMatch(), self.candidates())
-        self.assertEqual(len(exact.events), 5, "a:1 and b:1 are one event; the day, the place and the two placeless descriptions are not")
+        self.assertEqual(len(exact.events), 5, "a:1 and b:1 are one event; the other day, address, and descriptions with no address stay separate")
         self.assertEqual(sorted(role for _, role in exact.links.values()), ["duplicate", "primary", "primary", "primary", "primary", "primary"])
         self.assertEqual(exact.links["b:1"], exact.links["a:1"][:1] + ("duplicate",))
 
@@ -202,6 +212,44 @@ class ThroughRealPersistence(Fixture):
         self.add_candidate(built, "austin_fixture", "austin_fixture:two", document("Harbor Concert", starts_at="2030-05-01T18:30:00-07:00"))
         self.drain(built)
         self.assertEqual((self.count("events"), self.count("event_candidates", "role='duplicate'")), (1, 1))
+
+    def test_switching_strategies_reuses_the_populated_database_and_stable_associations(self):
+        exact = self.build(deduplication="exact")
+        primary_key = "sandiego_gov:strategy-switch-primary"
+        self.add_candidate(exact, "sandiego_gov", primary_key, document("Harbor Concert"))
+        self.drain(exact)
+        original = exact.events.query(EventQuery(limit=20)).events[0]
+        stable_key = original.event_key
+        exact.close()
+
+        # Recreate the version-7 schema shape and historical fingerprint so this
+        # populated database exercises the actual version-8 removal migration.
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("ALTER TABLE events ADD COLUMN match_key TEXT")
+            connection.execute("UPDATE events SET match_key='legacy-fingerprint'")
+            connection.execute("DROP INDEX events_start_key")
+            connection.execute("CREATE INDEX events_match ON events(match_key) WHERE match_key IS NOT NULL")
+            connection.execute("DELETE FROM schema_migrations WHERE version=8")
+            connection.execute("PRAGMA user_version=7")
+            connection.commit()
+        finally:
+            connection.close()
+
+        tolerant = self.build(deduplication="tolerant")
+        secondary_key = "austin_fixture:strategy-switch-secondary"
+        self.add_candidate(tolerant, "austin_fixture", secondary_key,
+                           document("HARBOR CONCERT!", starts_at="2030-05-01T18:10:00-07:00"))
+        self.drain(tolerant)
+        self.assertEqual((self.count("events"), self.count("event_candidates", "role='duplicate'")), (1, 1))
+        event = tolerant.events.get(stable_key).event
+        self.assertEqual(event.event_key, stable_key)
+        with database(tolerant).read() as connection:
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(events)")}
+            association = connection.execute("""SELECT e.event_key FROM event_candidates ec JOIN candidates c USING(candidate_id)
+                                                   JOIN events e USING(event_id) WHERE c.candidate_key=?""", (secondary_key,)).fetchone()[0]
+        self.assertNotIn("match_key", columns)
+        self.assertEqual(association, stable_key)
 
     def test_existing_primary_and_secondary_associations_reprocessing_and_revisions(self):
         built = self.build()

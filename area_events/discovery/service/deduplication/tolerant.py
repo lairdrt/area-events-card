@@ -1,9 +1,7 @@
-"""An alternative strategy behind the same interface: tolerant matching. Descriptions are one event when they state the same title (as lower-case alphanumerics) and
-starts within `window_s` seconds of each other, and their places do not contradict each other: two street addresses must be the same, and when an address is missing on either
-side the venue names must be the same non-empty name. A description whose place says nothing at all is not matched (nothing is invented to make it comparable)."""
+"""Tolerant field matching: normalized title, nearby starts and non-contradictory stated place evidence."""
 import re
 
-from . import Decision, Incoming, retain
+from . import Decision, Incoming, LOOKUP_PAGE_SIZE, retain
 
 
 def _norm(text):
@@ -11,28 +9,38 @@ def _norm(text):
 
 
 class TolerantMatch:
-    name, version = "tolerant", 1
+    name, version = "tolerant", 2
 
     def __init__(self, window_s=900):
         self.window_s = int(window_s)
-
-    def identity(self, event):
-        return f"tolerant1:{_norm(event.title)}|{event.starts_at}"
 
     def decide(self, incoming: Incoming, lookup):
         event = incoming.event
         known = retain(incoming)
         if known is not None:
-            return Decision(known.action, known.event_key, self.identity(event) if known.action == "update" else None, known.reason)
+            return known
         title = _norm(event.title)
-        for other in lookup.starting_between(event.starts_at - self.window_s, event.starts_at + self.window_s):
-            if _norm(other.title) == title and self._same_place(event, other):
-                return Decision("link", other.event_key, None, "the same title, a start within the window, and a place that does not contradict")
-        return Decision("create", None, self.identity(event), "no known event states the same title near this start in the same place")
+        earliest, latest = event.starts_at - self.window_s, event.starts_at + self.window_s
+        after = None
+        while True:
+            page = lookup.starting_between(earliest, latest, after, LOOKUP_PAGE_SIZE)
+            for other in page:
+                if _norm(other.title) == title and self._same_place(event, other):
+                    return Decision("link", other.event_key, "the same title, a start within the window, and matching place evidence")
+            if len(page) < LOOKUP_PAGE_SIZE:
+                break
+            last = page[-1]
+            after = (last.starts_at, last.event_key)
+        return Decision("create", reason="no known event states the same title near this start in a comparable place")
 
     @staticmethod
     def _same_place(event, other):
-        if event.address and other.address:
-            return _norm(event.address) == _norm(other.address)
-        venue, theirs = _norm(event.venue_name), _norm(other.venue_name)
-        return bool(venue) and venue == theirs
+        evidence_agrees = False
+        for left, right in ((event.address, other.address), (event.venue_name, other.venue_name),
+                            (event.location_text, other.location_text)):
+            left, right = _norm(left), _norm(right)
+            if left and right:
+                if left != right:
+                    return False
+                evidence_agrees = True
+        return evidence_agrees

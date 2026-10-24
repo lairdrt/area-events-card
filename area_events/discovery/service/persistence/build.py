@@ -12,6 +12,7 @@ from .control import SqliteControlStorage
 from .crawl import SqliteCrawlStorage
 from .events import EventRepository, SqliteEventQueries
 from .media import LocalMediaFiles, LocalMediaWork, MediaRepository, SqliteMediaStore
+from .ports import MediaCache
 from .processing import ProcessingRepository, SqliteProcessingStorage
 from .reading import LocalDiscoveryReader
 from .repositories import CandidateRepository, ChangeLog, JobRepository, PageRepository, Retention, SourceRepository
@@ -28,7 +29,7 @@ class Persistence:
     processing: object
     events: object
     reader: object
-    media_store: object
+    media_cache: MediaCache
     media_work: object
     media_files: object
     _store: object
@@ -55,7 +56,7 @@ def open_persistence(db_path, deduplicator, clock=time.time, store_options=None,
         processing=SqliteProcessingStorage(store, ProcessingRepository(), events, candidates, pages, changes, clock, deduplicator),
         events=SqliteEventQueries(store, events, areas, sources, changes),
         reader=LocalDiscoveryReader(store, sources, pages, candidates, jobs, changes, clock),
-        media_store=media_store,
+        media_cache=media_store,
         media_work=LocalMediaWork(store, media_repository, clock),
         media_files=LocalMediaFiles(media_store),
         _store=store)

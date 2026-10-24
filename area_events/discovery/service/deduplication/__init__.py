@@ -7,8 +7,8 @@ transaction, and Persistence never knows how the decision was reached. A differe
 with no change to Persistence, processing, producers or presentation.
 
     action   meaning
-    create   a new canonical event; `identity` is the opaque fingerprint Persistence stores with it (and returns through `EventLookup.by_identity`)
-    update   the candidate is the primary description of its event: the event takes the new facts (`identity` is refreshed)
+    create   a new canonical event with a stable event_key
+    update   the candidate is the primary description of its event: the event takes the new facts
     link     the candidate describes an existing event (`event_key`), which keeps its own facts; the candidate becomes a secondary description
     keep     the candidate is already a secondary description of its event; nothing changes
 
@@ -21,7 +21,7 @@ from ..contracts import CleanEvent
 
 DEDUP_SCHEMA = "discovery.dedup.v1"
 ACTIONS = ("create", "update", "link", "keep")
-WINDOW_LIMIT = 200   # an EventLookup answers with at most this many events
+LOOKUP_PAGE_SIZE = 100
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,7 @@ class ExistingEvent:
     ends_at: Optional[int]
     venue_name: Optional[str]
     address: Optional[str]
-    identity: Optional[str]
+    location_text: Optional[str]
     revision: int
 
 
@@ -55,16 +55,13 @@ class Incoming:
 class Decision:
     action: str
     event_key: Optional[str] = None     # the event concerned (update, link, keep)
-    identity: Optional[str] = None      # the fingerprint to store with the event (create, update)
     reason: str = ""
 
 
 class EventLookup(Protocol):
     """Read-only access to existing events, valid only during one `decide` call."""
 
-    def by_identity(self, identity: str) -> tuple: ...
-
-    def starting_between(self, earliest: int, latest: int) -> tuple: ...
+    def starting_between(self, earliest: int, latest: int, after=None, limit: int = LOOKUP_PAGE_SIZE) -> tuple: ...
 
 
 class Deduplicator(Protocol):

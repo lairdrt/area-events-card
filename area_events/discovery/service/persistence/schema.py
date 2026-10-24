@@ -381,6 +381,11 @@ CREATE TABLE source_leads (
 CREATE INDEX source_leads_by_decision ON source_leads (source_id, decision);
 """),
     (7, "candidates are stored as version-1 standard records; the producer's working state is kept apart in state_json", _standard_candidates),
+    (8, "event matching uses event facts and stable event keys, not generated match keys", """
+DROP INDEX events_match;
+ALTER TABLE events DROP COLUMN match_key;
+CREATE INDEX events_start_key ON events(starts_at, event_key);
+"""),
 )
 
 LATEST = MIGRATIONS[-1][0]

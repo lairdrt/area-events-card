@@ -9,7 +9,7 @@ import hashlib
 import json
 
 from ..contracts import CleanEvent, DecisionRejected, NotFound
-from ..deduplication import ACTIONS, WINDOW_LIMIT, Association, Decision, ExistingEvent, Incoming
+from ..deduplication import ACTIONS, Association, Decision, ExistingEvent, Incoming, LOOKUP_PAGE_SIZE
 from ..events import EVENTS_SCHEMA, MAX_PAGE, EventDetail, EventPage, EventQuery, EventRecord
 
 FIELDS = ("title", "description", "starts_at", "ends_at", "timezone", "venue_name", "location_text", "address", "location_status", "source_url", "status")
@@ -29,26 +29,30 @@ class EventRepository:
 
     @staticmethod
     def _existing(row):
-        return ExistingEvent(row["event_key"], row["title"], row["starts_at"], row["ends_at"], row["venue_name"], row["address"], row["match_key"], row["revision"])
+        return ExistingEvent(row["event_key"], row["title"], row["starts_at"], row["ends_at"], row["venue_name"], row["address"], row["location_text"], row["revision"])
 
     def association(self, tx, candidate_id):
         row = tx.execute("SELECT e.event_key, l.role FROM event_candidates l JOIN events e USING (event_id) WHERE l.candidate_id=?", (candidate_id,)).fetchone()
         return Association(row["event_key"], row["role"]) if row else None
 
-    def by_identity(self, tx, identity):
-        return tuple(self._existing(r) for r in tx.execute("SELECT * FROM events WHERE match_key=? ORDER BY event_id LIMIT ?", (identity, WINDOW_LIMIT)))
-
-    def between(self, tx, earliest, latest):
-        return tuple(self._existing(r) for r in tx.execute("SELECT * FROM events WHERE starts_at BETWEEN ? AND ? ORDER BY event_id LIMIT ?", (earliest, latest, WINDOW_LIMIT)))
+    def between(self, tx, earliest, latest, after=None, limit=LOOKUP_PAGE_SIZE):
+        sql = "SELECT event_key, title, starts_at, ends_at, venue_name, address, location_text, revision FROM events WHERE starts_at BETWEEN ? AND ?"
+        params = [int(earliest), int(latest)]
+        if after is not None:
+            sql += " AND (starts_at > ? OR (starts_at = ? AND event_key > ?))"
+            params.extend((int(after[0]), int(after[0]), str(after[1])))
+        sql += " ORDER BY starts_at, event_key LIMIT ?"
+        params.append(max(1, min(int(limit), 1000)))
+        return tuple(self._existing(r) for r in tx.execute(sql, params))
 
     # --- writes (inside the processing transaction) --------------------------------------------------------------------
 
-    def create(self, tx, candidate_id, candidate_key, clean, identity, extraction_id, now):
+    def create(self, tx, candidate_id, candidate_key, clean, extraction_id, now):
         event_key = event_key_for(candidate_key)
-        event_id = tx.execute("""INSERT INTO events (event_key, match_key, title, description, starts_at, ends_at, timezone, venue_name, location_text, address,
+        event_id = tx.execute("""INSERT INTO events (event_key, title, description, starts_at, ends_at, timezone, venue_name, location_text, address,
                                    location_status, source_url, status, missing_json, revision, extraction_id, first_extracted_at, updated_at)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?) RETURNING event_id""",
-                              (event_key, identity, clean.title, clean.description, clean.starts_at, clean.ends_at, clean.timezone, clean.venue_name, clean.location_text,
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?) RETURNING event_id""",
+                              (event_key, clean.title, clean.description, clean.starts_at, clean.ends_at, clean.timezone, clean.venue_name, clean.location_text,
                                clean.address, clean.location_status, clean.source_url, clean.status, json.dumps(list(clean.missing)), extraction_id, now, now)).fetchone()[0]
         tx.execute("INSERT INTO event_candidates (candidate_id, event_id, role, linked_at) VALUES (?, ?, 'primary', ?)", (candidate_id, event_id, now))
         tx.execute("INSERT INTO event_revisions (event_id, revision, extraction_id, changed_json, created_at) VALUES (?, 1, ?, '{}', ?)", (event_id, extraction_id, now))
@@ -64,7 +68,7 @@ class EventRepository:
     def row_of(self, tx, event_key):
         return tx.execute("SELECT * FROM events WHERE event_key=?", (event_key,)).fetchone()
 
-    def update(self, tx, event_key, clean, identity, extraction_id, now):
+    def update(self, tx, event_key, clean, extraction_id, now):
         """The primary description changed (or was processed again): revise the event if any fact differs. Returns (event_id, event_key, 'updated' | 'unchanged', revision)."""
         event = self.row_of(tx, event_key)
         values = {"title": clean.title, "description": clean.description, "starts_at": clean.starts_at, "ends_at": clean.ends_at, "timezone": clean.timezone,
@@ -76,9 +80,9 @@ class EventRepository:
         if not changed:
             return event["event_id"], event["event_key"], "unchanged", event["revision"]
         revision = event["revision"] + 1
-        tx.execute("""UPDATE events SET match_key=?, title=?, description=?, starts_at=?, ends_at=?, timezone=?, venue_name=?, location_text=?, address=?, location_status=?,
+        tx.execute("""UPDATE events SET title=?, description=?, starts_at=?, ends_at=?, timezone=?, venue_name=?, location_text=?, address=?, location_status=?,
                       source_url=?, status=?, missing_json=?, revision=?, extraction_id=?, updated_at=? WHERE event_id=?""",
-                   (identity, clean.title, clean.description, clean.starts_at, clean.ends_at, clean.timezone, clean.venue_name, clean.location_text, clean.address,
+                   (clean.title, clean.description, clean.starts_at, clean.ends_at, clean.timezone, clean.venue_name, clean.location_text, clean.address,
                     clean.location_status, clean.source_url, clean.status, json.dumps(list(clean.missing)), revision, extraction_id, now, event["event_id"]))
         tx.execute("INSERT INTO event_revisions (event_id, revision, extraction_id, changed_json, created_at) VALUES (?, ?, ?, ?, ?)",
                    (event["event_id"], revision, extraction_id, json.dumps(changed, ensure_ascii=False), now))
@@ -150,11 +154,8 @@ class _Lookup:
     def __init__(self, tx, events):
         self.__tx, self.__events = tx, events
 
-    def by_identity(self, identity):
-        return self.__events.by_identity(self.__tx, identity)
-
-    def starting_between(self, earliest, latest):
-        return self.__events.between(self.__tx, int(earliest), int(latest))
+    def starting_between(self, earliest, latest, after=None, limit=LOOKUP_PAGE_SIZE):
+        return self.__events.between(self.__tx, int(earliest), int(latest), after, limit)
 
 
 def decide_and_apply(tx, events, deduplicator, candidate_id, candidate_key, clean: CleanEvent, extraction_id, now):
@@ -167,7 +168,7 @@ def decide_and_apply(tx, events, deduplicator, candidate_id, candidate_key, clea
     if decision.action == "create":
         if association is not None:
             raise DecisionRejected("create: the candidate already belongs to an event")
-        event_id, event_key, revision = events.create(tx, candidate_id, candidate_key, clean, decision.identity, extraction_id, now)
+        event_id, event_key, revision = events.create(tx, candidate_id, candidate_key, clean, extraction_id, now)
         return event_id, event_key, "created", revision
     if decision.action == "link":
         if association is not None:
@@ -181,7 +182,7 @@ def decide_and_apply(tx, events, deduplicator, candidate_id, candidate_key, clea
     if decision.action == "update":
         if association.role != "primary":
             raise DecisionRejected("update: only a primary description may revise its event")
-        return events.update(tx, association.event_key, clean, decision.identity, extraction_id, now)
+        return events.update(tx, association.event_key, clean, extraction_id, now)
     row = events.row_of(tx, association.event_key)   # keep
     return row["event_id"], row["event_key"], "duplicate", row["revision"]
 

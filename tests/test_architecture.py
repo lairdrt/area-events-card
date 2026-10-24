@@ -58,7 +58,7 @@ ALLOWED = {
     f"{PERSISTENCE}.processing": {"service.contracts", f"{PERSISTENCE}.events"}, f"{PERSISTENCE}.reading": {"service.contracts"},
     f"{PERSISTENCE}.repositories": {"service.contracts", "service.producer", "service.urls"}, f"{PERSISTENCE}.scheduling": {"service.contracts"}, f"{PERSISTENCE}.schema": set(),
     f"{PERSISTENCE}.store": {"service.contracts", f"{PERSISTENCE}.schema"},
-    BUILD: {f"{PERSISTENCE}.{n}" for n in ("areas", "control", "crawl", "events", "media", "processing", "reading", "repositories", "scheduling", "store")},
+    BUILD: {f"{PERSISTENCE}.{n}" for n in ("areas", "control", "crawl", "events", "media", "processing", "reading", "repositories", "scheduling", "store")} | {PORTS},
 }
 
 
@@ -387,6 +387,26 @@ class Real(unittest.TestCase):
         importers = {n for n, info in g.items() if any(is_producer(t) or t == "service.producers" for t in info["inside"]) and not is_producer(n)}
         self.assertEqual(importers - {n for n in g if not is_new(n)}, {COMPOSITION_ROOT})
         self.assertEqual(g["service.producer"]["inside"], set())
+
+    def test_deduplication_uses_event_facts_and_stable_keys_without_generated_match_identity(self):
+        strategy_text = "\n".join(read(os.path.join(DISCOVERY, "service", "deduplication", name)) for name in ("__init__.py", "exact.py", "tolerant.py"))
+        persistence_events = read(os.path.join(DISCOVERY, "service", "persistence", "events.py"))
+        schema = read(os.path.join(DISCOVERY, "service", "persistence", "schema.py"))
+        for source in (strategy_text, persistence_events):
+            self.assertNotIn("match_key", source)
+            self.assertNotIn("by_identity", source)
+        self.assertIn("starting_between", strategy_text)
+        self.assertIn("event_key", strategy_text)
+        self.assertIn("DROP COLUMN match_key", schema, "removal is an explicit migration, not an edited historical schema")
+
+    def test_imagery_enrichment_receives_only_the_media_cache_port(self):
+        app = read(os.path.join(DISCOVERY, "service", "app.py"))
+        enrichment = read(os.path.join(DISCOVERY, "service", "enrichment.py"))
+        ports = read(os.path.join(DISCOVERY, "service", "persistence", "ports.py"))
+        self.assertIn("persistence.media_cache", app)
+        self.assertNotIn("persistence.media_store", app)
+        self.assertIn("store: MediaCache", enrichment)
+        self.assertIn("class MediaCache(Protocol)", ports)
 
 
 class Records(unittest.TestCase):

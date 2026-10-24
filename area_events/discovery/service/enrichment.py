@@ -24,7 +24,7 @@ from ..safe import FetchError
 from ..safe import BlockedError
 from ..media import distance_m
 from .contracts import ENRICHMENT_VERSION, MAX_FILE_BYTES
-from .persistence.ports import MediaWork  # noqa: F401
+from .persistence.ports import MediaCache, MediaWork  # noqa: F401
 from .text import place_label
 
 log = logging.getLogger("area-events.enrichment")
@@ -72,7 +72,7 @@ class SourcePhotos:
     Where the picture host's robots.txt forbids fetching it, nothing is copied: the entry then carries the source's own https address for the user's browser
     to show (as the source's calendar API intends), with the same credit, and the refusal is remembered."""
 
-    def __init__(self, fetcher, store, work, clock, config=EnrichmentConfig()):
+    def __init__(self, fetcher, store: MediaCache, work, clock, config=EnrichmentConfig()):
         self._fetcher, self._store, self._work, self._clock, self._config = fetcher, store, work, clock, config
 
     def cache(self, event, source_name):

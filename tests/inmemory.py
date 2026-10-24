@@ -11,16 +11,17 @@ class _Lookup:
     def __init__(self, events):
         self._events = events
 
-    def by_identity(self, identity):
-        return tuple(self._existing(e) for e in self._events if e["identity"] == identity)
-
-    def starting_between(self, earliest, latest):
-        return tuple(self._existing(e) for e in self._events if earliest <= e["clean"].starts_at <= latest)
+    def starting_between(self, earliest, latest, after=None, limit=100):
+        matches = [self._existing(e) for e in self._events if earliest <= e["clean"].starts_at <= latest]
+        matches.sort(key=lambda e: (e.starts_at, e.event_key))
+        if after is not None:
+            matches = [e for e in matches if (e.starts_at, e.event_key) > after]
+        return tuple(matches[:limit])
 
     @staticmethod
     def _existing(e):
         clean = e["clean"]
-        return ExistingEvent(e["event_key"], clean.title, clean.starts_at, clean.ends_at, clean.venue_name, clean.address, e["identity"], e["revision"])
+        return ExistingEvent(e["event_key"], clean.title, clean.starts_at, clean.ends_at, clean.venue_name, clean.address, clean.location_text, e["revision"])
 
 
 class InMemoryProcessing:
@@ -58,7 +59,7 @@ class InMemoryProcessing:
 
     def _apply(self, candidate_key, clean, decision: Decision):
         if decision.action == "create":
-            event = {"event_key": f"ev-{len(self.events) + 1}", "clean": clean, "identity": decision.identity, "revision": 1}
+            event = {"event_key": f"ev-{len(self.events) + 1}", "clean": clean, "revision": 1}
             self.events.append(event)
             self.links[candidate_key] = (event["event_key"], "primary")
             return event["event_key"], "created", 1
@@ -68,7 +69,7 @@ class InMemoryProcessing:
             return event["event_key"], "duplicate", event["revision"]
         if decision.action == "update":
             if event["clean"] != clean:
-                event.update(clean=clean, identity=decision.identity, revision=event["revision"] + 1)
+                event.update(clean=clean, revision=event["revision"] + 1)
                 return event["event_key"], "updated", event["revision"]
             return event["event_key"], "unchanged", event["revision"]
         return event["event_key"], "duplicate", event["revision"]

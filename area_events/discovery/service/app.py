@@ -106,8 +106,8 @@ def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None,
     events = EventQueryService(persistence.events)
     extraction = ExtractionService(LocalProcessingClient(processing), StoredCandidateExtractor(), clock, extraction_config, worker_id="extractor-local")
     media_folder = media_dir or os.path.join(os.path.dirname(os.path.abspath(db_path)), "media")
-    resolver = MediaService(os.path.dirname(media_folder), client, clock, nominatim_interval=nominatim_interval, store=persistence.media_store)
-    enrichment = MediaEnrichmentService(persistence.media_work, resolver, SourcePhotos(client, persistence.media_store, persistence.media_work, clock, enrichment_config), clock,
+    resolver = MediaService(os.path.dirname(media_folder), client, clock, nominatim_interval=nominatim_interval, store=persistence.media_cache)
+    enrichment = MediaEnrichmentService(persistence.media_work, resolver, SourcePhotos(client, persistence.media_cache, persistence.media_work, clock, enrichment_config), clock,
                                         enrichment_config)
     return DiscoveryApp(persistence, policy, service, persistence.reader, control, scheduler, host, processing, events, extraction, enrichment, persistence.media_files,
                         persistence.media_work)

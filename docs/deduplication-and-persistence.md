@@ -15,10 +15,10 @@ Owns every matching rule and nothing else. `Deduplicator.decide(Incoming, EventL
 | | |
 |---|---|
 | `Incoming` | the candidate key, the `CleanEvent` it produced, and its `Association` (the event it already describes and whether it is primary or secondary), or none |
-| `EventLookup` | read-only, valid for one call: `by_identity(identity)` and `starting_between(earliest, latest)`, answering with plain `ExistingEvent` facts (no row, no key of the database) |
-| `Decision` | `create` (new event; `identity` is the fingerprint to store), `update` (the primary description revises its event), `link` (a secondary description of an existing event), `keep` (already secondary: nothing changes) |
+| `EventLookup` | read-only, valid for one call: keyset-paged `starting_between(earliest, latest, after, limit)`, answering with plain `ExistingEvent` facts and its stable `event_key` |
+| `Decision` | `create` (new event), `update` (the primary description revises its event), `link` (a secondary description of an existing event), `keep` (already secondary: nothing changes) |
 
-Strategies: `exact` (the default: same normalized title, start instant and address; a description with no address is never matched) and `tolerant` (same title, start within a window, places that do not contradict, a missing address needs the same venue). They import neither SQLite nor Persistence nor any producer. Choosing one is the composition root's argument: `build(..., deduplication="exact" | "tolerant" | <any Deduplicator>)`, or `--deduplication` on the command line. The identity the exact strategy stores is the fingerprint the earlier code stored, so existing events keep matching.
+Strategies: `exact` (same normalized title and start instant, plus matching stated address or location text) and `tolerant` (same title, start within a window, with matching address, venue or location evidence and no contradictory stated place facts). Exact matching requires comparable address/location context; tolerant matching can use the same stated venue when addresses are missing. Missing or conflicting place facts do not trigger a merge. Both strategies page through the full indexed time window; there is no result cap. They import neither SQLite nor Persistence nor any producer. Choosing one is the composition root's argument: `build(..., deduplication="exact" | "tolerant" | <any Deduplicator>)`, or `--deduplication` on the command line. Matching reads event facts directly; `event_key` remains stable and strategy changes do not require rebuilding identities.
 
 ## Persistence (`service/persistence/`)
 Exclusively owns the database: connections, transactions, SQL, schema, event/candidate links, revision history, evidence and work records. The rest of the service sees only `persistence/ports.py`:
@@ -47,11 +47,10 @@ No connection, cursor or transaction crosses a port, and no port takes one. Only
 sqlite3, SQL text and database calls only inside Persistence; no module outside Persistence imports a concrete storage class or anything of Persistence but its ports (only the root builds it); Persistence imports the deduplication interface, never a strategy, and contains no matching logic; deduplication imports no database, no Persistence and no producer; ports take no transaction; plus the earlier rules (producer isolation, no legacy engine, reviewed layering, cycles, source names, producer state). Each rule is exercised by deliberately injecting a violation into a copy of the tree.
 
 ## Remaining violations
-1. The accepted imagery library takes its own dictionary input (`enrichment._imagery_input`) and the imagery `MediaService` is handed Persistence's file/record store object directly.
+1. The accepted imagery library takes its own dictionary input (`enrichment._imagery_input`); its cache access is narrowed to the `MediaCache` port.
 2. The earlier engine and its tests remain in the repository (not part of the new application).
 3. Producers and known sources are wired by hand in `app.py` / `cli.py`.
 4. Persistence imports `service/events.py` for the event record types (records only); they belong in `contracts.py`.
-5. The identity column is still called `match_key`; a database that changes strategy keeps the old strategies' identities on existing events (the `tolerant` strategy matches by time window, so it does not depend on them, but `exact` will not match events a different strategy created).
-6. Deduplication is invoked once per submission; there is no batch interface. A lookup answers with at most 200 events.
-7. Some tests reach into private attributes (`_store`, `_store_plan`, `_candidates`) to inject storage faults, and inspect the database file directly with sqlite3; production code never does.
-8. The Home Assistant feed adapter still has a per-source display-name table and drops categories; the card classifies by keywords.
+5. Deduplication is invoked once per submission; there is no batch interface.
+6. Some tests reach into private attributes (`_store`, `_store_plan`, `_candidates`) to inject storage faults, and inspect the database file directly with sqlite3; production code never does.
+7. The Home Assistant feed adapter still has a per-source display-name table and drops categories; the card classifies by keywords.
