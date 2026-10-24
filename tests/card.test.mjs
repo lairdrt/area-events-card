@@ -31,7 +31,7 @@ globalThis.document = {
 globalThis.customElements = { get: (name) => (name === "home-assistant" ? class {} : undefined), define: (name, c) => { if (name === "area-events-card") CardClass = c; }, whenDefined: () => new Promise(() => {}) };
 globalThis.window = { location: { pathname: "/lovelace/events" }, localStorage: new Storage() };
 await import("../src/area-events-card.js");
-const { categoriesFor, normalizePrefs, prefsKey, readSettings, assertEditable, EDITOR_SCHEMA, ART, ART_LABELS, artFor } = CardClass._internals;
+const { categoriesFor, DEFAULT_CATEGORIES, normalizePrefs, prefsKey, readSettings, assertEditable, EDITOR_SCHEMA, ART, ART_LABELS, artFor } = CardClass._internals;
 
 const day = 24 * 3600 * 1000;
 const iso = (offsetMs) => new Date(Date.now() + offsetMs).toISOString();
@@ -374,6 +374,21 @@ test("categories match title, description and source categories; events may matc
 test("keywords match whole words only", () => {
   assert.deepEqual([...categoriesFor({ title: "Parking lot sale" })], ["other"]);
   assert.deepEqual([...categoriesFor({ title: "Farmers Markets" })], ["markets"]);
+});
+
+test("Craft Fair replaced History: genuine craft fairs match it, unrelated fairs and old history events do not", () => {
+  const m = (e) => [...categoriesFor(e)].sort();
+  assert.ok(DEFAULT_CATEGORIES.some((c) => c.id === "craft-fair" && c.name === "Craft Fair"));
+  assert.ok(!DEFAULT_CATEGORIES.some((c) => c.id === "history" || c.name === "History"));
+  for (const title of ["Holiday Craft Fair", "Craft Shows at the Park", "Handmade Artisan Fair", "Artisan Craft Show", "Makers Market"]) {
+    assert.ok(categoriesFor({ title }).has("craft-fair"), title);
+  }
+  for (const title of ["Science Fair", "County Fair and Rodeo", "Job Fair", "Health Fair", "Farmers Market", "History of Austin Walking Tour", "Vintage Car Show", "Historic Home Tour"]) {
+    assert.ok(!categoriesFor({ title }).has("craft-fair"), title);
+  }
+  assert.ok(!categoriesFor({ title: "Anything", categories: ["History"] }).has("craft-fair"), "a source's History category is not relabelled");
+  assert.ok(categoriesFor({ title: "Mural walk", categories: ["Craft Fair"] }).has("craft-fair"), "a source category named Craft Fair matches");
+  assert.deepEqual(m({ title: "Quarterly meeting" }), ["other"]);
 });
 
 // --- filtering ------------------------------------------------------------------------
