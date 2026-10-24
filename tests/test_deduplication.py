@@ -93,6 +93,11 @@ class Exact(unittest.TestCase):
         for other in (clean(starts_at=START + 86400), clean(address="900 Other Street, San Diego, CA"), clean(title="Harbor Concert II")):
             self.assertEqual(ExactMatch().decide(Incoming("other:b", other, None), Lookup(existing)).action, "create")
 
+    def test_contradicting_stated_end_time_is_additional_evidence(self):
+        existing = known("ev-1", clean(ends_at=START + 7200))
+        decision = ExactMatch().decide(Incoming("other:b", clean(ends_at=START + 10800), None), Lookup(existing))
+        self.assertEqual(decision.action, "create")
+
     def test_incomplete_location_evidence_is_never_matched(self):
         first = clean(address=None, venue=None)
         existing = known("ev-1", first)
@@ -116,6 +121,10 @@ class Tolerant(unittest.TestCase):
         self.assertEqual(strategy.decide(Incoming("o:b", clean(address=None, venue="Harbor Hall"), None), Lookup(self.existing())).action, "link")
         self.assertEqual(strategy.decide(Incoming("o:b", clean(address=None, venue="Elsewhere Hall"), None), Lookup(self.existing())).action, "create")
         self.assertEqual(strategy.decide(Incoming("o:b", clean(address=None, venue=None), None), Lookup(self.existing())).action, "create", "no place at all: not matched")
+
+    def test_materially_different_stated_end_times_do_not_match(self):
+        existing = self.existing(ends_at=START + 7200)
+        self.assertEqual(TolerantMatch(window_s=900).decide(Incoming("o:b", clean(starts_at=START + 300, ends_at=START + 10800), None), Lookup(existing)).action, "create")
 
 
 class LookupPagination(unittest.TestCase):

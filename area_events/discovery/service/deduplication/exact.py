@@ -29,7 +29,8 @@ class ExactMatch:
         while True:
             page = lookup.starting_between(event.starts_at, event.starts_at, after, LOOKUP_PAGE_SIZE)
             for other in page:
-                if _norm(other.title) == title and _same_place(event, other):
+                end_times_agree = event.ends_at is None or other.ends_at is None or event.ends_at == other.ends_at
+                if _norm(other.title) == title and end_times_agree and _same_place(event, other):
                     return Decision("link", other.event_key, "the same title, start and stated place")
             if len(page) < LOOKUP_PAGE_SIZE:
                 break

@@ -25,7 +25,8 @@ class TolerantMatch:
         while True:
             page = lookup.starting_between(earliest, latest, after, LOOKUP_PAGE_SIZE)
             for other in page:
-                if _norm(other.title) == title and self._same_place(event, other):
+                end_times_agree = event.ends_at is None or other.ends_at is None or abs(event.ends_at - other.ends_at) <= self.window_s
+                if _norm(other.title) == title and end_times_agree and self._same_place(event, other):
                     return Decision("link", other.event_key, "the same title, a start within the window, and matching place evidence")
             if len(page) < LOOKUP_PAGE_SIZE:
                 break
