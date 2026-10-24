@@ -6,7 +6,8 @@
     store.py         DiscoveryStore: the database file, its connections and transactions
     repositories.py  explicit SQL per entity: sources, pages, candidates, evidence, jobs, changes, consumers
     fetching.py      RecordingFetcher: the policy-bound fetch client an adapter uses, recording every page it reads
-    adapters.py      source adapters behind one small protocol (the City of San Diego adapter first)
+    producer.py      the standard producer-to-processing interface: EventCandidate, SourceLead, ProducerResult and the one validation boundary
+    producers/       the only code that knows a source's format; each producer answers with standard records (wired in app.py, imported nowhere else)
     service.py       DiscoveryService: register sources, schedule and run jobs, store results under a lease
     reader.py        LocalDiscoveryReader: the read contract other components use (changes, snapshot, queries)
     app.py           the composition root that creates and connects the objects

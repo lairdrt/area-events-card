@@ -70,13 +70,13 @@ class StoredCandidateExtractor:
         title = _text(payload.get("title"), 300)
         if not title:
             return self._failed("the stored candidate has no title", issues)
-        starts_at = _epoch(payload.get("start"))
+        starts_at = _epoch(payload.get("starts_at"))
         if starts_at is None:
-            reason = "the stored start time is missing or unreadable" if not payload.get("start") else \
+            reason = "the stored start time is missing or unreadable" if not payload.get("starts_at") else \
                 "the stored start time has no UTC offset, so it cannot be placed in time without guessing"
             return self._failed(reason, issues)
-        ends_at = _epoch(payload.get("end")) if payload.get("end") else None
-        if payload.get("end") and (ends_at is None or ends_at < starts_at):
+        ends_at = _epoch(payload.get("ends_at")) if payload.get("ends_at") else None
+        if payload.get("ends_at") and (ends_at is None or ends_at < starts_at):
             issues.append("end_ignored")
             ends_at = None
         event = {"title": title, "starts_at": starts_at, "ends_at": ends_at, "timezone": _text(payload.get("timezone"), 64), "description": _text(payload.get("description"), 4000),

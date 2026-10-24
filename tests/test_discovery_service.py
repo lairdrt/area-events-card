@@ -1,7 +1,6 @@
 """The Discovery Service and its SQLite store: schema, identity, jobs and leases, atomic and idempotent writes, recovery, retention,
 the reader contract, the shared host policy, and concurrent readers. Deterministic: a fixed clock and saved pages, no network."""
 import ast
-from datetime import datetime, timedelta, timezone
 import json
 import os
 import sqlite3
@@ -11,19 +10,28 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from discovery import safe
 from discovery.core import FetchError
 from discovery.safe import BlockedError, HostPolicy, Response, SafeFetcher
 from discovery.service import app as app_module
-from discovery.service import repositories, store as store_module
-from discovery.service.contracts import AdapterResult, CandidateQuery
-from discovery.service.repositories import JobRepository, PageRepository, RetentionPolicy, SourceRepository, SourceSpec
+from discovery.service import store as store_module
+from discovery.service.contracts import CandidateQuery
+from discovery.service.producer import EventCandidate, ProducerResult
+from discovery.service.repositories import (
+    JobRepository,
+    PageRepository,
+    RetentionPolicy,
+    SourceRepository,
+    SourceSpec,
+)
 from discovery.service.schema import LATEST
 from discovery.service.service import DiscoveryConfig, job_key_for
 from discovery.service.store import DiscoveryStore, StorageUnavailable
 from discovery.service.urls import canonical_url, url_key
+
 from tests.test_site_discovery import CITY_URL, city_detail, city_listing
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -225,7 +233,7 @@ class Running(Fixture):
             def crawl(self, fetcher, previous, options):
                 fetcher.get(options["url"])
                 start = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(timespec="seconds")
-                return AdapterResult([{"id": "sandiego_gov:stub@1", "title": "Event 0", "start": start, "venue": self.venue, "url": None, "description": "About Event 0."}], {})
+                return ProducerResult((EventCandidate(local_id="stub@1", title="Event 0", starts_at=start, venue=self.venue, description="About Event 0."),))
 
             @staticmethod
             def page_role(url, base_url):
@@ -583,8 +591,8 @@ class Readers(Fixture):
                     with built.store.write() as tx:
                         source_id = SourceRepository().upsert(tx, other, n)
                         page_id, _ = PageRepository().touch(tx, f"https://other.example/event/{n}", source_id, "detail", n)
-                        built.service.candidates.upsert(tx, f"other_source:{n}", source_id, page_id, "adapter", "test", f"Zeta {n}", None, {"id": n},
-                                                        repositories.payload_hash({"id": n}), n)
+                        built.service.candidates.upsert(tx, f"other_source:{n}", source_id, page_id, "adapter", "test",
+                                                        EventCandidate(local_id=str(n), title=f"Zeta {n}", starts_at="2030-01-01T00:00:00+00:00"), n)
                         built.service.changes.append(tx, "candidate", f"other_source:{n}", "0" * 64, n)
                 except Exception as error:  # pragma: no cover - reported below
                     errors.append(repr(error))

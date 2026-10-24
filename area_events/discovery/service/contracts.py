@@ -182,12 +182,6 @@ class SourceAdapter(Protocol):
     adapter: str
     extractor: str
 
-    def crawl(self, fetcher, previous: list, options: dict) -> "ProducerResult": ...  # noqa: F821
+    def crawl(self, fetcher, previous: tuple, options: dict) -> "ProducerResult": ...  # noqa: F821  (`previous`: the source's stored EventCandidates, with the state it left)
 
 
-@dataclass
-class AdapterResult:
-    """The EARLIER producer answer: event dictionaries. Kept only so a producer not yet moved to the standard records still works; `producer.accept` converts it."""
-    candidates: list
-    notes: dict
-    leads: list = field(default_factory=list)

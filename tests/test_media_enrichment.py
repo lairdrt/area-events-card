@@ -21,12 +21,14 @@ from discovery.service.control import CreateAreaRequest
 from discovery.service.enrichment import EnrichmentConfig
 from discovery.service.events import EventQuery
 from discovery.service.media_store import SqliteMediaStore, content_type_of, inside_area
-from discovery.service.repositories import payload_hash
+from discovery.service.schema import LATEST
+
+from tests.records import record
 from tests.test_austin import API, JsonClient, sample_pages
 from tests.test_discovery_control import CONTROL_TOKEN, READ_TOKEN, request
-from tests.test_discovery_service import Clock, SPEC, city_pages
+from tests.test_discovery_service import SPEC, Clock, city_pages
 from tests.test_extraction import PROCESS_TOKEN
-from tests.test_media import FakeFetcher, VIEJAS, Wikimedia, nominatim
+from tests.test_media import VIEJAS, FakeFetcher, Wikimedia, nominatim
 
 JPEG = b"\xff\xd8\xff\xe0" + b"photo" * 600
 PNG = b"\x89PNG\r\n\x1a\n" + b"png" * 600
@@ -142,9 +144,9 @@ class Enrichment(Fixture):
         self.pages["https://www.sandiego.gov/event/e0"] = self.pages["https://www.sandiego.gov/event/e0"]   # (unchanged) the City pages stay as they are
         with self.built.store.write() as tx:   # a stored San Diego candidate that names Viejas Arena
             source = self.built.service.sources.by_key(tx, "sandiego_gov")
-            event = {"id": "sandiego_gov:weezer", "title": "Weezer", "start": time.strftime("%Y-%m-%dT20:00:00-07:00", time.gmtime(time.time() + 3 * 86400)), "venue": "Viejas Arena",
-                     "address": "5500 Canyon Crest Dr., San Diego", "timezone": "America/Los_Angeles", "url": "https://example.org/weezer", "categories": []}
-            self.built.service.candidates.upsert(tx, event["id"], source["source_id"], None, "adapter", "test", event["title"], int(time.time() + 3 * 86400), event, payload_hash(event), int(self.clock()))
+            event = record("weezer", "Weezer", time.strftime("%Y-%m-%dT20:00:00-07:00", time.gmtime(time.time() + 3 * 86400)), venue="Viejas Arena",
+                           address="5500 Canyon Crest Dr., San Diego", timezone="America/Los_Angeles", url="https://example.org/weezer")
+            self.built.service.candidates.upsert(tx, "sandiego_gov:weezer", source["source_id"], None, "adapter", "test", event, int(self.clock()))
         self.enrich()
         weezer = self.events(self.sd, self.built) if False else None
         with self.built.store.read() as connection:
@@ -173,10 +175,9 @@ class Enrichment(Fixture):
         with self.built.store.write() as tx:
             source = self.built.service.sources.by_key(tx, "ut_austin")
             for n in range(4):
-                event = {"id": f"ut_austin:shared{n}", "title": f"Different event {n}", "start": time.strftime("%Y-%m-%dT10:00:00-05:00", time.gmtime(time.time() + 86400 * (n + 2))),
-                         "image_url": shared, "image_source": "Localist API photo_url", "url": f"https://calendar.utexas.edu/event/s{n}", "categories": []}
-                self.built.service.candidates.upsert(tx, event["id"], source["source_id"], None, "adapter", "test", event["title"], int(time.time() + 86400 * (n + 2)), event,
-                                                     payload_hash(event), int(self.clock()))
+                event = record(f"shared{n}", f"Different event {n}", time.strftime("%Y-%m-%dT10:00:00-05:00", time.gmtime(time.time() + 86400 * (n + 2))),
+                               image_url=shared, image_source="Localist API photo_url", url=f"https://calendar.utexas.edu/event/s{n}")
+                self.built.service.candidates.upsert(tx, f"ut_austin:shared{n}", source["source_id"], None, "adapter", "test", event, int(self.clock()))
         self.enrich()
         self.assertNotIn(shared, self.router.picture_urls, "the shared picture was never even downloaded")
         with self.built.store.read() as connection:
@@ -393,14 +394,14 @@ class Schema(unittest.TestCase):
             try:
                 with built.store.write() as tx:
                     source = built.service.sources.upsert(tx, SPEC, 1)
-                    built.service.candidates.upsert(tx, "sandiego_gov:x", source, None, "adapter", "t", "T", 1, {"title": "T"}, "0" * 64, 1)
+                    built.service.candidates.upsert(tx, "sandiego_gov:x", source, None, "adapter", "t", record("x", "T", "2030-01-01T00:00:00+00:00"), 1)
                     cid = tx.execute("SELECT candidate_id FROM candidates").fetchone()[0]
                     tx.execute("INSERT INTO candidate_media (candidate_id, payload_hash, media_json, complete, updated_at) VALUES (?, ?, '{}', 1, 1)", (cid, "0" * 64))
                 with built.store.write() as tx:
                     tx.execute("DELETE FROM candidates")
                 with built.store.read() as connection:
                     self.assertEqual(connection.execute("SELECT COUNT(*) FROM candidate_media").fetchone()[0], 0)
-                    self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+                    self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], LATEST)
             finally:
                 built.close()
 

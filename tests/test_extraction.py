@@ -12,21 +12,30 @@ import tempfile
 import threading
 import time
 import unittest
-from datetime import datetime
 from unittest import mock
 
 from discovery.service import app as app_module
 from discovery.service.api import ApiTokens
 from discovery.service.control import CreateAreaRequest, NotFound, ValidationFailed
 from discovery.service.events import EventQuery
-from discovery.service.extraction import (VERSION, ExtractionConfig, ExtractionService, HttpProcessingClient, LocalProcessingClient, ProcessingUnavailable, StoredCandidateExtractor)
+from discovery.service.extraction import (
+    VERSION,
+    ExtractionConfig,
+    ExtractionService,
+    HttpProcessingClient,
+    LocalProcessingClient,
+    ProcessingUnavailable,
+    StoredCandidateExtractor,
+)
 from discovery.service.host import HostConfig
 from discovery.service.processing import LeaseLost, StaleResult
-from discovery.service.repositories import SourceSpec, payload_hash
+from discovery.service.repositories import SourceSpec
 from discovery.service.schema import LATEST, MIGRATIONS
 from discovery.service.store import DiscoveryStore
+
+from tests.records import document, put_document
 from tests.test_discovery_control import CONTROL_TOKEN, READ_TOKEN, request
-from tests.test_discovery_service import Clock, FakeClient, SPEC, city_pages
+from tests.test_discovery_service import SPEC, Clock, FakeClient, city_pages
 from tests.test_site_discovery import CITY_URL, city_detail, city_listing
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -45,11 +54,8 @@ def austin_pages(n=3):
 
 
 def candidate_payload(title="Harbor Concert", **fields):
-    base = {"id": "x", "title": title, "start": "2030-05-01T18:00:00-07:00", "end": "2030-05-01T20:00:00-07:00", "timezone": "America/Los_Angeles",
-            "venue": "Harbor Hall", "address": "500 Harbor Drive, San Diego, CA", "description": "An evening concert.", "url": "https://www.sandiego.gov/event/harbor",
-            "verification": {"status": "unverified", "evidence": ["listing date line parsed"]}}
-    base.update(fields)
-    return base
+    """A stored candidate document (see tests/records.py): the standard fields, `starts_at`/`ends_at` for the times."""
+    return document(title, **fields)
 
 
 class Fixture(unittest.TestCase):
@@ -99,9 +105,8 @@ class Fixture(unittest.TestCase):
         with built.store.write() as tx:
             source = built.service.sources.by_key(tx, source_key)
             page_id = built.service.pages.touch(tx, url, source["source_id"], "event", now)[0] if url else None
-            built.service.candidates.upsert(tx, key, source["source_id"], page_id, "adapter", "test", payload.get("title"), int(datetime.fromisoformat(payload["start"]).timestamp()) if payload.get("start") else None,
-                                            payload, payload_hash(payload), now)
-            built.service.changes.append(tx, "candidate", key, payload_hash(payload), now)
+            digest = put_document(tx, key, source["source_id"], page_id, payload, now)
+            built.service.changes.append(tx, "candidate", key, digest, now)
 
     def all_events(self, built, **kwargs):
         events, cursor = [], None
@@ -154,11 +159,11 @@ class Pipeline(Fixture):
 
     def test_nothing_is_invented_and_failures_are_recorded_with_their_reason(self):
         built = self.build()
-        no_offset = candidate_payload("Floating", start="2030-05-01T18:00:00")
-        no_start = candidate_payload("No start", start=None)
+        no_offset = candidate_payload("Floating", starts_at="2030-05-01T18:00:00")
+        no_start = candidate_payload("No start", starts_at=None)
         no_title = candidate_payload(title="")
-        bare = candidate_payload("Bare", venue=None, address=None, description=None, end=None)
-        backwards = candidate_payload("Backwards", end="2030-05-01T09:00:00-07:00")
+        bare = candidate_payload("Bare", venue=None, address=None, description=None, ends_at=None)
+        backwards = candidate_payload("Backwards", ends_at="2030-05-01T09:00:00-07:00")
         sentence = candidate_payload("Walk", venue="Meet near the fountain on the north side of the park.", address=None)
         spaced = candidate_payload("Spaced", description="Meet at 1200 Park Boulevard, San Diego, CA 92101 for the walk.", venue="Park Hall", address=None)
         for key, payload in (("s:1", no_offset), ("s:2", no_start), ("s:3", no_title), ("s:4", bare), ("s:5", backwards), ("s:6", sentence), ("s:7", spaced)):
@@ -681,7 +686,7 @@ class Storage(Fixture):
 
     def test_old_events_are_pruned_with_their_history(self):
         built = self.build()
-        self.add_candidate(built, "sandiego_gov", "s:1", candidate_payload(start="2030-05-01T18:00:00-07:00"))
+        self.add_candidate(built, "sandiego_gov", "s:1", candidate_payload(starts_at="2030-05-01T18:00:00-07:00"))
         self.drain(built)
         self.clock.t = 1893456000 + 90 * 86400  # 2030-01-01 + 90 days: still before the event
         self.assertEqual(built.service.prune()["candidates"], 0)

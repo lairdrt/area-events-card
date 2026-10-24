@@ -18,7 +18,9 @@ from dataclasses import dataclass
 
 from ..safe import HostPolicy, SafeFetcher
 from ..sources import sandiego_gov
-from .adapters import CityOfSanDiegoAdapter, CraftFairAcquisitionAdapter, LocalistAdapter
+from .producers.city_of_san_diego import CityOfSanDiegoProducer
+from .producers.craft_fairs import CraftFairProducer
+from .producers.localist import LocalistProducer
 from .api import ApiTokens, DiscoveryApi, DiscoveryApiServer
 from .areas import AreaRepository, SettingsRepository
 from .control import LocalDiscoveryControl
@@ -92,7 +94,7 @@ def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None,
     pacing = AreaPacing(areas, settings, scheduler_config)
     scheduler = DiscoveryScheduler(store, areas, settings, jobs, changes, clock, pacing)
     config = config or DiscoveryConfig(require_area=service_gate)
-    service = DiscoveryService(store, sources, pages, candidates, jobs, changes, Retention(changes, event_repository), client, {"sandiego_gov": CityOfSanDiegoAdapter(), "localist": LocalistAdapter(), "craft_fairs": CraftFairAcquisitionAdapter()}, clock,
+    service = DiscoveryService(store, sources, pages, candidates, jobs, changes, Retention(changes, event_repository), client, {"sandiego_gov": CityOfSanDiegoProducer(), "localist": LocalistProducer(), "craft_fairs": CraftFairProducer()}, clock,
                                config, worker_id, pacing=pacing if service_gate else None, gate=scheduler if service_gate else None)
     reader = LocalDiscoveryReader(store, sources, pages, candidates, jobs, changes, clock)
     host = DiscoveryHost(service, scheduler, clock, host_config)

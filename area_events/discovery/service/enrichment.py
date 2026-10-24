@@ -132,7 +132,7 @@ class MediaEnrichmentService:
         results = []
         for group in groups.values():
             area = group[0]["area"]
-            events = [self._legacy_event(item) for item in group]
+            events = [self._imagery_input(item) for item in group]
             self._classify(events)
             self._resolver.cycle([(area, events)], limit=self.config.places_per_pass)
             annotated = self._resolver.annotate(events, area)
@@ -152,12 +152,25 @@ class MediaEnrichmentService:
         return len(results)
 
     @staticmethod
-    def _legacy_event(item):
-        """The event in the shape the accepted imagery code reads. Coordinates the source supplied count as confirmed only inside the area."""
-        event = dict(item["payload"])
-        if event.get("geo") and inside_area(event["geo"], item["area"]):
-            event["place"] = {"classification": "confirmed"}
-        return event
+    def _imagery_input(item):
+        """What the accepted imagery library takes as its input for one event: a dictionary in ITS interface (title, venue, address, geo, image_url, ...), built here from the
+        standard candidate's fields and nothing else. Coordinates the source supplied count as confirmed only inside the area. The library does not yet read standard records;
+        this method is the one place that knows its shape."""
+        doc = item["payload"]
+        provenance, verification = doc.get("provenance") or {}, doc.get("verification") or {}
+        subject = {"id": item["candidate_key"], "title": doc.get("title"), "start": doc.get("starts_at"), "end": doc.get("ends_at"), "timezone": doc.get("timezone"),
+                   "venue": doc.get("venue"), "address": doc.get("address"), "description": doc.get("description"), "url": doc.get("url"), "image_url": doc.get("image_url"),
+                   "image_source": doc.get("image_source"), "categories": list(doc.get("categories") or ()), "price": doc.get("price"),
+                   "source": {"name": provenance.get("source_name"), "listing_url": provenance.get("listing_url")}, "verified": bool(verification.get("verified")),
+                   "verification": {"status": verification.get("status"), "evidence": list(verification.get("evidence") or ()), "missing": list(verification.get("missing") or ()),
+                                    "note": verification.get("note", "")}}
+        if doc.get("organizer") is not None:
+            subject["organizer"] = doc["organizer"]
+        if doc.get("geo"):
+            subject["geo"] = dict(doc["geo"])
+            if inside_area(subject["geo"], item["area"]):
+                subject["place"] = {"classification": "confirmed"}
+        return subject
 
     # --- lifecycle ---------------------------------------------------------------------------------------------------
 

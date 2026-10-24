@@ -6,20 +6,17 @@ take a connection from `DiscoveryStore.read()`. No repository makes a network ca
 """
 import hashlib
 import json
+import logging
 import zlib
 from dataclasses import dataclass
+from datetime import datetime
 
+from . import producer
 from .contracts import CandidateRecord, Change, EvidenceRecord, JobCounts, PageRecord, SourceRecord
 from .urls import canonical_url, url_key
 
+log = logging.getLogger("area_events.discovery.repositories")
 MAX_CONTENT_BYTES = 2_000_000
-VOLATILE_FIELDS = ("retrieved_at",)  # fields that change on every read without the source changing
-
-
-def payload_hash(payload):
-    """sha256 of the candidate's comparable fields (everything except the volatile ones), in canonical JSON."""
-    stable = {k: v for k, v in payload.items() if k not in VOLATILE_FIELDS}
-    return hashlib.sha256(json.dumps(stable, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
 
 
 def content_hash(body):
@@ -150,21 +147,23 @@ class PageRepository:
 
 
 class CandidateRepository:
-    def upsert(self, tx, key, source_id, page_id, method, extractor, title, starts_at, payload, digest, now):
-        """Insert or update one candidate. Returns (candidate_id, 'new' | 'changed' | 'unchanged')."""
+    def upsert(self, tx, key, source_id, page_id, method, extractor, record, now):
+        """Insert or update one candidate from a standard `EventCandidate`. Its identity is the record's comparable facts (`producer.candidate_digest`); the producer's state is kept
+        in its own column, updated on every run and never part of the identity. Returns (candidate_id, 'new' | 'changed' | 'unchanged')."""
+        doc, digest = json.dumps(producer.document(record), ensure_ascii=False), producer.candidate_digest(record)
+        state = json.dumps(producer.thaw(record.state), ensure_ascii=False)
+        starts_at = int(datetime.fromisoformat(record.starts_at).timestamp())
         row = tx.execute("SELECT candidate_id, payload_hash FROM candidates WHERE candidate_key=?", (key,)).fetchone()
         if row is None:
-            candidate_id = tx.execute("""INSERT INTO candidates (candidate_key, source_id, page_id, method, extractor, title, starts_at, payload_json, payload_hash,
-                                          first_seen_at, last_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING candidate_id""",
-                                      (key, source_id, page_id, method, extractor, title, starts_at, json.dumps(payload, ensure_ascii=False, default=str), digest,
-                                       now, now, now)).fetchone()[0]
+            candidate_id = tx.execute("""INSERT INTO candidates (candidate_key, source_id, page_id, method, extractor, title, starts_at, payload_json, payload_hash, state_json,
+                                          first_seen_at, last_seen_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING candidate_id""",
+                                      (key, source_id, page_id, method, extractor, record.title, starts_at, doc, digest, state, now, now, now)).fetchone()[0]
             return candidate_id, "new"
         if row["payload_hash"] == digest:
-            tx.execute("UPDATE candidates SET last_seen_at=? WHERE candidate_id=?", (now, row["candidate_id"]))
+            tx.execute("UPDATE candidates SET last_seen_at=?, state_json=? WHERE candidate_id=?", (now, state, row["candidate_id"]))
             return row["candidate_id"], "unchanged"
-        tx.execute("""UPDATE candidates SET page_id=?, method=?, extractor=?, title=?, starts_at=?, payload_json=?, payload_hash=?, last_seen_at=?, updated_at=?
-                      WHERE candidate_id=?""",
-                   (page_id, method, extractor, title, starts_at, json.dumps(payload, ensure_ascii=False, default=str), digest, now, now, row["candidate_id"]))
+        tx.execute("""UPDATE candidates SET page_id=?, method=?, extractor=?, title=?, starts_at=?, payload_json=?, payload_hash=?, state_json=?, last_seen_at=?, updated_at=?
+                      WHERE candidate_id=?""", (page_id, method, extractor, record.title, starts_at, doc, digest, state, now, now, row["candidate_id"]))
         return row["candidate_id"], "changed"
 
     def replace_evidence(self, tx, candidate_id, rows):
@@ -175,8 +174,16 @@ class CandidateRepository:
                        (candidate_id, field, kind, quote[:400] if quote else None, page_id, digest, note))
         return len(rows)
 
-    def payloads(self, connection, source_id):
-        return [json.loads(row[0]) for row in connection.execute("SELECT payload_json FROM candidates WHERE source_id=? ORDER BY candidate_key", (source_id,))]
+    def previous(self, connection, source_id):
+        """The source's stored candidates as standard records, with the state its producer left (what the producer is handed as `previous`). A row that is not a readable
+        version-1 record is skipped and logged, never guessed at."""
+        records = []
+        for row in connection.execute("SELECT candidate_key, payload_json, state_json FROM candidates WHERE source_id=? ORDER BY candidate_key", (source_id,)):
+            try:
+                records.append(producer.candidate_from_document(json.loads(row["payload_json"]), json.loads(row["state_json"] or "{}")))
+            except (ValueError, TypeError) as error:
+                log.warning("stored candidate %s is not a readable standard record: %s", row["candidate_key"], error)
+        return tuple(records)
 
     def get(self, connection, key):
         row = connection.execute("""SELECT c.*, s.source_key, p.url_key FROM candidates c JOIN sources s USING (source_id)

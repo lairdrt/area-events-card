@@ -2,6 +2,7 @@
 
 The fixtures are real public pages read on 2026-10-24 (scripts removed, markup trimmed): two vendors' lists of the craft fairs they sell at, and the organizer
 pages those lists link to. Nothing here hard-codes an event: the events are read from the pages."""
+import dataclasses
 import json
 import os
 import sqlite3
@@ -9,12 +10,17 @@ import unittest
 from datetime import date
 
 from discovery.core import FetchError
-from discovery.service.acquisition import AcquisitionConfig, SourceAcquirer
-from discovery.service.adapters import CraftFairAcquisitionAdapter
 from discovery.service.control import CreateAreaRequest
 from discovery.service.fetching import RecordingFetcher
+from discovery.service.producers.craft_fairs import (
+    AcquisitionConfig,
+    CraftFairProducer,
+    SourceAcquirer,
+)
 from discovery.service.repositories import SourceSpec
+from discovery.service.schema import LATEST
 from discovery.sources import craftfairs
+
 from tests.test_discovery_service import Clock, FakeClient
 from tests.test_extraction import Fixture
 
@@ -45,7 +51,7 @@ def acquire(pages, seeds=(SQ, DRAGON), config=AcquisitionConfig(), max_requests=
     client = FakeClient(pages)
     acquirer = SourceAcquirer(RecordingFetcher(client, max_requests), "sd_craft_fairs", "San Diego craft fairs", TODAY, config)
     events, leads, notes = acquirer.run(seeds)
-    return events, {lead["url"]: lead for lead in leads}, notes, client
+    return events, {lead.url: dataclasses.asdict(lead) for lead in leads}, notes, client
 
 
 class Reading(unittest.TestCase):
@@ -116,7 +122,7 @@ class Acquiring(unittest.TestCase):
         self.assertEqual(discovered, {SEVEN, CLAIREMONT, EVENTBRITE})
         for url in discovered:
             self.assertIn(leads[url]["found_on"], (SQ, DRAGON), "every discovered page records where it was found")
-        self.assertEqual(sorted(e["title"] for e in events), ["50th Annual Clairemont Canyons Academy Craft Fair", "54th Annual Coronado Artisans Alley Craft Fair", "Golden Makers Market",
+        self.assertEqual(sorted(e.title for e in events), ["50th Annual Clairemont Canyons Academy Craft Fair", "54th Annual Coronado Artisans Alley Craft Fair", "Golden Makers Market",
                                                                "North Park Winter Fair", "Seven Oaks Holiday Craft Fair"])
 
     def test_pages_are_accepted_or_rejected_with_reasons(self):
@@ -143,29 +149,29 @@ class Acquiring(unittest.TestCase):
 
     def test_one_event_described_by_two_listings_and_an_organizer_is_one_event(self):
         events, _, _, _ = acquire(web())
-        clairemont = [e for e in events if "Clairemont" in e["title"]]
+        clairemont = [e for e in events if "Clairemont" in e.title]
         self.assertEqual(len(clairemont), 1)
         event = clairemont[0]
-        self.assertEqual((event["start"], event["timezone"], event["venue"], event["address"]),
+        self.assertEqual((event.starts_at, event.timezone, event.venue, event.address),
                          ("2026-11-14T09:00:00-08:00", "America/Los_Angeles", "Clairemont Canyons Academy", "4133 Mt. Albertine Ave, San Diego, CA 92111"))
-        self.assertEqual((event["extraction"]["listings"], event["extraction"]["organizer_pages"], event["verification"]["status"]), (2, 1, "corroborated"))
-        self.assertEqual(event["found_on"], [DRAGON, SQ])
-        self.assertEqual(event["categories"], ["Craft Fair"])
-        self.assertEqual(event["url"], CLAIREMONT, "the organizer's page is the event's address")
+        self.assertEqual((len(event.provenance.found_on), event.verification.status), (2, "corroborated"))
+        self.assertEqual(event.provenance.found_on, (DRAGON, SQ))
+        self.assertEqual(event.categories, ("Craft Fair",))
+        self.assertEqual(event.url, CLAIREMONT, "the organizer's page is the event's address")
 
     def test_the_organizers_page_wins_and_the_difference_is_reported(self):
         wrong = web(**{SEVEN: page("sevenoaks_home.html").replace("9am to 3pm", "10am to 4pm")})
         events, _, notes, _ = acquire(wrong)
-        seven = next(e for e in events if "Seven Oaks" in e["title"])
-        self.assertEqual((seven["start"], seven["end"]), ("2026-12-05T10:00:00-08:00", "2026-12-05T16:00:00-08:00"))
-        self.assertEqual(len(seven["extraction"]["conflicts"]), 1)
-        self.assertIn("sweetandquirky.com says 2026-12-05 09:00, the organizer says 2026-12-05 10:00", seven["extraction"]["conflicts"][0])
-        self.assertTrue(any(line.startswith("conflict:") for line in seven["verification"]["evidence"]))
-        self.assertEqual(notes["conflicts"], seven["extraction"]["conflicts"])
+        seven = next(e for e in events if "Seven Oaks" in e.title)
+        self.assertEqual((seven.starts_at, seven.ends_at), ("2026-12-05T10:00:00-08:00", "2026-12-05T16:00:00-08:00"))
+        conflicts = [line.removeprefix("conflict: ") for line in seven.verification.evidence if line.startswith("conflict:")]
+        self.assertEqual(len(conflicts), 1)
+        self.assertIn("sweetandquirky.com says 2026-12-05 09:00, the organizer says 2026-12-05 10:00", conflicts[0])
+        self.assertEqual(notes["conflicts"], conflicts)
 
     def test_source_imagery_comes_only_from_the_organizers_event_page(self):
         events, _, _, _ = acquire(web())
-        images = {e["title"]: e["image_url"] for e in events}
+        images = {e.title: e.image_url for e in events}
         self.assertTrue(images["Seven Oaks Holiday Craft Fair"].startswith("https://"))
         self.assertTrue(images["North Park Winter Fair"].startswith("https://img.evbuc.com/"))
         self.assertIsNone(images["Golden Makers Market"], "a vendor's card photo is not used")
@@ -175,7 +181,7 @@ class Acquiring(unittest.TestCase):
         self.assertEqual(events, [])
         self.assertIn("Holiday Craft Fair", notes["outside_region"])
         events, leads, _, _ = acquire(web(), seeds=(HOLY,), config=AcquisitionConfig(seed_region="San Diego County"))
-        self.assertEqual([(e["title"], e["start"], e["address"], e["organizer"]) for e in events],
+        self.assertEqual([(e.title, e.starts_at, e.address, e.organizer) for e in events],
                          [("Holiday Craft Fair", "2026-11-21T09:00:00-08:00", None, "Holy Family Roman Catholic Church")])
         self.assertEqual(leads[HOLY]["kind"], "event")
         self.assertIn("San Diego County: declared by the seed list (San Diego County)", leads[HOLY]["reasons"])
@@ -186,7 +192,7 @@ class Acquiring(unittest.TestCase):
                    "<li><h3>Poway Holiday Craft Fair</h3><p>Sat, December 12, 2026<br/>Poway Community Park<br/>13094 Civic Center Dr, Poway, CA 92064<br/>9AM - 3PM</p></li>"
                    "<li><h3>Mystery Craft Fair</h3><p>Sat, December 19, 2026<br/>10AM - 2PM</p></li></ul></body></html>")
         events, _, notes, _ = acquire({SQ: listing}, seeds=(SQ,))
-        self.assertEqual([e["title"] for e in events], ["Poway Holiday Craft Fair"], "a card needs a start time and a San Diego County place of its own; one that says Texas is dropped even under a San Diego heading")
+        self.assertEqual([e.title for e in events], ["Poway Holiday Craft Fair"], "a card needs a start time and a San Diego County place of its own; one that says Texas is dropped even under a San Diego heading")
         self.assertIn("Austin Holiday Craft Fair", notes["outside_region"])
 
     def test_crawling_is_bounded(self):
@@ -203,7 +209,7 @@ class Acquiring(unittest.TestCase):
         events, leads, notes, _ = acquire(web(**{SQ: FetchError("timed out")}))
         self.assertEqual(notes["seeds_read"], 1)
         self.assertEqual(leads[SQ]["decision"], "rejected")
-        self.assertEqual({e["title"] for e in events} >= {"50th Annual Clairemont Canyons Academy Craft Fair"}, True)
+        self.assertEqual({e.title for e in events} >= {"50th Annual Clairemont Canyons Academy Craft Fair"}, True)
         with self.assertRaises(FetchError) as caught:
             acquire({SQ: FetchError("timed out"), DRAGON: FetchError("blocked by robots.txt")})
         self.assertIn("no seed page could be read", str(caught.exception))
@@ -221,7 +227,7 @@ class ThroughThePipeline(Fixture):
 
     def built_with_craft(self):
         built = self.build()
-        built.service.adapters["craft_fairs"] = CraftFairAcquisitionAdapter(today=lambda: TODAY)
+        built.service.adapters["craft_fairs"] = CraftFairProducer(today=lambda: TODAY)
         built.service.register_source(self.spec)
         sd = built.control.create_area(CreateAreaRequest("San Diego Crafts", 32.7157, -117.1611, 25, sources=("sd_craft_fairs",))).area
         austin = built.control.create_area(CreateAreaRequest("Austin", 30.2672, -97.7431, 35, sources=("austin_fixture",))).area
@@ -259,7 +265,7 @@ class ThroughThePipeline(Fixture):
         try:
             row = connection.execute("SELECT payload_json, candidate_id FROM candidates WHERE title LIKE 'Seven Oaks%'").fetchone()
             payload = json.loads(row[0])
-            self.assertEqual((payload["categories"], payload["timezone"], payload["found_on"]), (["Craft Fair"], "America/Los_Angeles", [SQ]))
+            self.assertEqual((payload["categories"], payload["timezone"], payload["provenance"]["found_on"]), (["Craft Fair"], "America/Los_Angeles", [SQ]))
             quotes = {r[0]: r[1] for r in connection.execute("SELECT field, quote FROM evidence WHERE candidate_id=?", (row[1],))}
             self.assertIn("title", quotes, "the title is quoted from a page that was read")
             urls = {r[0] for r in connection.execute("SELECT p.url FROM pages p JOIN source_pages sp USING (page_id)")}
@@ -267,7 +273,7 @@ class ThroughThePipeline(Fixture):
             leads = {r[0]: (r[1], r[2], r[3]) for r in connection.execute("SELECT url, decision, found_on, kind FROM source_leads")}
             self.assertEqual(leads[SEVEN], ("accepted", SQ, "event"))
             self.assertEqual(leads["https://www.facebook.com/events/2122424228707583/"][0], "rejected")
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], LATEST)
         finally:
             connection.close()
 

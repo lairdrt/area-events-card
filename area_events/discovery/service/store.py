@@ -141,8 +141,11 @@ class DiscoveryStore:
             if version in applied:
                 continue
             with self.write() as tx:
-                for statement in _statements(script):
-                    tx.execute(statement)
+                if callable(script):   # a data migration: it is given the transaction and does its work with SQL statements
+                    script(tx)
+                else:
+                    for statement in _statements(script):
+                        tx.execute(statement)
                 tx.execute("INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)", (version, description, int(time.time())))
                 tx.execute(f"PRAGMA user_version={int(version)}")
         return self.version()

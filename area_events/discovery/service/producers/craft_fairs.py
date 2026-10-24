@@ -15,10 +15,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
-from ..core import FetchError, finish_event, localize_pacific, make_event, to_pacific
-from ..sources import craftfairs
-from .fetching import BudgetExceeded
-from .urls import canonical_url
+from ...core import FetchError, localize_pacific, now_pacific, to_pacific
+from ...sources import craftfairs
+from ..fetching import BudgetExceeded
+from ..producer import EventCandidate, ProducerResult, Provenance, SourceLead, stated
+from ..urls import canonical_url
 
 SOCIAL_HOSTS = ("facebook.com", "fb.com", "fb.me", "instagram.com", "tiktok.com", "twitter.com", "x.com", "youtube.com", "youtu.be", "pinterest.com", "linkedin.com",
                 "threads.net", "nextdoor.com", "meetup.com", "linktr.ee")
@@ -69,7 +70,9 @@ class SourceAcquirer:
             raise FetchError("no seed page could be read: " + "; ".join(f"{l['url']}: {'; '.join(l['reasons'])}" for l in self.leads.values() if l["kind"] == "seed")[:300])
         self._follow_links()
         events = self._merge()
-        return events, list(self.leads.values()), self.notes
+        leads = [SourceLead(l["url"], l["kind"], l["decision"], tuple(l["reasons"]), int(l["score"]), l["found_on"], l["link_text"] or None, int(l["events"]), bool(l["fetched"]))
+                 for l in self.leads.values()]
+        return events, leads, self.notes
 
     # --- leads ----------------------------------------------------------------------------------------------------
 
@@ -238,7 +241,7 @@ class SourceAcquirer:
             event = self._event(group)
             if event:
                 events.append(event)
-        events.sort(key=lambda e: e["start"])
+        events.sort(key=lambda e: e.starts_at)
         return events
 
     def _event(self, group):
@@ -289,17 +292,14 @@ class SourceAcquirer:
         street = craftfairs.street_key(facts.get("address"))
         identity = f"{facts['naive_start'].date()}|{street or ' '.join(sorted(craftfairs.distinctive_words(facts['title'])))}"
         url = (organizer or {}).get("url") or next((p["url"] for p in group["pages"]), None) or (listing[0]["seed"] if listing else None)
-        event = make_event(self.source_key, self.source_name, (listing[0]["seed"] if listing else url), url, facts["title"], start, local_id=_sha(identity)[:12],
-                           end=end.isoformat() if end else None, venue=facts.get("venue"), address=facts.get("address"), description=facts.get("description"),
-                           categories=["Craft Fair"], image_url=(organizer or {}).get("event", {}).get("image") if organizer else None,
-                           image_source=_host(organizer["url"]) if organizer and organizer["event"].get("image") else None)
-        event["timezone"] = zone
-        if organizer and organizer["event"].get("organizer"):
-            event["organizer"] = organizer["event"]["organizer"]
-        event["found_on"] = sorted({item["seed"] for item in listing})
-        event["extraction"] = {"detail_page": bool(organizer), "method": "craft_fair_acquisition", "listings": len(listing), "organizer_pages": len(group["pages"]),
-                               "conflicts": conflicts, "evidence_text": (listing[0]["entry"]["evidence_text"] if listing else organizer["event"]["evidence_text"])[:400]}
-        return finish_event(event, self.now.isoformat(timespec="seconds"), evidence, corroborated=len(hosts) >= 2)
+        image = organizer["event"].get("image") if organizer else None
+        return EventCandidate(local_id=_sha(identity)[:12], title=facts["title"], starts_at=start.isoformat(), ends_at=end.isoformat() if end else None, timezone=zone,
+                              venue=facts.get("venue"), address=facts.get("address"), description=facts.get("description"), url=url, image_url=image,
+                              image_source=_host(organizer["url"]) if image else None, categories=("Craft Fair",),
+                              organizer=(organizer["event"].get("organizer") or None) if organizer else None,
+                              provenance=Provenance(self.source_name, listing[0]["seed"] if listing else url, self.now.isoformat(timespec="seconds"),
+                                                    tuple(sorted({item["seed"] for item in listing}))),
+                              verification=stated(evidence, len(hosts) >= 2, end.isoformat() if end else None, facts.get("venue"), facts.get("address"), facts.get("description"), image))
 
     @staticmethod
     def _conflicts(facts, listing, organizer):
@@ -333,3 +333,26 @@ def page_view(page, zone):
     return {"title": event["title"], "day": naive_start.date(), "naive_start": naive_start, "naive_end": naive_end, "venue": event.get("venue"),
             "address": event.get("address"), "description": event.get("description")}
 
+
+
+class CraftFairProducer:
+    """Source acquisition pilot: craft fairs found by following public listings to the organizers' own pages (`SourceAcquirer`). The source's `seeds` option lists the pages it
+    starts from; everything else (organizer and event pages) is found by following their links. The pages it considered come back as leads."""
+
+    adapter = "craft_fairs"
+    extractor = "sources/craftfairs@v1"
+    method = "adapter"
+
+    def __init__(self, today=lambda: now_pacific().date()):
+        self._today = today
+
+    def crawl(self, fetcher, previous, options):
+        seeds = tuple(options.get("seeds") or (options["url"],))
+        config = AcquisitionConfig(max_organizer_pages=int(options.get("max_organizer_pages", 10)), horizon_days=int(options.get("horizon_days", 150)),
+                                   seed_region=str(options.get("seed_region", "")))
+        events, leads, notes = SourceAcquirer(fetcher, options["source_key"], options.get("name", "Craft fairs"), self._today(), config).run(seeds)
+        return ProducerResult(tuple(events), tuple(leads), notes)
+
+    @staticmethod
+    def page_role(url, base_url):
+        return "listing" if url.split("?")[0].rstrip("/") == base_url.split("?")[0].rstrip("/") else "detail"

@@ -26,7 +26,7 @@ from .. import evidence as evidence_text
 from . import producer
 from .contracts import RunReport
 from .fetching import RecordingFetcher
-from .repositories import RetentionPolicy, SourceSpec, compress, payload_hash
+from .repositories import RetentionPolicy, SourceSpec, compress
 from .scheduler import FixedPacing
 from .store import StaleLease, StorageUnavailable
 from .urls import canonical_url, url_key
@@ -107,7 +107,7 @@ class DiscoveryService:
             return RunReport(None, "nothing_due")
         with self.store.read() as connection:
             source = self.sources.by_id(connection, job["source_id"])
-            previous = self.candidates.payloads(connection, job["source_id"])
+            previous = self.candidates.previous(connection, job["source_id"])
         adapter = self.adapters.get(source["adapter"])
         fetcher = RecordingFetcher(self.fetch_client, self.config.max_requests_per_job, self.config.max_job_seconds)
         options = {**json.loads(source["options_json"]), "source_key": source["source_key"], "name": source["name"], "url": source["base_url"]}
@@ -118,7 +118,7 @@ class DiscoveryService:
         except FetchError as error:
             return self._release(job, token, fetcher, error)
         try:
-            result = producer.accept(answer, source["source_key"])   # the one boundary: only valid standard records pass
+            result = producer.accept(answer)   # the one boundary: only valid standard records pass
         except TypeError as error:   # a producer that answers with something that is not a ProducerResult is a defect: the job is released with backoff and the reason recorded
             return self._release(job, token, fetcher, FetchError(f"the producer's answer is not a ProducerResult: {error}"))
         plan = self._prepare(source, adapter, fetcher, result)
@@ -203,13 +203,7 @@ class DiscoveryService:
             pages.append(entry)
         candidates = []
         for record in result.candidates:
-            event = record.to_payload(source["source_key"])   # the stored candidate document: unchanged by the standard records
-            digest = payload_hash(event)
-            try:
-                starts_at = int(datetime.fromisoformat(event["start"]).timestamp())
-            except (KeyError, TypeError, ValueError):
-                starts_at = None
-            candidates.append({"event": event, "digest": digest, "starts_at": starts_at, "evidence": self._evidence(event, source["base_url"], texts, feeds)})
+            candidates.append({"record": record, "key": f"{source['source_key']}:{record.local_id}", "evidence": self._evidence(record, source["base_url"], texts, feeds)})
         return {"pages": pages, "candidates": candidates, "leads": list(result.leads)}
 
     @staticmethod
@@ -231,11 +225,11 @@ class DiscoveryService:
         return found
 
     @staticmethod
-    def _evidence(event, base_url, texts, feeds=()):
+    def _evidence(record, base_url, texts, feeds=()):
         """Evidence rows (field, kind, quote, url, content_hash, note): a quote only where the value is found verbatim in a page read."""
-        found_on = set(event.get("found_on") or ())   # listings an acquisition adapter read this event on
+        found_on = set(record.provenance.found_on)   # listings a producer read this event on
         listing = [(url, d, t) for url, (d, t) in texts.items() if url.split("?")[0].rstrip("/") == base_url.split("?")[0].rstrip("/") or url in feeds or url in found_on]
-        own = [(url, d, t) for url, (d, t) in texts.items() if url == event.get("url")]
+        own = [(url, d, t) for url, (d, t) in texts.items() if url == record.url]
 
         def find(value, places):
             for url, digest, text in places:
@@ -245,20 +239,20 @@ class DiscoveryService:
             return None
 
         rows = []
-        for name, value, places in (("title", event.get("title"), listing + own), ("description", (event.get("description") or "")[:60], listing + own),
-                                    ("venue", event.get("venue"), own + listing), ("address", (event.get("address") or "").split(",")[0], own + listing)):
+        for name, value, places in (("title", record.title, listing + own), ("description", (record.description or "")[:60], listing + own),
+                                    ("venue", record.venue, own + listing), ("address", (record.address or "").split(",")[0], own + listing)):
             hit = find(value, places)
             if hit:
                 rows.append((name, "extracted", hit[0], hit[1], hit[2], None if name not in ("description", "address") else
                              "the first part of the stored value" if name == "address" else "the first 60 characters of the stored value"))
         try:
-            start = datetime.fromisoformat(event["start"])
+            start = datetime.fromisoformat(record.starts_at)
             hit = find(f"{start:%B} {start.day}, {start.year}", listing)
             if hit:
-                rows.append(("start", "inferred", hit[0], hit[1], hit[2], f"the listing's date; normalised to {event['start']} with the listing's time"))
+                rows.append(("start", "inferred", hit[0], hit[1], hit[2], f"the listing's date; normalised to {record.starts_at} with the listing's time"))
         except (KeyError, TypeError, ValueError):
             pass
-        for line in (event.get("verification") or {}).get("evidence", []):
+        for line in record.verification.evidence:
             rows.append(("verification", "recorded", None, None, None, line[:300]))
         return rows
 
@@ -292,23 +286,22 @@ class DiscoveryService:
                 self.changes.append(tx, "page", url_key(fetch.url), entry["digest"], now)
                 counts["changes_appended"] += 1
         for item in plan["candidates"]:
-            event = item["event"]
+            record, key = item["record"], item["key"]
             counts["candidates_seen"] += 1
             page_id = None
-            if event.get("url"):
-                key = canonical_url(event["url"])
-                page_id = page_ids.get(key)
+            if record.url:
+                url = canonical_url(record.url)
+                page_id = page_ids.get(url)
                 if page_id is None:
-                    page_id, new = self.pages.touch(tx, event["url"], source["source_id"], "event", now)
-                    page_ids[key] = page_id
+                    page_id, new = self.pages.touch(tx, record.url, source["source_id"], "event", now)
+                    page_ids[url] = page_id
                     counts["pages_new"] += int(new)
-            candidate_id, outcome = self.candidates.upsert(tx, event["id"], source["source_id"], page_id, "adapter", self._extractor(source), event.get("title"),
-                                                           item["starts_at"], event, item["digest"], now)
+            candidate_id, outcome = self.candidates.upsert(tx, key, source["source_id"], page_id, "adapter", self._extractor(source), record, now)
             counts[f"candidates_{outcome}"] += 1
             if outcome != "unchanged":
                 rows = [(f, k, q, page_ids.get(canonical_url(u)) if u else None, stored_as.get(d, d), n) for f, k, q, u, d, n in item["evidence"]]
                 counts["evidence_written"] += self.candidates.replace_evidence(tx, candidate_id, rows)
-                self.changes.append(tx, "candidate", event["id"], item["digest"], now)
+                self.changes.append(tx, "candidate", key, producer.candidate_digest(record), now)
                 counts["changes_appended"] += 1
         if plan["leads"]:
             self.sources.save_leads(tx, source["source_id"], plan["leads"], now)

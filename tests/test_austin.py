@@ -4,7 +4,6 @@ Extraction and Event Query services, next to San Diego, in the one database.
 The regression data are a small sample of the REAL API (tests/data/localist_ut_austin_page*.json, long texts cut), re-dated at load so the events are upcoming.
 The sample includes the awkward cases: an all-day entry, an entry that starts at 00:00 without being flagged all-day, an event without a venue, a venue
 without an address. No website is contacted."""
-import types
 import json
 import os
 import sqlite3
@@ -15,13 +14,14 @@ from datetime import date, datetime, timedelta, timezone
 from discovery.core import FetchError
 from discovery.safe import Response
 from discovery.service import app as app_module
-from discovery.service.adapters import LocalistAdapter
 from discovery.service.control import CreateAreaRequest
 from discovery.service.events import EventQuery
+from discovery.service.producers.localist import LocalistProducer
 from discovery.service.service import DiscoveryService
 from discovery.service.store import DiscoveryStore
 from discovery.service.urls import canonical_url
-from tests.test_discovery_service import Clock, SPEC, city_pages
+
+from tests.test_discovery_service import SPEC, Clock, city_pages
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 SITE = "https://calendar.utexas.edu"
@@ -88,9 +88,7 @@ class Adapter(unittest.TestCase):
     def crawl(self, pages=None):
         pages = pages or sample_pages()
         recorder = Recorder({API + "1": pages[0], API + "2": pages[1]})
-        answer = LocalistAdapter().crawl(recorder, [], options())
-        # the adapter answers with standard records; the assertions below are about the event documents the service stores for them (unchanged)
-        return types.SimpleNamespace(candidates=[c.to_payload(UT.source_key) for c in answer.candidates], notes=dict(answer.notes)), recorder
+        return LocalistProducer().crawl(recorder, (), options()), recorder
 
     def test_the_known_source_is_a_real_localist_calendar_with_its_own_time_zone(self):
         self.assertEqual((UT.source_key, UT.adapter, UT.base_url), ("ut_austin", "localist", SITE))
@@ -103,41 +101,40 @@ class Adapter(unittest.TestCase):
         self.assertEqual(result.notes["pages"], 2)
         events = result.candidates
         self.assertEqual((len(events), result.notes["all_day_skipped"]), (7, 1), "8 sampled instances, one flagged all-day and skipped")
-        self.assertEqual(len({e["id"] for e in events}), 7)
+        self.assertEqual(len({e.local_id for e in events}), 7)
         for event in events:
-            self.assertTrue(event["id"].startswith("ut_austin:"))
-            self.assertTrue(event["url"].startswith(SITE + "/event/"), event["url"])
-            self.assertEqual(event["timezone"], "America/Chicago")
-            self.assertRegex(event["start"], r"[-+]\d\d:\d\d$", "times carry the API's UTC offset")
-            self.assertTrue(any("Localist API event instance" in line for line in event["verification"]["evidence"]))
-            self.assertFalse(event["verified"])
+            self.assertTrue(event.url.startswith(SITE + "/event/"), event.url)
+            self.assertEqual(event.timezone, "America/Chicago")
+            self.assertRegex(event.starts_at, r"[-+]\d\d:\d\d$", "times carry the API's UTC offset")
+            self.assertTrue(any("Localist API event instance" in line for line in event.verification.evidence))
+            self.assertFalse(event.verification.verified)
 
     def test_missing_facts_stay_missing_and_nothing_is_invented(self):
         (result, _) = self.crawl()
-        by_title = {e["title"]: e for e in result.candidates}
+        by_title = {e.title: e for e in result.candidates}
         fort = by_title["Fortlandia"]
-        self.assertEqual(fort["address"], "4801 La Crosse Avenue, Austin, TX 78739")
-        self.assertTrue(fort["end"] and fort["geo"]["source"] == "Localist API geo")
+        self.assertEqual(fort.address, "4801 La Crosse Avenue, Austin, TX 78739")
+        self.assertTrue(fort.ends_at and fort.geo["source"] == "Localist API geo")
         nowhere = by_title["Student Affairs Meeting"]
-        self.assertEqual((nowhere["venue"], nowhere["address"]), (None, None))
-        self.assertNotIn("geo", nowhere, "coordinates only from the API's own geo block")
+        self.assertEqual((nowhere.venue, nowhere.address), (None, None))
+        self.assertIsNone(nowhere.geo, "coordinates only from the API's own geo block")
         cpr = by_title["AHA BLS Provider (CPR)"]
-        self.assertTrue(cpr["venue"] and cpr["address"] is None)
+        self.assertTrue(cpr.venue and cpr.address is None)
 
     def test_a_start_at_midnight_that_the_source_did_not_call_all_day_is_kept_as_it_was_given(self):
         """A product-quality limit, recorded rather than hidden: the source gives 00:00 for some date-only entries (offers, deadlines)."""
         (result, _) = self.crawl()
-        midnight = [e for e in result.candidates if e["start"][11:19] == "00:00:00"]
-        self.assertEqual([e["title"] for e in midnight], ["BCBSTX Fitness Discount Program: Enrollment Fee Waived"])
+        midnight = [e for e in result.candidates if e.starts_at[11:19] == "00:00:00"]
+        self.assertEqual([e.title for e in midnight], ["BCBSTX Fitness Discount Program: Enrollment Fee Waived"])
 
     def test_unusable_responses_are_errors_not_empty_results(self):
         pages = sample_pages()
         for name, broken in (("not json", "<html>maintenance</html>"), ("no events list", {"page": {"total": 1}}), ("a list", [1, 2])):
             with self.subTest(name):
                 with self.assertRaises(FetchError):
-                    LocalistAdapter().crawl(Recorder({API + "1": broken}), [], options())
+                    LocalistProducer().crawl(Recorder({API + "1": broken}), [], options())
         with self.assertRaises(FetchError):   # the second page fails: the run fails as a whole instead of storing half a calendar
-            LocalistAdapter().crawl(Recorder({API + "1": pages[0], API + "2": FetchError("HTTP 503")}), [], options())
+            LocalistProducer().crawl(Recorder({API + "1": pages[0], API + "2": FetchError("HTTP 503")}), [], options())
 
 
 class Pipeline(unittest.TestCase):
@@ -200,7 +197,7 @@ class Pipeline(unittest.TestCase):
                                       "WHERE c.candidate_key LIKE 'ut_austin:%'").fetchall()
         self.assertEqual(len(rows), 7)
         for payload, starts_at in rows:
-            self.assertEqual(starts_at, int(datetime.fromisoformat(json.loads(payload)["start"]).timestamp()))
+            self.assertEqual(starts_at, int(datetime.fromisoformat(json.loads(payload)["starts_at"]).timestamp()))
             self.assertTrue(starts_at > datetime.now(timezone.utc).timestamp() - 86400)
 
     def test_unlocated_and_unverified_places_are_marked_not_invented(self):

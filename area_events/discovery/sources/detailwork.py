@@ -22,9 +22,11 @@ def _now():
 
 
 class DetailWork:
-    def __init__(self, previous, key, budget, enabled=True, version=1, now=None):
+    def __init__(self, previous, key, budget, enabled=True, version=1, now=None, state_of=None):
         """`previous`: the events cached by the last run; `key(event)`: the identity an adapter uses for an event; `version`: the
-        extraction version this adapter writes (an older completed page is read again when the adapter learns something new)."""
+        extraction version this adapter writes (an older completed page is read again when the adapter learns something new);
+        `state_of(event)`: where an event keeps this bookkeeping (default: the `extraction` dictionary of an event dictionary)."""
+        self._state_of = state_of or (lambda event: (event or {}).get("extraction") or {})
         self.old = {}
         for event in previous or []:
             try:
@@ -39,7 +41,7 @@ class DetailWork:
     def reusable(self, ident):
         """The cached event whose page was already read (at this extraction version), else None."""
         old = self.old.get(ident)
-        extraction = (old or {}).get("extraction") or {}
+        extraction = self._state_of(old) if old is not None else {}
         if old and extraction.get("detail_page") and extraction.get("detail_v", 1) >= self.version:
             return old
         return None
@@ -48,7 +50,8 @@ class DetailWork:
         self.counts["detail_reused"] += 1
 
     def _waiting(self, ident):
-        extraction = ((self.old.get(ident) or {}).get("extraction")) or {}
+        old = self.old.get(ident)
+        extraction = self._state_of(old) if old is not None else {}
         after = extraction.get("detail_retry_after")
         if not after:
             return False
@@ -78,13 +81,18 @@ class DetailWork:
         self.errors.append(f"{url}: {error}"[:300])
 
     def stamp(self, event, ident, completed, failed=False):
-        """Record the page state on the event: completed (with the extraction version), or the failure and when to try again."""
-        extraction = event.setdefault("extraction", {})
-        extraction["detail_page"] = bool(completed)
+        """Record the page state on the event dictionary: completed (with the extraction version), or the failure and when to try again."""
+        event.setdefault("extraction", {}).update(self.next_state(ident, completed, failed))
+        return event
+
+    def next_state(self, ident, completed, failed=False):
+        """The bookkeeping for one event after this run: completed (with the extraction version), or the failure and when to try again."""
+        extraction = {"detail_page": bool(completed)}
         if completed:
             extraction["detail_v"] = self.version
-            return event
-        previous = ((self.old.get(ident) or {}).get("extraction")) or {}
+            return extraction
+        old = self.old.get(ident)
+        previous = (self._state_of(old) if old is not None else {}) or {}
         failures = int(previous.get("detail_failures") or 0)
         if failed:
             failures += 1
@@ -94,7 +102,7 @@ class DetailWork:
             extraction["detail_retry_after"] = previous["detail_retry_after"]  # still backing off: carry it forward
         if failures:
             extraction["detail_failures"] = failures
-        return event
+        return extraction
 
     def notes(self, notes):
         notes.update(self.counts)

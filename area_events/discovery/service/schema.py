@@ -5,6 +5,40 @@ Times are UTC epoch seconds. Integer ids are local to this database; the stable 
 `content_hash`) are what leaves it.
 """
 
+def _standard_candidates(tx):
+    """Migration 7 (data): every stored candidate becomes a version-1 standard record, and the producer's working state moves out of it into its own column.
+
+    Before this, a candidate was stored as the event dictionary the reading code built (`id` with the source key, `start`, `end`, `source`, `verification`, `extraction`, ...). A
+    migration is frozen in time, so it carries its own copy of the field mapping and of the identity hash instead of importing either from the program. The mapping is applied once;
+    nothing at run time reads the old form. Work already done for a candidate (extraction, media) is carried over to the new hash, because the facts did not change, only how they
+    are written."""
+    tx.execute("ALTER TABLE candidates ADD COLUMN state_json TEXT NOT NULL DEFAULT '{}'")
+    import hashlib
+    import json
+    rows = tx.execute("SELECT c.candidate_id, c.candidate_key, c.payload_json, c.payload_hash, s.source_key FROM candidates c JOIN sources s USING (source_id)").fetchall()
+    for row in rows:
+        old = json.loads(row["payload_json"])
+        prefix = row["source_key"] + ":"
+        source, verification = old.get("source") or {}, old.get("verification") or {}
+        document = {"schema": "discovery.producer.v1", "local_id": row["candidate_key"][len(prefix):] if row["candidate_key"].startswith(prefix) else row["candidate_key"],
+                    "title": old.get("title"), "starts_at": old.get("start"), "ends_at": old.get("end"), "timezone": old.get("timezone"), "venue": old.get("venue"),
+                    "address": old.get("address"), "description": old.get("description"), "url": old.get("url"), "image_url": old.get("image_url"),
+                    "image_source": old.get("image_source"), "categories": list(old.get("categories") or []), "organizer": old.get("organizer"), "price": old.get("price"),
+                    "geo": old.get("geo"),
+                    "provenance": {"source_name": source.get("name"), "listing_url": source.get("listing_url"), "retrieved_at": old.get("retrieved_at"),
+                                   "found_on": list(old.get("found_on") or [])},
+                    "verification": {"status": verification.get("status", "unverified"), "evidence": list(verification.get("evidence") or []),
+                                     "missing": list(verification.get("missing") or []), "note": verification.get("note", ""), "verified": bool(old.get("verified", False))}}
+        stable = {k: v for k, v in document.items() if k != "provenance"}
+        stable["provenance"] = {k: v for k, v in document["provenance"].items() if k != "retrieved_at"}
+        digest = hashlib.sha256(json.dumps(stable, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+        tx.execute("UPDATE candidates SET payload_json=?, payload_hash=?, state_json=? WHERE candidate_id=?",
+                   (json.dumps(document, ensure_ascii=False), digest, json.dumps(old.get("extraction") or {}, ensure_ascii=False), row["candidate_id"]))
+        tx.execute("UPDATE processing_work SET done_hash=? WHERE candidate_id=? AND done_hash=?", (digest, row["candidate_id"], row["payload_hash"]))
+        tx.execute("UPDATE processing_work SET last_fail_hash=? WHERE candidate_id=? AND last_fail_hash=?", (digest, row["candidate_id"], row["payload_hash"]))
+        tx.execute("UPDATE candidate_media SET payload_hash=? WHERE candidate_id=? AND payload_hash=?", (digest, row["candidate_id"], row["payload_hash"]))
+
+
 MIGRATIONS = (
     (1, "sources, pages, source attribution, contents, fetches, candidates, evidence, jobs, change log, consumers", """
 CREATE TABLE sources (
@@ -346,6 +380,7 @@ CREATE TABLE source_leads (
 );
 CREATE INDEX source_leads_by_decision ON source_leads (source_id, decision);
 """),
+    (7, "candidates are stored as version-1 standard records; the producer's working state is kept apart in state_json", _standard_candidates),
 )
 
 LATEST = MIGRATIONS[-1][0]
