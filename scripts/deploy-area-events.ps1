@@ -303,7 +303,7 @@ s=sqlite3.connect('file:'+snap+'?mode=ro',uri=True); d=sqlite3.connect(stage+'/r
 with tarfile.open(os.environ['AE_ARCHIVE']) as t:
  members=t.getmembers()
  if any(os.path.isabs(m.name) or '..' in m.name.split('/') or m.issym() or m.islnk() for m in members): raise RuntimeError('unsafe deployment archive')
- t.extractall(stage)
+ t.extractall(stage,filter='data')
 r=subprocess.run(['python3',stage+'/scripts/discovery.py','status','--db',stage+'/rehearsal.db'],cwd=stage,timeout=90,capture_output=True,text=True)
 if r.returncode: raise RuntimeError('migration command failed: '+r.stderr[-1000:])
 a=sqlite3.connect('file:'+stage+'/rehearsal.db?mode=ro',uri=True); b=sqlite3.connect('file:'+snap+'?mode=ro',uri=True)
@@ -328,7 +328,7 @@ subprocess.run(['systemctl','--user','stop','area-events-discovery.service'],tim
 with tarfile.open(os.environ['AE_ARCHIVE']) as t:
  members=t.getmembers()
  if any(os.path.isabs(m.name) or '..' in m.name.split('/') or m.issym() or m.islnk() for m in members): raise RuntimeError('unsafe deployment archive')
- t.extractall(stage)
+ t.extractall(stage,filter='data')
 run=os.path.basename(os.environ['AE_ARCHIVE']).replace('.tar',''); old=root+'/.area-events-old-'+run
 os.rename(root+'/area_events',old); os.rename(stage+'/area_events',root+'/area_events')
 scriptold=root+'/scripts/discovery.py.old-'+run; os.rename(root+'/scripts/discovery.py',scriptold); shutil.copy2(stage+'/scripts/discovery.py',root+'/scripts/discovery.py')
@@ -534,13 +534,13 @@ function Invoke-Recovery($phase,$state,$schemaChanged,$haChanged) {
     }
     Write-Warning 'Restoring Cubi code only; database is untouched.'
     $py=@'
-import json,os,shutil,sqlite3,ssl,subprocess,tarfile,tempfile,urllib.request
+import json,os,shutil,sqlite3,ssl,subprocess,tarfile,tempfile,time,urllib.request
 root='/home/robohobo/area-events-discovery'; t=tempfile.mkdtemp(dir=root,prefix='.ae-restore-')
 subprocess.run(['systemctl','--user','stop','area-events-discovery.service'],timeout=45,check=True)
 with tarfile.open(os.environ['AE_BACKUP']+'/accepted-files.tar.gz') as z:
  members=z.getmembers()
  if any(os.path.isabs(m.name) or '..' in m.name.split('/') or m.issym() or m.islnk() for m in members): raise RuntimeError('unsafe rollback archive')
- z.extractall(t)
+ z.extractall(t,filter='data')
 failed=root+'/.area-events-failed'
 if os.path.exists(root+'/area_events'): os.rename(root+'/area_events',failed)
 os.rename(t+'/area_events',root+'/area_events'); shutil.copy2(t+'/scripts/discovery.py',root+'/scripts/discovery.py')
@@ -549,8 +549,17 @@ subprocess.run(['systemctl','--user','start','area-events-discovery.service'],ti
 subprocess.run(['systemctl','--user','is-active','--quiet','area-events-discovery.service'],timeout=12,check=True)
 token=open(root+'/data/discovery/api-read-token').read().strip(); ctx=ssl.create_default_context(cafile=root+'/certs/cert.pem')
 req=urllib.request.Request('https://192.168.1.88:8780/v1/discovery/status',headers={'Authorization':'Bearer '+token})
-with urllib.request.urlopen(req,context=ctx,timeout=8) as response: status=json.load(response)
-if status.get('state')!='running': raise RuntimeError('accepted Cubi service failed rollback health check')
+status=None
+for attempt in range(30):
+ try:
+  with urllib.request.urlopen(req,context=ctx,timeout=1) as response: status=json.load(response)
+  break
+ except Exception:
+  if attempt==29: raise RuntimeError('restored service API did not become ready within 60 seconds')
+  time.sleep(1)
+status_data=status.get('status',status) if isinstance(status,dict) else {}
+state=status_data.get('state') or status_data.get('runtime',{}).get('state')
+if state!='running': raise RuntimeError('accepted Cubi service failed rollback health check')
 '@
     $null=Invoke-CubiPython $py @{AE_BACKUP=$script:RemoteBackup} 120
   } elseif ($phase -eq 'Home Assistant installation') {
