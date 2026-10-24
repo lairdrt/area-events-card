@@ -23,4 +23,5 @@ WS_PAUSE = f"{DOMAIN}/pause"
 WS_RESUME = f"{DOMAIN}/resume"
 
 CARD_URL = "/area_events/area-events-card.js"
+PRESENTATION_URL = "/area_events/presentation"
 PHOTOS_KEY = f"{DOMAIN}_photos"  # hass.data: the validated category-photograph index, or None

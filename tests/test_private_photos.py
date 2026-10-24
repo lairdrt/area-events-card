@@ -168,13 +168,14 @@ class Hygiene(unittest.TestCase):
         except FileNotFoundError:
             self.skipTest("git is not available")
 
-    def test_the_build_copies_only_the_card_script(self):
+    def test_the_build_copies_the_card_and_presentation_modules_but_no_private_photographs(self):
         build = (REPO / "scripts" / "build.mjs").read_text(encoding="utf-8")
         self.assertNotIn("photos", build)
         self.assertNotIn("webp", build)
         dist = REPO / "dist"
         if dist.exists():
-            self.assertEqual([p.name for p in dist.iterdir()], ["area-events-card.js"])
+            self.assertEqual(sorted(p.name for p in dist.iterdir()), ["area-events-card.js", "presentation"])
+            self.assertTrue(all(p.suffix == ".js" for p in (dist / "presentation").iterdir()))
         card = (INTEGRATION / "frontend" / "area-events-card.js").read_text(encoding="utf-8")
         self.assertNotIn("data:image", card, "no photograph is embedded in the tracked script")
         self.assertLess(len(card), 400_000)

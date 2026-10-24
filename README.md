@@ -12,7 +12,7 @@ card ...         ─┘   (custom_components/area_events)   (read / control)   �
 - The **integration** keeps one shared view of the Discovery Service for all cards: one check of the service's change feed per interval, one read per followed area, and a message to only those cards whose area really changed. Tokens stay in Home Assistant's backend. Administrators can change shared discovery settings through WebSocket commands.
 - The **Discovery Service** (`area_events/discovery/service`, run with `python scripts/discovery.py serve`) owns the database, discovers independently of Home Assistant and exposes an authenticated API. Cards never cause a crawl.
 
-Details: [docs/ha-integration-2d.md](docs/ha-integration-2d.md) (this integration), [docs/discovery-service-architecture.md](docs/discovery-service-architecture.md) (the service). The earlier profile-driven app described in [docs/architecture.md](docs/architecture.md) is superseded.
+Details: [docs/ha-integration-2d.md](docs/ha-integration-2d.md) (this integration), [docs/presentation-architecture.md](docs/presentation-architecture.md) (replaceable event renderers), [docs/discovery-service-architecture.md](docs/discovery-service-architecture.md) (the service). The earlier profile-driven app described in [docs/architecture.md](docs/architecture.md) is superseded.
 
 ## Install
 
@@ -62,6 +62,6 @@ python -m unittest discover -s tests -t .  # engine and integration logic (stand
 npm run build                              # stamps the card into custom_components/area_events/frontend/
 ```
 
-`npm run build` writes the card the integration serves; commit the result. The Home Assistant glue (`config_flow.py`, `coordinator.py`, `websocket_api.py`, `__init__.py`) is tested against stand-ins shaped after the Home Assistant API; the integration's logic is tested against the real Discovery Service. Neither proves it runs inside a real Home Assistant: use the checklist in [docs/ha-integration-2d.md](docs/ha-integration-2d.md#verification-on-the-device).
+`npm run build` writes the card and its registered presentation modules for the integration to serve; commit the result. The Home Assistant glue (`config_flow.py`, `coordinator.py`, `websocket_api.py`, `__init__.py`) is tested against stand-ins shaped after the Home Assistant API; the integration's logic is tested against the real Discovery Service. Neither proves it runs inside a real Home Assistant: use the checklist in [docs/ha-integration-2d.md](docs/ha-integration-2d.md#verification-on-the-device).
 
 Previous single-location design and its rollback references: tag `area-events-pre-ha-refactor-2026-10-20` and [docs/ha-native-refactor-baseline.md](docs/ha-native-refactor-baseline.md).

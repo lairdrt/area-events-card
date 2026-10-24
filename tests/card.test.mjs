@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 class El {
-  constructor(tag) { Object.assign(this, { tag, children: [], className: "", textContent: "", attrs: {}, listeners: {}, hidden: false, value: "" }); }
+  constructor(tag) { Object.assign(this, { tag, nodeType: 1, children: [], className: "", textContent: "", attrs: {}, listeners: {}, hidden: false, value: "" }); }
   append(...n) { this.children.push(...n); }
   prepend(...n) { this.children.unshift(...n); }
   remove() { this.removed = true; }
@@ -31,7 +31,12 @@ globalThis.document = {
 globalThis.customElements = { get: (name) => (name === "home-assistant" ? class {} : undefined), define: (name, c) => { if (name === "area-events-card") CardClass = c; }, whenDefined: () => new Promise(() => {}) };
 globalThis.window = { location: { pathname: "/lovelace/events" }, localStorage: new Storage() };
 await import("../src/area-events-card.js");
-const { categoriesFor, DEFAULT_CATEGORIES, normalizePrefs, prefsKey, readSettings, assertEditable, EDITOR_SCHEMA, ART, ART_LABELS, artFor } = CardClass._internals;
+const { categoriesFor, DEFAULT_CATEGORIES, normalizePrefs, prefsKey, readSettings, assertEditable, EDITOR_SCHEMA } = CardClass._internals;
+const { ART, ART_LABELS, artFor } = await import("../src/presentation/community.js");
+const { PRESENTATION_CONTRACT } = await import("../src/presentation/contract.js");
+const { genericRenderer } = await import("../src/presentation/generic.js");
+const { nasaMissionRenderer } = await import("../src/presentation/nasa-mission.js");
+const { PresentationRegistry } = await import("../src/presentation/registry.js");
 
 const day = 24 * 3600 * 1000;
 const iso = (offsetMs) => new Date(Date.now() + offsetMs).toISOString();
@@ -134,6 +139,55 @@ test("events render upcoming events with honest verification labels and source l
   assert.deepEqual(labels, ["Verified", "Source corroborated", "Unverified"]);
   assert.doesNotMatch(text(root), /DEMONSTRATION/);
   assert.ok(byClass(root, "source").every((a) => a.href.startsWith("https://www.kpbs.org/")));
+});
+
+test("presentation registry accepts an independent renderer, maps typed events, and falls back safely", () => {
+  const custom = { id: "test-renderer", contract: PRESENTATION_CONTRACT, eventTypes: ["test.type"], styles: "", render: () => document.createElement("section") };
+  const registry = new PresentationRegistry([genericRenderer, nasaMissionRenderer]).register(custom);
+  const selected = registry.select({ type: "test.type" }, { default_renderer: "generic", event_types: { "test.type": "test-renderer" } });
+  assert.equal(selected, custom);
+  assert.equal(registry.select({ type: "unknown.type" }, { default_renderer: "generic" }).id, "generic");
+  assert.throws(() => registry.validate({ default_renderer: "missing" }), /Unknown presentation.default_renderer/);
+  assert.throws(() => registry.validate({ default_renderer: "generic", typo: true }), /Unknown presentation option: typo/);
+  assert.throws(() => registry.validate({ default_renderer: "generic", event_types: { "test.type": "nasa-mission" } }), /does not support event type/);
+  let rendererError;
+  const broken = new PresentationRegistry([genericRenderer, {
+    id: "broken", contract: PRESENTATION_CONTRACT, eventTypes: ["broken.type"], styles: "", render: () => null,
+  }]);
+  const output = broken.render({ type: "broken.type", title: "Safe fallback" }, { default_renderer: "generic", event_types: { "broken.type": "broken" } }, {
+    meta: () => document.createElement("div"), formatDate: (value) => value,
+    onRendererError: (id) => { rendererError = id; },
+  });
+  assert.equal(rendererError, "broken", "invalid output is reported and replaced with the fallback");
+  assert.equal(output.className, "event generic-event");
+});
+
+test("the host delegates presentation and renderer modules stay outside service and persistence layers", async () => {
+  const host = fs.readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  assert.doesNotMatch(host, /_renderEvent|community\.event|nasa\.mission/);
+  assert.doesNotMatch(host, /\.mission-|\.community-event/);
+  assert.match(host, /PRESENTATIONS\.render\(event, this\._presentation, context\)/);
+  for (const name of ["community.js", "generic.js", "manifest.js", "nasa-mission.js", "registry.js", "contract.js"]) {
+    const source = fs.readFileSync(new URL(`../src/presentation/${name}`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /(?:sqlite|persistence|producer|discovery\.service|homeassistant|hass\.connection|\bfetch\s*\()/i, name);
+  }
+  const community = fs.readFileSync(new URL("../src/presentation/community.js", import.meta.url), "utf8");
+  const mission = fs.readFileSync(new URL("../src/presentation/nasa-mission.js", import.meta.url), "utf8");
+  assert.match(community, /export const styles/);
+  assert.match(mission, /styles:/);
+});
+
+test("configured mission presentation uses only supplied typed mission details", async () => {
+  const fixture = { id: "mission-fixture-1", type: "nasa.mission", title: "Fixture mission",
+    details: { name: "Aurora Survey", launch_window: "No window announced", launch_vehicle: "Example-1", status: "Planning", operator: "Synthetic Agency" } };
+  const card = await make({ events: [fixture], presentation: { event_types: { "nasa.mission": "nasa-mission" } } });
+  assert.equal(byClass(card.shadowRoot, "mission-event").length, 1);
+  assert.match(text(card.shadowRoot), /Aurora Survey/);
+  assert.match(text(card.shadowRoot), /Example-1/);
+  assert.match(text(card.shadowRoot), /Synthetic Agency/);
+  assert.equal(card._tiles[0].event.id, fixture.id);
+  assert.equal(card._tiles[0].event.start, undefined, "renderer does not fabricate a date");
+  assert.equal(card._tiles[0].event.location, "", "renderer does not fabricate a location");
 });
 
 test("the card follows its own area through one subscription and asks nothing else of Home Assistant", async () => {
@@ -250,13 +304,14 @@ test("a configuration error is retried slowly, not hammered", async () => {
 
 test("few results never stretch the tiles: the grid keeps its empty columns (auto-fill, not auto-fit)", () => {
   const source = fs.readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  const renderer = fs.readFileSync(new URL("../src/presentation/community.js", import.meta.url), "utf8");
   const rules = source.match(/grid-template-columns:[^;]*;/g) || [];
   assert.ok(rules.length >= 2, "the default grid rule and the 'columns' override");
   for (const rule of rules) {
     assert.match(rule, /repeat\(auto-fill,/, rule);
     assert.doesNotMatch(rule, /auto-fit/, rule);
   }
-  assert.match(source, /\.image \{[^}]*aspect-ratio: 16 \/ 9/, "a tile's picture keeps its proportions, so equal widths mean equal heights");
+  assert.match(renderer, /\.image \{[^}]*aspect-ratio: 16 \/ 9/, "a tile's picture keeps its proportions, so equal widths mean equal heights");
 });
 
 test("inline events keep working and Verified only when verified is true", async () => {
@@ -794,7 +849,8 @@ test("the animation is lightweight CSS and stops for reduced motion", async () =
   const card = await make({});
   const css = card.shadowRoot.children[0].textContent;
   assert.match(css, /@keyframes ae-spin/);
-  assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*\.image img \{ transition: none; \}[\s\S]*\.spinner \{ animation: none; \}[\s\S]*\.bar::before \{ animation: none/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*\.image img \{ transition: none; \}/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*\.spinner \{ animation: none; \}[\s\S]*\.bar::before \{ animation: none/);
   assert.match(css, /var\(--primary-color\)/);
   assert.doesNotMatch(css, /#[0-9a-fA-F]{3,6}\b/, "colors come from the theme only");
 });
@@ -887,9 +943,9 @@ test("the packaged artwork is complete, themed, offline and well-formed", () => 
   }
 });
 
-test("the artwork is shipped inside the card the integration serves, so it needs no extra request", async () => {
+test("the artwork is shipped in the community renderer module served by the integration", async () => {
   const { readFileSync } = await import("node:fs");
-  const served = readFileSync(new URL("../custom_components/area_events/frontend/area-events-card.js", import.meta.url), "utf8");
+  const served = readFileSync(new URL("../custom_components/area_events/frontend/presentation/community.js", import.meta.url), "utf8");
   assert.equal((served.match(/: SVG_HEAD \+/g) || []).length, 17, "seventeen illustrations in the served file");
   assert.match(served, /Illustration/);
 });
@@ -916,7 +972,7 @@ test("the six added illustrations render through the existing illustration path,
   assert.equal(artFor({ illustration: { category: "music" } }), "music");
   assert.equal(artFor({ illustration: { category: "festival" } }), "festival");
   assert.equal(artFor({ illustration: { category: "street_festival" } }), "street_festival");
-  const source = fs.readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  const source = fs.readFileSync(new URL("../src/presentation/community.js", import.meta.url), "utf8");
   for (const kind of added) assert.ok(source.includes(`.art.${kind} { --ae-accent: hsl(`), `${kind} has a theme accent`);
 });
 
@@ -1010,10 +1066,16 @@ test("the card the integration serves is the current source, stamped", async () 
   const { readFileSync } = await import("node:fs");
   const { createHash } = await import("node:crypto");
   const source = readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  const modules = ["community.js", "contract.js", "generic.js", "manifest.js", "nasa-mission.js", "registry.js"]
+    .map((name) => `${name}\n${readFileSync(new URL(`../src/presentation/${name}`, import.meta.url), "utf8")}`).join("\n");
   const { version } = JSON.parse(readFileSync(new URL("../custom_components/area_events/manifest.json", import.meta.url), "utf8"));
-  const identifier = `AREA-EVENTS ${version}-${createHash("sha1").update(source).digest("hex").slice(0, 8)}`;
+  const identifier = `AREA-EVENTS ${version}-${createHash("sha1").update(source).update(modules).digest("hex").slice(0, 8)}`;
   const served = readFileSync(new URL("../custom_components/area_events/frontend/area-events-card.js", import.meta.url), "utf8");
   assert.equal(served, source.replaceAll("__AREA_EVENTS_CARD_BUILD__", identifier), "run npm run build and commit the result");
+  for (const name of ["community.js", "contract.js", "generic.js", "manifest.js", "nasa-mission.js", "registry.js"]) {
+    assert.equal(readFileSync(new URL(`../custom_components/area_events/frontend/presentation/${name}`, import.meta.url), "utf8"),
+      readFileSync(new URL(`../src/presentation/${name}`, import.meta.url), "utf8"), `${name} is packaged from source`);
+  }
 });
 
 // --- visual editor availability ------------------------------------------------------------------
@@ -1087,10 +1149,10 @@ async function withFreshModule(registry, run) {
   }
 }
 
-test("the card module is one self-contained script with no imports, and records its load", async () => {
+test("the card module imports only its presentation manifest and records its load", async () => {
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
-  assert.doesNotMatch(source, /^\s*(import|export)\s/m, "no imports or exports: nothing to fetch or link between the request and the registration");
+  assert.deepEqual([...source.matchAll(/^import .* from ["'](.*)["'];$/gm)].map((match) => match[1]), ["./presentation/manifest.js"]);
   assert.doesNotMatch(source, /import\s*\(|^\s*await\s/m, "no dynamic import or top-level await");
   assert.equal((source.match(/customElements\.define\(/g) || []).length, 0, "no direct define on the registry captured at load; registration goes through defineCard()");
 });
@@ -1653,8 +1715,9 @@ test("each tile's credit panel has its own id", async () => {
 });
 
 test("the card's styles keep the credit compact: a small round button, a panel only on request, no theme colours as hex", () => {
-  const source = fs.readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
-  const styles = source.slice(source.indexOf("const STYLES = `"), source.indexOf("`;", source.indexOf("const STYLES = `")));
+  const source = fs.readFileSync(new URL("../src/presentation/community.js", import.meta.url), "utf8");
+  const start = source.indexOf("export const styles = `");
+  const styles = source.slice(start, source.indexOf("`;", start));
   assert.match(styles, /\.credit-button \{[^}]*width: 22px; height: 22px;[^}]*border-radius: 50%/);
   assert.match(styles, /\.credit-button::after \{ content: ""; position: absolute; inset: -11px; \}/, "a 44px touch target around the 22px button");
   assert.match(styles, /\.media-credit \{[^}]*max-height: calc\(100% - 52px\); overflow: auto/);
@@ -1689,13 +1752,16 @@ test("every metadata row is an icon box and a text span, so wrapped text keeps t
 
 test("the shared row styles centre each icon on the first line of its text at one size and spacing", () => {
   const source = fs.readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
-  const styles = source.slice(source.indexOf("const STYLES = `"), source.indexOf("`;", source.indexOf("const STYLES = `")));
+  const community = fs.readFileSync(new URL("../src/presentation/community.js", import.meta.url), "utf8");
+  const start = community.indexOf("export const styles = `");
+  const styles = source + community.slice(start, community.indexOf("`;", start));
   assert.match(styles, /\.meta \{[^}]*display: flex; align-items: flex-start; gap: 6px;[^}]*line-height: 1\.4;/);
   assert.match(styles, /\.verify \{[^}]*display: flex; align-items: flex-start; gap: 6px; line-height: 1\.4;/);
-  assert.match(styles, /\.meta ha-icon, \.verify ha-icon \{[^}]*--mdc-icon-size: 16px; flex: none; width: 16px; height: 1\.4em; display: inline-flex; align-items: center; justify-content: center;/,
+  assert.match(styles, /\.meta ha-icon \{[^}]*--mdc-icon-size: 16px; flex: none; width: 16px; height: 1\.4em; display: inline-flex; align-items: center; justify-content: center;/,
     "the icon box is one text line tall and centres the glyph in it");
   assert.doesNotMatch(styles, /vertical-align: -3px;\s*\}\s*\n\s*\.description/, "no per-row pixel nudges for the verification icon");
-  assert.match(styles, /\.meta > span, \.verify > span \{ min-width: 0; \}/, "long text wraps inside the row");
+  assert.match(styles, /\.meta > span \{ min-width: 0; \}/, "generic metadata text wraps inside the row");
+  assert.match(styles, /\.verify > span \{ min-width: 0; \}/, "verification text wraps inside the community renderer row");
 });
 
 test("the new illustrations are only the last fallback: event photo, venue photo and map still come first", async () => {

@@ -200,13 +200,13 @@ class Annotation(unittest.TestCase):
 
 class Packaging(unittest.TestCase):
     def test_the_engine_only_names_illustrations_the_card_has(self):
-        with open(os.path.join(ROOT, "src", "area-events-card.js"), encoding="utf-8") as handle:
+        with open(os.path.join(ROOT, "src", "presentation", "community.js"), encoding="utf-8") as handle:
             source = handle.read()
-        art = source[source.index("const ART = {"):source.index("const ART_LABELS")]
+        art = source[source.index("export const ART = {"):source.index("export const ART_LABELS")]
         card_keys = set(re.findall(r"^  ([a-z_]+): SVG_HEAD", art, re.M))
         catalog = set(classify.CATEGORIES)
         self.assertEqual(card_keys, catalog)
-        labels = source[source.index("const ART_LABELS"):source.index("/** The illustration for an event")]
+        labels = source[source.index("export const ART_LABELS"):source.index("/** The illustration for an event")]
         self.assertEqual(set(re.findall(r"\b([a-z_]+): \"", labels)), catalog)
         self.assertEqual(set(classify.LEXICON), set(classify.CATEGORIES) - {"general"})
 

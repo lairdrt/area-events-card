@@ -2,22 +2,23 @@
 It checks what a viewer sees: each event's time in the event's own time zone, a short place badge instead of a sentence, no "(approximate)" suffix, and text shown as text.
 Every browser run has a hard timeout."""
 import json
+import http.server
 import os
 import re
 import subprocess
 import tempfile
+import threading
 import unittest
 
 from tests.test_grid_layout import find_browser
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CARD = os.path.join(ROOT, "custom_components", "area_events", "frontend", "area-events-card.js")
+FRONTEND = os.path.join(ROOT, "custom_components", "area_events", "frontend")
+CARD = os.path.join(FRONTEND, "area-events-card.js")
 SENTENCE = "The Little Italy Mercato operates on West Date Street from the cul de sac at Kettner to India Street, every Saturday morning."
 PAGE = """<!doctype html><meta charset="utf-8"><body><pre id="out"></pre>
 <script>customElements.define("home-assistant", class extends HTMLElement {});</script>
-<script type="module">
-@@CARD@@
-</script>
+<script type="module" src="/area_events/area-events-card.js"></script>
 <script type="module">
 const view = @@VIEW@@;
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -54,15 +55,48 @@ class CardInABrowser(unittest.TestCase):
                 "events": [event("UT Biodiversity Strategic Planning Retreat", f"{soon}T13:00:00-05:00", "America/Chicago", "Cactus Cafe, Texas Union", "Cactus Cafe"),
                            event("Little Italy Mercato (Saturday)", f"{soon}T08:00:00-07:00", "America/Los_Angeles", SENTENCE, "W Date St"),
                            event("Children's Museum <img src=x onerror=alert(1)>", f"{soon}T10:00:00-07:00", "America/Los_Angeles", SENTENCE, None)]}
-        with open(CARD, encoding="utf-8") as handle:
-            card = handle.read()
-        page = PAGE.replace("@@VIEW@@", json.dumps(view)).replace("@@CARD@@", card.replace("</script", "<\\/script"))
+        page = PAGE.replace("@@VIEW@@", json.dumps(view))
         with tempfile.TemporaryDirectory() as folder:
             html = os.path.join(folder, "card.html")
             with open(html, "w", encoding="utf-8") as handle:
                 handle.write(page)
-            done = subprocess.run([find_browser(), "--headless=new", "--disable-gpu", "--no-first-run", f"--user-data-dir={os.path.join(folder, 'profile')}", "--window-size=1300,900",
-                                   "--virtual-time-budget=6000", "--dump-dom", "file:///" + html.replace("\\", "/")], capture_output=True, text=True, timeout=90, encoding="utf-8")
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path == "/card.html":
+                        path, content_type = html, "text/html; charset=utf-8"
+                    elif self.path == "/area_events/area-events-card.js":
+                        path, content_type = CARD, "text/javascript; charset=utf-8"
+                    elif self.path.startswith("/area_events/presentation/") and self.path.rsplit("/", 1)[-1].endswith(".js"):
+                        path, content_type = os.path.join(FRONTEND, "presentation", os.path.basename(self.path)), "text/javascript; charset=utf-8"
+                    else:
+                        self.send_error(404)
+                        return
+                    try:
+                        with open(path, "rb") as source:
+                            content = source.read()
+                    except OSError:
+                        self.send_error(404)
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Content-Length", str(len(content)))
+                    self.end_headers()
+                    self.wfile.write(content)
+
+                def log_message(self, *_args):
+                    pass
+
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            try:
+                url = f"http://127.0.0.1:{server.server_address[1]}/card.html"
+                done = subprocess.run([find_browser(), "--headless=new", "--disable-gpu", "--no-first-run", f"--user-data-dir={os.path.join(folder, 'profile')}", "--window-size=1300,900",
+                                       "--virtual-time-budget=6000", "--dump-dom", url], capture_output=True, text=True, timeout=90, encoding="utf-8")
+            finally:
+                server.shutdown()
+                server.server_close()
+                server_thread.join(timeout=5)
         match = re.search(r'<pre id="out">(.*?)</pre>', done.stdout, re.S)
         if not match or not match.group(1).startswith("{"):
             raise AssertionError("the card produced no result in the browser: " + (match.group(1)[:300] if match else done.stderr[-300:]))

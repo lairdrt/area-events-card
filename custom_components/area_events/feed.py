@@ -36,7 +36,7 @@ def to_feed_event(event):
     status = event.get("location_status") or "unknown"
     media = event.get("media") or {}
     image = media.get("image")
-    return {
+    result = {
         "id": event["event_key"],
         "title": event["title"],
         "start": _iso(event["starts_at"], zone),
@@ -60,6 +60,15 @@ def to_feed_event(event):
         "revision": event.get("revision"),
         "updated_at": event.get("updated_at"),
     }
+    # Optional additive typed details are passed through when a future read contract supplies them.
+    # The current discovery.events.v1 record has neither field; the adapter does not infer a type from its source.
+    event_type = event.get("event_type", event.get("type"))
+    if isinstance(event_type, str) and event_type.strip():
+        result["event_type"] = event_type
+    details = event.get("details")
+    if isinstance(details, dict):
+        result["details"] = details
+    return result
 
 
 def to_feed_events(page):

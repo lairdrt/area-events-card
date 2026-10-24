@@ -601,6 +601,9 @@ class Imagery(Service):
         self.assertEqual((event["images"], event["image_credit"], event["media"], event["illustration"]), ([], None, None, None))
         shown = feed_module.to_feed_event({**bare, "media": {"photo": {"url": "/area_events/media/pabc.jpg"}}, "illustration": {"category": "music"}})
         self.assertEqual((shown["images"], list(shown["media"]), shown["illustration"]), ([], ["photo"], {"category": "music"}))
+        typed = feed_module.to_feed_event({**bare, "event_type": "nasa.mission", "details": {"status": "Planning"}})
+        self.assertEqual((typed["event_type"], typed["details"]), ("nasa.mission", {"status": "Planning"}))
+        self.assertNotIn("event_type", event, "the current service contract does not acquire an inferred type")
 
 
 class MediaView(unittest.TestCase):
@@ -1053,6 +1056,8 @@ class WebSocket(Service):
         self.assertTrue(run(init.async_setup(hass, {})))
         self.assertEqual(len(REGISTERED) - before, 10)
         self.assertEqual(paths[0][0][0], "/area_events/area-events-card.js")
+        self.assertEqual(paths[1][0][0], "/area_events/presentation")
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, "frontend", "presentation", "registry.js")))
         served = open(os.path.join(ROOT, "frontend", "area-events-card.js"), encoding="utf-8").read()
         self.assertIn("area_events/subscribe", served)
         self.assertNotIn("area_events/events", served)

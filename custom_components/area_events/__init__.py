@@ -14,7 +14,10 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
 from . import websocket_api
-from .const import CARD_URL, CONF_CA_FILE, CONF_CONTROL_TOKEN, CONF_READ_TOKEN, CONF_SCAN_INTERVAL, CONF_URL, DEFAULT_SCAN_INTERVAL, DOMAIN, PHOTOS_KEY
+from .const import (
+    CARD_URL, CONF_CA_FILE, CONF_CONTROL_TOKEN, CONF_READ_TOKEN, CONF_SCAN_INTERVAL, CONF_URL,
+    DEFAULT_SCAN_INTERVAL, DOMAIN, PHOTOS_KEY, PRESENTATION_URL,
+)
 from .coordinator import AreaEventsConfigEntry, DiscoveryCoordinator, RuntimeData
 from .discovery_client import DiscoveryAuthError, DiscoveryConnectionError, DiscoveryControlClient
 from .hub import DiscoveryHub
@@ -22,6 +25,7 @@ from .media_view import AreaEventsMediaView
 from .photos import PHOTOS_URL, load_index
 
 CARD_FILE = Path(__file__).parent / "frontend" / "area-events-card.js"
+PRESENTATION_FOLDER = Path(__file__).parent / "frontend" / "presentation"
 PHOTOS_FOLDER = Path(__file__).parent / "frontend" / "photos"  # optional, private, not in Git (see photos.py)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 _LOGGER = logging.getLogger(__name__)
@@ -45,7 +49,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Serve the card and register its WebSocket commands once; every config entry shares them."""
     websocket_api.async_register(hass)
     hass.http.register_view(AreaEventsMediaView(hass))
-    await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL, str(CARD_FILE), cache_headers=False)])
+    await hass.http.async_register_static_paths([
+        StaticPathConfig(CARD_URL, str(CARD_FILE), cache_headers=False),
+        StaticPathConfig(PRESENTATION_URL, str(PRESENTATION_FOLDER), cache_headers=False),
+    ])
     # The card loads on every dashboard without a Lovelace resource; the query changes with the file so browsers refetch it.
     version = await hass.async_add_executor_job(lambda: CARD_FILE.stat().st_mtime_ns)
     add_extra_js_url(hass, f"{CARD_URL}?v={version}")
