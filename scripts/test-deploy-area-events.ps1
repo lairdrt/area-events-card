@@ -140,6 +140,52 @@ Check 'DPAPI credential file round-trips despite Set-Content line ending' {
     Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
   }
 }
+Check 'credential creation and replacement use current-user DACL and never write plaintext' {
+  $root=Join-Path ([IO.Path]::GetTempPath()) ('ae-token-acl-'+[guid]::NewGuid().ToString('N'))
+  $path=Join-Path $root 'ha-token.dpapi'
+  $tokens=@('synthetic-initial-token-for-acl-test','synthetic-replacement-token-for-acl-test')
+  $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User
+  function Assert-CredentialFile([string]$Expected) {
+    $secure=ConvertTo-SecureString $Expected -AsPlainText -Force
+    try {
+      $savedOutput=@(Save-HaCredentialFile -Secure $secure -Path $path)
+      if ($savedOutput.Count) { throw 'credential helper emitted unexpected output' }
+    } finally { $secure.Dispose() }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'credential file was not created' }
+    $stored=Get-Content -Raw -LiteralPath $path
+    if ($stored.Contains($Expected)) { throw 'plaintext token was written to the credential file' }
+    $acl=Get-Acl -LiteralPath $path
+    $rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
+    if (-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or
+        $rules[0].IdentityReference.Value -ne $sid.Value -or
+        $rules[0].AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+        $rules[0].FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+        $rules[0].IsInherited) { throw 'credential DACL is not restricted to current-user full control' }
+    $loaded=Import-AreaEventsDpapiCredential -Path $path
+    $ptr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($loaded)
+    try { if ([Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) -ne $Expected) { throw 'DPAPI token decryption did not match the input' } }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr); $loaded.Dispose() }
+  }
+  try {
+    Assert-CredentialFile $tokens[0]
+    Assert-CredentialFile $tokens[1]
+  } finally { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
+}
+Check 'DACL repair preserves an existing encrypted credential file' {
+  $root=Join-Path ([IO.Path]::GetTempPath()) ('ae-token-preserve-'+[guid]::NewGuid().ToString('N'))
+  $path=Join-Path $root 'ha-token.dpapi'; New-Item -ItemType Directory -Path $root | Out-Null
+  $token='synthetic-preserved-token-for-acl-test'; $secure=ConvertTo-SecureString $token -AsPlainText -Force
+  try {
+    Set-Content -LiteralPath $path -Value (ConvertFrom-SecureString $secure) -Encoding ASCII
+    $before=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    Set-HaCredentialFileDacl -Path $path
+    $after=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    if ($before -ne $after) { throw 'DACL repair changed the encrypted credential file contents' }
+    $loaded=Import-AreaEventsDpapiCredential -Path $path; $ptr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($loaded)
+    try { if ([Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) -ne $token) { throw 'preserved credential did not decrypt after DACL repair' } }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr); $loaded.Dispose() }
+  } finally { $secure.Dispose(); Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
+}
 Check 'remote Python transport preserves source without shell quoting' {
   $command=New-AreaEventsRemotePythonCommand -Code 'print("quoted-value")' -Variables @{probe='value'} -TimeoutSeconds 17
   if ($command -match '["'']' -or $command -notmatch '^printf %s [A-Za-z0-9+/=]+ \| base64 -d \| timeout --signal=TERM --kill-after=5s 17s python3 -$') { throw 'remote command is not shell quote-free or bounded' }

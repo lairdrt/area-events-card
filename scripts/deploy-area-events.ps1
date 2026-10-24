@@ -29,20 +29,50 @@ if (-not $schemaVersions.Count) { throw 'Could not read the migration versions f
 $script:TargetSchema = [int]$schemaVersions[$schemaVersions.Count-1].Groups[1].Value
 
 function Write-Step([string]$Text) { Write-Host ([Environment]::NewLine + '== ' + $Text) -ForegroundColor Cyan }
+function Set-HaCredentialFileDacl([Parameter(Mandatory)][string]$Path) {
+  $fullPath = [IO.Path]::GetFullPath($Path)
+  if (-not [IO.File]::Exists($fullPath)) { throw 'Encrypted Home Assistant credential file is missing.' }
+  $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+  $icacls = Join-Path $env:SystemRoot 'System32\icacls.exe'
+  $null = & $icacls $fullPath '/inheritance:r' '/grant:r' "*$($sid.Value):(F)" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw 'Could not restrict the encrypted credential file DACL to the current Windows user.' }
+  $acl = Get-Acl -LiteralPath $fullPath
+  if (-not $acl.AreAccessRulesProtected) { throw 'Credential file DACL still inherits permissions.' }
+  $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+  if ($rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid.Value -or
+      $rules[0].AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+      $rules[0].FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+      $rules[0].IsInherited) {
+    throw 'Credential file DACL does not grant only current-user full control.'
+  }
+}
+function Save-HaCredentialFile([Parameter(Mandatory)][Security.SecureString]$Secure,[Parameter(Mandatory)][string]$Path) {
+  $fullPath = [IO.Path]::GetFullPath($Path)
+  $dir = Split-Path -Parent $fullPath
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $tempPath = Join-Path $dir ('.ha-token-' + [guid]::NewGuid().ToString('N') + '.tmp')
+  $backupPath = $tempPath + '.bak'
+  try {
+    $ciphertext = ConvertFrom-SecureString $Secure
+    [IO.File]::WriteAllText($tempPath, $ciphertext, [Text.Encoding]::ASCII)
+
+    Set-HaCredentialFileDacl -Path $tempPath
+
+    if ([IO.File]::Exists($fullPath)) { [IO.File]::Replace($tempPath, $fullPath, $backupPath) }
+    else { [IO.File]::Move($tempPath, $fullPath) }
+  } finally {
+    if ([IO.File]::Exists($tempPath)) { [IO.File]::Delete($tempPath) }
+    if ([IO.File]::Exists($backupPath)) { [IO.File]::Delete($backupPath) }
+  }
+}
 function Save-HaCredential {
   if ($env:OS -ne 'Windows_NT') { throw 'Credential setup requires Windows DPAPI.' }
   $secure = Read-Host 'Paste an administrator long-lived HA token once (input is hidden)' -AsSecureString
-  if ($secure.Length -lt 20) { throw 'Token input looks too short.' }
-  $dir = Split-Path -Parent $script:CredentialPath
-  New-Item -ItemType Directory -Force -Path $dir | Out-Null
-  Set-Content -LiteralPath $script:CredentialPath -Value (ConvertFrom-SecureString $secure) -Encoding ASCII
-  $acl = Get-Acl -LiteralPath $script:CredentialPath
-  $acl.SetAccessRuleProtection($true, $false)
-  $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-  $acl.SetAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow')))
-  Set-Acl -LiteralPath $script:CredentialPath -AclObject $acl
-  $secure.Dispose()
-  Write-Host "Credential encrypted for this Windows account at $script:CredentialPath"
+  try {
+    if ($secure.Length -lt 20) { throw 'Token input looks too short.' }
+    Save-HaCredentialFile -Secure $secure -Path $script:CredentialPath
+    Write-Host "Credential encrypted for this Windows account at $script:CredentialPath"
+  } finally { $secure.Dispose() }
 }
 function Get-HaToken {
   if (-not (Test-Path -LiteralPath $script:CredentialPath)) { throw 'Run .\scripts\deploy-area-events.ps1 -SetupCredentials once first.' }
