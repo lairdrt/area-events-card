@@ -46,7 +46,7 @@ function Save-HaCredential {
 }
 function Get-HaToken {
   if (-not (Test-Path -LiteralPath $script:CredentialPath)) { throw 'Run .\scripts\deploy-area-events.ps1 -SetupCredentials once first.' }
-  $secure = ConvertTo-SecureString (Get-Content -Raw -LiteralPath $script:CredentialPath)
+  $secure = Import-AreaEventsDpapiCredential -Path $script:CredentialPath
   $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
   try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
   finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr); $secure.Dispose() }

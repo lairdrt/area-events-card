@@ -1,5 +1,14 @@
 Set-StrictMode -Version Latest
 
+function Import-AreaEventsDpapiCredential {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw 'Encrypted Home Assistant credential file is missing.' }
+  $ciphertext=(Get-Content -Raw -LiteralPath $Path).Trim()
+  if ([string]::IsNullOrWhiteSpace($ciphertext)) { throw 'Encrypted Home Assistant credential file is empty.' }
+  return ConvertTo-SecureString $ciphertext
+}
+
 function Test-AreaEventsShareCapabilities {
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$Root)
@@ -64,4 +73,4 @@ function Assert-AreaEventsFeedResponse {
   return $true
 }
 
-Export-ModuleMember -Function Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsRequiredFrontendAssets, Assert-AreaEventsFeedResponse
+Export-ModuleMember -Function Import-AreaEventsDpapiCredential, Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsRequiredFrontendAssets, Assert-AreaEventsFeedResponse

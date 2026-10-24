@@ -117,6 +117,22 @@ Check 'unwritable HA share fails preflight safely' {
   try { $threw=$false; try { Test-AreaEventsShareCapabilities $file | Out-Null } catch { $threw=$true }; if (-not $threw) { throw 'invalid share unexpectedly passed' } }
   finally { Remove-Item -LiteralPath $file -Force }
 }
+Check 'DPAPI credential file round-trips despite Set-Content line ending' {
+  $path=Join-Path ([IO.Path]::GetTempPath()) ('ae-token-'+[guid]::NewGuid().ToString('N')+'.dpapi')
+  $expected='local-only-credential-roundtrip-test'
+  $plain=ConvertTo-SecureString $expected -AsPlainText -Force
+  $loaded=$null; $ptr=[IntPtr]::Zero
+  try {
+    Set-Content -LiteralPath $path -Value (ConvertFrom-SecureString $plain) -Encoding ASCII
+    $loaded=Import-AreaEventsDpapiCredential -Path $path
+    $ptr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($loaded)
+    if ([Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) -ne $expected) { throw 'credential value changed during encrypted-file read' }
+  } finally {
+    if ($ptr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
+    if ($loaded) { $loaded.Dispose() }; $plain.Dispose()
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+  }
+}
 Check 'missing HA administrator prerequisite fails safely' {
   $threw=$false
   try { Assert-AreaEventsHaPrerequisites -Config ([pscustomobject]@{state='RUNNING';components=@('area_events')}) -CurrentUser ([pscustomobject]@{is_admin=$false}) | Out-Null } catch { $threw=$true }
