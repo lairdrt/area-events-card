@@ -979,7 +979,6 @@ class AreaEventsCard extends HTMLElement {
       const same = old && old.signature === signature;
       if (same && !this._retryable(old)) return old;
       if (old && (!same || this._retryable(old))) this._disposeTile(old);
-      const renderer = PRESENTATIONS.select(event, this._presentation);
       const context = {
         el: (tag, className, text) => this._el(tag, className, text),
         icon: (name) => this._icon(name),
@@ -991,8 +990,9 @@ class AreaEventsCard extends HTMLElement {
         onRendererError: (id, error) => console.error(`Area Events renderer ${id} failed`, error),
       };
       let el;
+      let renderer;
       try {
-        el = PRESENTATIONS.render(event, this._presentation, context);
+        ({ element: el, renderer } = PRESENTATIONS.render(event, this._presentation, context));
       } catch (error) {
         console.error("Area Events generic renderer failed", error);
         el = this._el("article", "event", event.title || "Untitled event");

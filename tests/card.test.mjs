@@ -37,6 +37,7 @@ const { PRESENTATION_CONTRACT } = await import("../src/presentation/contract.js"
 const { genericRenderer } = await import("../src/presentation/generic.js");
 const { nasaMissionRenderer } = await import("../src/presentation/nasa-mission.js");
 const { PresentationRegistry } = await import("../src/presentation/registry.js");
+const { PRESENTATIONS } = await import("../src/presentation/manifest.js");
 
 const day = 24 * 3600 * 1000;
 const iso = (offsetMs) => new Date(Date.now() + offsetMs).toISOString();
@@ -159,7 +160,58 @@ test("presentation registry accepts an independent renderer, maps typed events, 
     onRendererError: (id) => { rendererError = id; },
   });
   assert.equal(rendererError, "broken", "invalid output is reported and replaced with the fallback");
-  assert.equal(output.className, "event generic-event");
+  assert.equal(output.element.className, "event generic-event");
+  assert.equal(output.renderer, genericRenderer, "the fallback owns the displayed element");
+});
+
+test("tile cleanup belongs to the renderer that produced the element", async () => {
+  const calls = [];
+  const good = {
+    id: "lifecycle-good", contract: PRESENTATION_CONTRACT, eventTypes: ["lifecycle.good"], styles: "",
+    render: (item) => { calls.push(`render:${item.title}`); const el = document.createElement("article"); el.className = "event good-event"; return el; },
+    cleanup: (el) => calls.push(`good:${el.className}`),
+  };
+  const failed = {
+    id: "lifecycle-failed", contract: PRESENTATION_CONTRACT, eventTypes: ["lifecycle.failed"], styles: "",
+    render: () => { calls.push("failed-render"); throw new Error("test renderer failure"); },
+    cleanup: () => calls.push("failed-cleanup"),
+  };
+  PRESENTATIONS.register(good).register(failed);
+  const originalCleanup = genericRenderer.cleanup;
+  genericRenderer.cleanup = (el) => calls.push(`generic:${el.className}`);
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    const settings = { event_types: { "lifecycle.good": good.id, "lifecycle.failed": failed.id } };
+    const card = await make({ events: [{ id: "stable", type: "lifecycle.good", title: "First" }], presentation: settings });
+    const first = card._tiles[0];
+    assert.equal(first.renderer, good);
+    card._config.events = [{ id: "stable", type: "lifecycle.good", title: "Changed" }];
+    card._applyData();
+    assert.equal(first.disposed, true);
+    assert.equal(calls.filter((item) => item === "good:event good-event").length, 1, "replacement cleans the old successful tile once");
+    card._config.events = [{ id: "stable", type: "lifecycle.failed", title: "Fallback" }];
+    card._applyData();
+    assert.equal(card._tiles[0].renderer, genericRenderer);
+    assert.equal(card._tiles[0].el.className, "event generic-event");
+    assert.equal(calls.filter((item) => item === "good:event good-event").length, 2, "the successful tile is cleaned on replacement");
+    card._config.events = [{ id: "stable", type: "lifecycle.good", title: "Recovered" }];
+    card._applyData();
+    assert.equal(calls.filter((item) => item === "generic:event generic-event").length, 1, "replacement cleans the displayed fallback");
+    assert.equal(card._tiles[0].renderer, good);
+    card._config.events = [{ id: "stable", type: "lifecycle.failed", title: "Fallback again" }];
+    card._applyData();
+    assert.equal(calls.filter((item) => item === "good:event good-event").length, 3);
+    card._config.events = [];
+    card._applyData();
+    assert.equal(calls.filter((item) => item === "generic:event generic-event").length, 2, "removal cleans the displayed fallback");
+    assert.ok(!calls.includes("failed-cleanup"), "the failed renderer never owned a displayed tile");
+    card._applyData();
+    assert.equal(calls.filter((item) => item.startsWith("generic:")).length, 2, "cleanup runs only once per fallback tile");
+  } finally {
+    genericRenderer.cleanup = originalCleanup;
+    console.error = originalError;
+  }
 });
 
 test("the host delegates presentation and renderer modules stay outside service and persistence layers", async () => {

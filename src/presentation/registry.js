@@ -65,7 +65,7 @@ export class PresentationRegistry {
     const renderer = this.select(event, config);
     try {
       const output = renderer.render(event, context);
-      if (output && output.nodeType === 1) return output;
+      if (output && output.nodeType === 1) return { element: output, renderer };
       context.onRendererError?.(renderer.id, new TypeError("Renderer output must be one DOM element"));
     } catch (error) {
       context.onRendererError?.(renderer.id, error);
@@ -73,7 +73,7 @@ export class PresentationRegistry {
     const fallback = this._renderers.get("generic");
     const output = fallback.render(event, context);
     if (!output || output.nodeType !== 1) throw new TypeError("Generic renderer returned invalid output");
-    return output;
+    return { element: output, renderer: fallback };
   }
 
   get ids() {

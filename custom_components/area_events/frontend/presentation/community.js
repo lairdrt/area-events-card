@@ -3,60 +3,60 @@ import { element, PRESENTATION_CONTRACT } from "./contract.js";
 const el = element;
 export const styles = `
   .community-event { min-height: 100%; }
-  .image {
+  .community-event .image {
     position: relative; aspect-ratio: 16 / 9; overflow: hidden;
     display: flex; align-items: center; justify-content: center;
     background-color: color-mix(in srgb, var(--primary-text-color, currentColor) 10%, transparent);
     color: var(--secondary-text-color);
   }
-  .image img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 0.25s; }
-  .image img.loaded { opacity: 1; }
-  .art { position: absolute; inset: 0; --ae-accent: hsl(210 60% 55%); --ae-bg: color-mix(in srgb, var(--ae-accent) 16%, var(--card-background-color, Canvas)); }
-  .art svg { width: 100%; height: 100%; display: block; }
-  .art .bg, .art .e { fill: var(--ae-bg); }
-  .art .a { fill: var(--ae-accent); }
-  .art .b { fill: color-mix(in srgb, var(--ae-accent) 38%, transparent); }
-  .art .c { fill: color-mix(in srgb, var(--primary-text-color, CanvasText) 62%, transparent); }
-  .art .s, .art .sb, .art .sc, .art .se { fill: none; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
-  .art .s { stroke: var(--ae-accent); }
-  .art .sb { stroke: color-mix(in srgb, var(--ae-accent) 45%, transparent); }
-  .art .sc { stroke: color-mix(in srgb, var(--primary-text-color, CanvasText) 55%, transparent); stroke-width: 3; }
-  .art .se { stroke: var(--ae-bg); stroke-width: 5; }
-  .art .p1 { fill: hsl(8 78% 60%); } .art .p2 { fill: hsl(46 92% 58%); } .art .p3 { fill: hsl(205 75% 56%); } .art .p4 { fill: hsl(140 52% 48%); }
-  .art.music { --ae-accent: hsl(285 58% 58%); } .art.theater { --ae-accent: hsl(345 62% 56%); } .art.festival { --ae-accent: hsl(28 86% 54%); }
-  .art.food { --ae-accent: hsl(12 74% 56%); } .art.sports { --ae-accent: hsl(150 52% 42%); } .art.arts { --ae-accent: hsl(262 52% 60%); }
-  .art.science { --ae-accent: hsl(195 70% 46%); } .art.family { --ae-accent: hsl(42 88% 50%); } .art.community { --ae-accent: hsl(172 52% 42%); }
-  .art.outdoors { --ae-accent: hsl(128 46% 42%); } .art.general { --ae-accent: hsl(220 52% 58%); }
-  .art.farmers_market { --ae-accent: hsl(100 46% 42%); } .art.carnival { --ae-accent: hsl(340 70% 55%); } .art.car_show { --ae-accent: hsl(358 68% 50%); }
-  .art.halloween { --ae-accent: hsl(26 90% 52%); } .art.christmas { --ae-accent: hsl(145 48% 38%); } .art.street_festival { --ae-accent: hsl(318 58% 54%); }
-  .pin { position: absolute; left: 50%; top: 50%; width: 30px; height: 40px; transform: translate(-50%, -100%); pointer-events: none; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.45)); }
-  .pin svg { width: 100%; height: 100%; display: block; }
-  .venue-chip {
+  .community-event .image img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 0.25s; }
+  .community-event .image img.loaded { opacity: 1; }
+  .community-event .art { position: absolute; inset: 0; --ae-accent: hsl(210 60% 55%); --ae-bg: color-mix(in srgb, var(--ae-accent) 16%, var(--card-background-color, Canvas)); }
+  .community-event .art svg { width: 100%; height: 100%; display: block; }
+  .community-event .art .bg, .community-event .art .e { fill: var(--ae-bg); }
+  .community-event .art .a { fill: var(--ae-accent); }
+  .community-event .art .b { fill: color-mix(in srgb, var(--ae-accent) 38%, transparent); }
+  .community-event .art .c { fill: color-mix(in srgb, var(--primary-text-color, CanvasText) 62%, transparent); }
+  .community-event .art .s, .community-event .art .sb, .community-event .art .sc, .community-event .art .se { fill: none; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+  .community-event .art .s { stroke: var(--ae-accent); }
+  .community-event .art .sb { stroke: color-mix(in srgb, var(--ae-accent) 45%, transparent); }
+  .community-event .art .sc { stroke: color-mix(in srgb, var(--primary-text-color, CanvasText) 55%, transparent); stroke-width: 3; }
+  .community-event .art .se { stroke: var(--ae-bg); stroke-width: 5; }
+  .community-event .art .p1 { fill: hsl(8 78% 60%); } .community-event .art .p2 { fill: hsl(46 92% 58%); } .community-event .art .p3 { fill: hsl(205 75% 56%); } .community-event .art .p4 { fill: hsl(140 52% 48%); }
+  .community-event .art.music { --ae-accent: hsl(285 58% 58%); } .community-event .art.theater { --ae-accent: hsl(345 62% 56%); } .community-event .art.festival { --ae-accent: hsl(28 86% 54%); }
+  .community-event .art.food { --ae-accent: hsl(12 74% 56%); } .community-event .art.sports { --ae-accent: hsl(150 52% 42%); } .community-event .art.arts { --ae-accent: hsl(262 52% 60%); }
+  .community-event .art.science { --ae-accent: hsl(195 70% 46%); } .community-event .art.family { --ae-accent: hsl(42 88% 50%); } .community-event .art.community { --ae-accent: hsl(172 52% 42%); }
+  .community-event .art.outdoors { --ae-accent: hsl(128 46% 42%); } .community-event .art.general { --ae-accent: hsl(220 52% 58%); }
+  .community-event .art.farmers_market { --ae-accent: hsl(100 46% 42%); } .community-event .art.carnival { --ae-accent: hsl(340 70% 55%); } .community-event .art.car_show { --ae-accent: hsl(358 68% 50%); }
+  .community-event .art.halloween { --ae-accent: hsl(26 90% 52%); } .community-event .art.christmas { --ae-accent: hsl(145 48% 38%); } .community-event .art.street_festival { --ae-accent: hsl(318 58% 54%); }
+  .community-event .pin { position: absolute; left: 50%; top: 50%; width: 30px; height: 40px; transform: translate(-50%, -100%); pointer-events: none; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.45)); }
+  .community-event .pin svg { width: 100%; height: 100%; display: block; }
+  .community-event .venue-chip {
     position: absolute; padding: 1px 8px; border-radius: 12px; font-size: 0.6875rem; line-height: 1.5; box-sizing: border-box; max-width: calc(100% - 16px);
     background: rgba(37, 40, 45, 0.86); color: rgb(232 234 238); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   }
-  .credit-button {
+  .community-event .credit-button {
     position: absolute; left: 8px; bottom: 8px; width: 22px; height: 22px; padding: 0; margin: 0; border-radius: 50%; box-sizing: border-box; cursor: pointer;
     display: flex; align-items: center; justify-content: center; font: inherit;
     background: rgba(37, 40, 45, 0.72); color: rgb(232 234 238); border: 1px solid rgba(255, 255, 255, 0.35);
   }
-  .credit-button::after { content: ""; position: absolute; inset: -11px; }
-  .credit-button:hover, .credit-button[aria-expanded="true"] { background: rgba(37, 40, 45, 0.94); }
-  .credit-button:focus-visible, .media-credit a:focus-visible { outline: 2px solid rgb(240 138 36); outline-offset: 2px; }
-  .credit-button svg { width: 14px; height: 14px; display: block; }
-  .media-credit {
+  .community-event .credit-button::after { content: ""; position: absolute; inset: -11px; }
+  .community-event .credit-button:hover, .community-event .credit-button[aria-expanded="true"] { background: rgba(37, 40, 45, 0.94); }
+  .community-event .credit-button:focus-visible, .community-event .media-credit a:focus-visible { outline: 2px solid rgb(240 138 36); outline-offset: 2px; }
+  .community-event .credit-button svg { width: 14px; height: 14px; display: block; }
+  .community-event .media-credit {
     position: absolute; left: 8px; bottom: 38px; max-width: calc(100% - 16px); max-height: calc(100% - 52px); overflow: auto; box-sizing: border-box;
     padding: 6px 10px; border-radius: 8px; font-size: 0.75rem; line-height: 1.45; background: rgba(37, 40, 45, 0.96); color: rgb(232 234 238);
   }
-  .media-credit a { color: inherit; text-decoration: underline; }
-  .media-credit .note { display: block; opacity: 0.8; }
-  .venue-chip { right: 8px; top: 8px; max-width: calc(100% - 90px); font-weight: 600; }
-  .art-tag.media-badge { background: rgba(37, 40, 45, 0.88); color: rgb(240 138 36); border-color: rgba(255, 255, 255, 0.22); font-weight: 700; letter-spacing: 0.04em; }
-  .art-tag {
+  .community-event .media-credit a { color: inherit; text-decoration: underline; }
+  .community-event .media-credit .note { display: block; opacity: 0.8; }
+  .community-event .venue-chip { right: 8px; top: 8px; max-width: calc(100% - 90px); font-weight: 600; }
+  .community-event .art-tag.media-badge { background: rgba(37, 40, 45, 0.88); color: rgb(240 138 36); border-color: rgba(255, 255, 255, 0.22); font-weight: 700; letter-spacing: 0.04em; }
+  .community-event .art-tag {
     position: absolute; right: 8px; bottom: 8px; padding: 1px 8px; border-radius: 12px; font-size: 0.75rem; box-sizing: border-box;
     background: var(--card-background-color, var(--primary-background-color)); border: 1px solid var(--divider-color); color: var(--secondary-text-color);
   }
-  .category {
+  .community-event .category {
     position: absolute; top: 8px; left: 8px; max-width: calc(100% - 16px);
     padding: 2px 8px; border-radius: 12px; box-sizing: border-box;
     background: var(--card-background-color, var(--primary-background-color));
@@ -64,22 +64,22 @@ export const styles = `
     color: var(--primary-text-color);
     font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .verify {
+  .community-event .verify {
     display: flex; align-items: flex-start; gap: 6px; line-height: 1.4;
     margin-top: 4px; font-size: 0.8125rem;
     font-weight: min(var(--ha-font-weight-medium, 500), 600);
   }
-  .verify.verified { color: var(--success-color, var(--primary-text-color)); }
-  .verify.corroborated { color: var(--secondary-text-color); }
-  .verify.unverified { color: var(--secondary-text-color); }
-  .verify ha-icon { --mdc-icon-size: 16px; flex: none; width: 16px; height: 1.4em; display: inline-flex; align-items: center; justify-content: center; }
-  .verify > span { min-width: 0; }
-  .description {
+  .community-event .verify.verified { color: var(--success-color, var(--primary-text-color)); }
+  .community-event .verify.corroborated { color: var(--secondary-text-color); }
+  .community-event .verify.unverified { color: var(--secondary-text-color); }
+  .community-event .verify ha-icon { --mdc-icon-size: 16px; flex: none; width: 16px; height: 1.4em; display: inline-flex; align-items: center; justify-content: center; }
+  .community-event .verify > span { min-width: 0; }
+  .community-event .description {
     font-size: 0.875rem; color: var(--secondary-text-color); overflow-wrap: anywhere;
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
   }
-  .source { margin-top: 4px; font-size: 0.8125rem; color: var(--primary-color); overflow-wrap: anywhere; }
-  @media (prefers-reduced-motion: reduce) { .image img { transition: none; } }
+  .community-event .source { margin-top: 4px; font-size: 0.8125rem; color: var(--primary-color); overflow-wrap: anywhere; }
+  @media (prefers-reduced-motion: reduce) { .community-event .image img { transition: none; } }
 `;
 /*
  * Category artwork. Original flat illustrations drawn for this card (no third-party assets), embedded here so they
