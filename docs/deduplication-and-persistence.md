@@ -32,6 +32,7 @@ Exclusively owns the database: connections, transactions, SQL, schema, event/can
 | `EventQueries` | `EventQueryService` | read normalized events |
 | `DiscoveryReader` (contracts) | API, CLI | changes, snapshot, candidates, pages, status |
 | `MediaWork` | enrichment | pending candidates in, finished media out |
+| `MediaCache` | imagery resolver and source-photo enrichment | copy-in/copy-out record operations, cached files, pruning and persistence; no mutable cache index escapes |
 
 No connection, cursor or transaction crosses a port, and no port takes one. Only `service/app.py` builds Persistence (`persistence.build.open_persistence`) and hands it the deduplication strategy.
 
@@ -47,10 +48,9 @@ No connection, cursor or transaction crosses a port, and no port takes one. Only
 sqlite3, SQL text and database calls only inside Persistence; no module outside Persistence imports a concrete storage class or anything of Persistence but its ports (only the root builds it); Persistence imports the deduplication interface, never a strategy, and contains no matching logic; deduplication imports no database, no Persistence and no producer; ports take no transaction; plus the earlier rules (producer isolation, no legacy engine, reviewed layering, cycles, source names, producer state). Each rule is exercised by deliberately injecting a violation into a copy of the tree.
 
 ## Remaining violations
-1. The accepted imagery library takes its own dictionary input (`enrichment._imagery_input`); its cache access is narrowed to the `MediaCache` port.
-2. The earlier engine and its tests remain in the repository (not part of the new application).
-3. Producers and known sources are wired by hand in `app.py` / `cli.py`.
-4. Persistence imports `service/events.py` for the event record types (records only); they belong in `contracts.py`.
-5. Deduplication is invoked once per submission; there is no batch interface.
-6. Some tests reach into private attributes (`_store`, `_store_plan`, `_candidates`) to inject storage faults, and inspect the database file directly with sqlite3; production code never does.
-7. The Home Assistant feed adapter still has a per-source display-name table and drops categories; the card classifies by keywords.
+1. The earlier engine and its tests remain in the repository (not part of the new application).
+2. Producers and known sources are wired by hand in `app.py` / `cli.py`.
+3. Persistence imports `service/events.py` for the event record types (records only); they belong in `contracts.py`.
+4. Deduplication is invoked once per submission; there is no batch interface.
+5. Some tests reach into private attributes (`_store`, `_store_plan`, `_candidates`) to inject storage faults, and inspect the database file directly with sqlite3; production code never does.
+6. The Home Assistant feed adapter still has a per-source display-name table and drops categories; the card classifies by keywords.

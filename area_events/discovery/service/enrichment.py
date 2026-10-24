@@ -82,34 +82,34 @@ class SourcePhotos:
         if not usable:
             return None, True
         key = "e:" + hashlib.sha1(url.encode()).hexdigest()[:20]
-        records, now = self._store.index["records"], self._clock()
-        record = records.get(key)
+        now = self._clock()
+        record = self._store.get_record(key)
         if record and now - record.get("at", 0) < (PHOTO_TTL if record.get("ok") else REFUSAL_TTL) and (not record.get("ok") or self._store.intact(record)):
             return (self._entry(record) if record.get("ok") else self._hotlink(event, source_name, url) if record.get("blocked") else None), True
         if self._work.titles_sharing_image(url) >= self._config.shared_image_titles:
-            records[key] = {"at": now, "ok": False, "reason": "the same picture is attached to several unrelated events: a default image, not this event's photograph"}
+            self._store.put_record(key, {"at": now, "ok": False, "reason": "the same picture is attached to several unrelated events: a default image, not this event's photograph"})
             return None, True
         try:
             response = self._fetcher.fetch(url, binary=PHOTO_TYPES)
             body = response.body
         except BlockedError as error:   # robots.txt of the picture host: we do not copy it; the browser may show the source's own address
-            records[key] = {"at": now, "ok": False, "blocked": True, "reason": str(error)[:200]}
+            self._store.put_record(key, {"at": now, "ok": False, "blocked": True, "reason": str(error)[:200]})
             return self._hotlink(event, source_name, url), True
         except FetchError as error:
             if "HTTP 4" in str(error):   # gone or forbidden: remember it
-                records[key] = {"at": now, "ok": False, "reason": str(error)[:200]}
+                self._store.put_record(key, {"at": now, "ok": False, "reason": str(error)[:200]})
                 return None, True
             log.warning("event photograph not fetched (will retry): %s", error)
             return None, False
         extension = _sniff(body or b"")
         if extension is None or not 0 < len(body) <= self._config.max_photo_bytes:
-            records[key] = {"at": now, "ok": False, "reason": "not a JPEG, PNG or WebP picture within the size limit"}
+            self._store.put_record(key, {"at": now, "ok": False, "reason": "not a JPEG, PNG or WebP picture within the size limit"})
             return None, True
         name = f"p{hashlib.sha1(body).hexdigest()[:24]}.{extension}"
         self._store.put_file(name, body)
         record = {"at": now, "ok": True, "kind": "event_photo", "photo": {"file": name, "bytes": len(body)}, "source_url": url,
                   "page_url": event.get("url"), "credit": source_name, "license": "as published by the source"}
-        records[key] = record
+        self._store.put_record(key, record)
         return self._entry(record), True
 
     @staticmethod

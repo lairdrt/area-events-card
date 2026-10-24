@@ -9,6 +9,7 @@
 Files are named by content or by what they depict, validated on every read and write (no path ever comes from a request), and bounded: records
 expire, files no record uses are removed, and the whole folder is kept under a byte budget by dropping the oldest records.
 """
+import copy
 import json
 import os
 import re
@@ -96,7 +97,7 @@ class MediaRepository:
 
 
 class SqliteMediaStore:
-    """The interface of the accepted imagery code's MediaStore (index["records"], save, put_file, read_file, has_file, intact, prune), over the database."""
+    """Private cache state and file access backed by Persistence; callers use explicit record operations."""
 
     def __init__(self, store, repository, folder, clock=time.time, max_bytes=250_000_000):
         self._store, self._repository, self.clock, self.max_bytes = store, repository, clock, max_bytes
@@ -105,8 +106,27 @@ class SqliteMediaStore:
         os.makedirs(self.files, exist_ok=True)
         with store.read() as connection:
             records = repository.records(connection)
-        self.index = {"version": 1, "records": records}
+        self._index = {"version": 1, "saved_at": 0, "records": records}
         self._saved = {key: json.dumps(record, sort_keys=True, default=str) for key, record in records.items()}
+
+    def get_record(self, key):
+        return copy.deepcopy(self._index["records"].get(key))
+
+    def get_records(self, keys):
+        records = self._index["records"]
+        return {key: copy.deepcopy(records[key]) for key in keys if key in records}
+
+    def put_record(self, key, record):
+        if not isinstance(key, str) or not 3 <= len(key) <= 80 or not isinstance(record, dict):
+            raise ValueError("invalid media cache record")
+        self._index["records"][key] = copy.deepcopy(record)
+
+    def mark_saved(self, at):
+        self._index["saved_at"] = int(at)
+
+    def revision(self):
+        records = self._index["records"]
+        return int(self._index.get("saved_at") or 0) if records else 0
 
     # --- files -----------------------------------------------------------------------------------------------------
 
@@ -145,7 +165,7 @@ class SqliteMediaStore:
 
     def save(self):
         """Write the records that changed since the last save (and remove the ones that were dropped)."""
-        records = self.index["records"]
+        records = self._index["records"]
         now = {key: json.dumps(record, sort_keys=True, default=str) for key, record in records.items()}
         changed = [key for key, text in now.items() if self._saved.get(key) != text]
         removed = [key for key in self._saved if key not in now]
@@ -159,7 +179,7 @@ class SqliteMediaStore:
 
     def prune(self):
         """Drop expired records, the oldest beyond the record and byte budgets, and files no record points at."""
-        now, records = self.clock(), self.index["records"]
+        now, records = self.clock(), self._index["records"]
         for key in [k for k, r in records.items() if now - r.get("at", 0) > (RECORD_TTL if r.get("ok") else REFUSAL_TTL)]:
             del records[key]
         if len(records) > MAX_RECORDS:
@@ -186,7 +206,7 @@ class SqliteMediaStore:
 
     def _referenced(self):
         names = set()
-        for record in self.index["records"].values():
+        for record in self._index["records"].values():
             if not record.get("ok"):
                 continue
             if record.get("photo"):

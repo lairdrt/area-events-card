@@ -25,6 +25,7 @@ credit is the link to the Commons file page, which is how the licences allow att
 stored and shown.
 Everything fetched is untrusted: it is validated, bounded, and stored as data; images are never executed or re-encoded.
 """
+import copy
 import hashlib
 import html
 import json
@@ -595,6 +596,26 @@ class MediaStore:
                 json.dump(self.index, handle)
             os.replace(temporary, self._path("index.json"))
 
+    def get_record(self, key):
+        with self.lock:
+            return copy.deepcopy(self.index["records"].get(key))
+
+    def get_records(self, keys):
+        with self.lock:
+            return {key: copy.deepcopy(self.index["records"][key]) for key in keys if key in self.index["records"]}
+
+    def put_record(self, key, record):
+        with self.lock:
+            self.index["records"][key] = copy.deepcopy(record)
+
+    def mark_saved(self, at):
+        with self.lock:
+            self.index["saved_at"] = int(at)
+
+    def revision(self):
+        with self.lock:
+            return int(self.index.get("saved_at") or 0) if self.index["records"] else 0
+
     def put_file(self, name, data):
         if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{3,60}\.(svg|jpg)", name):
             raise ValueError("unsafe file name")
@@ -660,7 +681,7 @@ class MediaService:
     @property
     def revision(self):
         """Changes whenever the stored imagery changes (0 while there is none); part of the card's `since` token."""
-        return int(self.store.index.get("saved_at") or 0) if self.store.index["records"] else 0
+        return self.store.revision()
 
     # --- network (bounded; every call is to a fixed public API host through the safe fetcher) -------------------
 
@@ -840,7 +861,7 @@ class MediaService:
                     wanted[candidate["key"]] = [candidate, 0]
                 if candidate:
                     wanted[candidate["key"]][1] += 1
-        records = self.store.index["records"]
+        records = self.store.get_records(wanted)
         # a place is looked up again when it has no record, or when its stored files have gone missing (the record then cannot serve)
         todo = [(count, c) for c, count in wanted.values() if self._needs_work(c, records)]
         todo.sort(key=lambda item: -item[0])
@@ -852,11 +873,11 @@ class MediaService:
                 log.warning("media for %s skipped: %s", candidate["kind"], error)
                 self.stats["failed"] += 1
                 continue  # not cached: a temporary failure is tried again in a later cycle
-            records[candidate["key"]] = record
+            self.store.put_record(candidate["key"], record)
             done += 1
         if done:
             self.store.prune()
-            self.store.index["saved_at"] = int(self.clock())
+            self.store.mark_saved(int(self.clock()))
             self.store.save()
         return done
 
@@ -870,25 +891,29 @@ class MediaService:
         return bool(candidate.get("retry_old")) or str(record.get("reason", "")).startswith("no result matched")
 
     def pending(self, feeds):
-        have = self.store.index["records"]
-        keys = set()
+        candidates = {}
         for area, events in feeds:
             for event in events:
                 candidate = candidate_for(event, area)
-                if candidate and self._needs_work(candidate, have):
-                    keys.add(candidate["key"])
+                if candidate:
+                    candidates.setdefault(candidate["key"], candidate)
+        have = self.store.get_records(candidates)
+        keys = set()
+        for candidate in candidates.values():
+            if self._needs_work(candidate, have):
+                keys.add(candidate["key"])
         return len(keys)
 
     # --- serving -------------------------------------------------------------------------------------------------------
 
     def annotate(self, events, area):
         """Events with `media` added where a verified map or venue photo exists (copies; the feed itself is untouched)."""
-        records = self.store.index["records"]
+        candidates = [candidate_for(event, area) for event in events]
+        records = self.store.get_records(candidate["key"] for candidate in candidates if candidate)
         if not records:
             return events
         out = []
-        for event in events:
-            candidate = candidate_for(event, area)
+        for event, candidate in zip(events, candidates):
             record = records.get(candidate["key"]) if candidate else None
             if not (record and record.get("ok")):
                 out.append(event)

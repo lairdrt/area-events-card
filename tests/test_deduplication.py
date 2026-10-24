@@ -24,7 +24,7 @@ from discovery.service.events import EventQuery
 from discovery.service.processing import ProcessingService
 from tests.db import database
 from tests.inmemory import InMemoryProcessing
-from tests.records import document
+from tests.records import document, epoch
 from tests.test_extraction import Fixture
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -259,6 +259,41 @@ class ThroughRealPersistence(Fixture):
                                                    JOIN events e USING(event_id) WHERE c.candidate_key=?""", (secondary_key,)).fetchone()[0]
         self.assertNotIn("match_key", columns)
         self.assertEqual(association, stable_key)
+
+    def test_real_sqlite_pagination_finds_twins_after_page_two_under_both_strategies(self):
+        exact = self.build(deduplication="exact")
+        starts_at = epoch("2030-05-01T18:00:00-07:00")
+        ends_at = epoch("2030-05-01T20:00:00-07:00")
+        rows = [(f"ev-page-{number:03}", f"Unrelated event {number}") for number in range(260)]
+        rows.append(("ev-page-target", "Harbor Concert"))  # stable key sorts after all 260 preceding lookup rows
+        with database(exact).write() as tx:
+            tx.executemany("""INSERT INTO events (event_key, title, starts_at, ends_at, venue_name, address, location_status, status,
+                                                      missing_json, revision, first_extracted_at, updated_at)
+                               VALUES (?, ?, ?, ?, 'Harbor Hall', '500 Harbor Drive, San Diego, CA', 'address', 'complete', '[]', 1, 1, 1)""",
+                           [(key, title, starts_at, ends_at) for key, title in rows])
+            self.assertEqual(tx.execute("SELECT COUNT(*) FROM events WHERE starts_at BETWEEN ? AND ?", (starts_at, starts_at)).fetchone()[0], 261)
+            plan = tx.execute("EXPLAIN QUERY PLAN SELECT event_key FROM events WHERE starts_at BETWEEN ? AND ? ORDER BY starts_at, event_key LIMIT ?",
+                              (starts_at, starts_at, 100)).fetchall()
+            self.assertTrue(any("events_start_key" in row["detail"] for row in plan), [row["detail"] for row in plan])
+
+        exact_candidate = "sandiego_gov:sqlite-page-exact"
+        self.add_candidate(exact, "sandiego_gov", exact_candidate,
+                           document("Harbor Concert", starts_at="2030-05-01T18:00:00-07:00", ends_at="2030-05-01T20:00:00-07:00"))
+        self.drain(exact)
+        self.assertEqual((self.count("events"), self.count("event_candidates", "role='duplicate'")), (261, 1))
+        exact.close()
+
+        tolerant = self.build(deduplication="tolerant")
+        tolerant_candidate = "austin_fixture:sqlite-page-tolerant"
+        self.add_candidate(tolerant, "austin_fixture", tolerant_candidate,
+                           document("HARBOR CONCERT!", starts_at="2030-05-01T18:05:00-07:00", ends_at="2030-05-01T20:05:00-07:00"))
+        self.drain(tolerant)
+        self.assertEqual((self.count("events"), self.count("event_candidates", "role='duplicate'")), (261, 2))
+        with database(tolerant).read() as connection:
+            associations = {row["candidate_key"]: row["event_key"] for row in connection.execute("""SELECT c.candidate_key, e.event_key FROM event_candidates ec
+                                                                                                  JOIN candidates c USING(candidate_id) JOIN events e USING(event_id)
+                                                                                                  WHERE c.candidate_key IN (?, ?)""", (exact_candidate, tolerant_candidate))}
+        self.assertEqual(associations, {exact_candidate: "ev-page-target", tolerant_candidate: "ev-page-target"})
 
     def test_existing_primary_and_secondary_associations_reprocessing_and_revisions(self):
         built = self.build()

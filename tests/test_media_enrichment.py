@@ -132,7 +132,8 @@ class Enrichment(Fixture):
             self.assertTrue(self.built.media_files.read(fort[theme].rsplit("/", 1)[1]), theme)
         self.assertIsNone((austin["Student Affairs Meeting"].media or {}).get("map"), "no location given: no map, nothing invented")
         self.assertIsNone((self.events(self.sd)["Event 0"].media or {}).get("map"), "an address the geocoder could not verify gets no map")
-        record = [r for r in self.built.enrichment._resolver.store.index["records"].values() if not r["ok"]]
+        with database(self.built).read() as connection:
+            record = [json.loads(row[0]) for row in connection.execute("SELECT record_json FROM media_records") if not json.loads(row[0])["ok"]]
         self.assertTrue(record and all(r.get("reason") for r in record), "refusals are cached with their reasons")
 
     def test_source_coordinates_outside_the_area_are_not_trusted_for_a_map(self):
@@ -202,7 +203,7 @@ class Enrichment(Fixture):
             open_candidates = connection.execute("SELECT COUNT(*) FROM candidate_media WHERE complete = 0").fetchone()[0]
         self.assertGreaterEqual(open_candidates, 1, "the temporary failure leaves its candidate open")
         for url in (gone, junk, huge):
-            record = self.built.enrichment._resolver.store.index["records"]["e:" + __import__("hashlib").sha1(url.encode()).hexdigest()[:20]]
+            record = self.built.persistence.media_cache.get_record("e:" + __import__("hashlib").sha1(url.encode()).hexdigest()[:20])
             self.assertFalse(record["ok"])
             self.assertTrue(record["reason"])
         self.pictures[flaky] = JPEG
@@ -391,6 +392,30 @@ class Serving(Fixture):
 
 
 class Schema(unittest.TestCase):
+    def test_media_cache_records_are_mutable_only_through_explicit_operations(self):
+        with tempfile.TemporaryDirectory() as folder:
+            built = app_module.build(os.path.join(folder, "discovery.db"), clock=Clock(), fetch_client=JsonClient({}))
+            try:
+                cache = built.persistence.media_cache
+                original = {"ok": False, "at": 12, "details": {"reasons": ["kept"]}}
+                cache.put_record("encapsulation:test", original)
+                original["details"]["reasons"].append("input mutation")
+
+                one = cache.get_record("encapsulation:test")
+                one["details"]["reasons"].append("single read mutation")
+                many = cache.get_records(["encapsulation:test"])
+                many["encapsulation:test"]["details"]["reasons"].append("bulk read mutation")
+                many.pop("encapsulation:test")
+
+                self.assertEqual(cache.get_record("encapsulation:test"), {"ok": False, "at": 12, "details": {"reasons": ["kept"]}})
+                self.assertFalse(hasattr(cache, "index"), "the persistence-owned cache index is private")
+                cache.save()
+                with database(built).read() as connection:
+                    row = connection.execute("SELECT record_json FROM media_records WHERE key=?", ("encapsulation:test",)).fetchone()
+                self.assertEqual(json.loads(row[0]), {"ok": False, "at": 12, "details": {"reasons": ["kept"]}})
+            finally:
+                built.close()
+
     def test_the_media_tables_exist_and_cascade_with_their_candidate(self):
         with tempfile.TemporaryDirectory() as folder:
             built = app_module.build(os.path.join(folder, "discovery.db"), clock=Clock(), fetch_client=JsonClient({}))

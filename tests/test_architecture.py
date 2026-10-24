@@ -407,6 +407,9 @@ class Real(unittest.TestCase):
         self.assertNotIn("persistence.media_store", app)
         self.assertIn("store: MediaCache", enrichment)
         self.assertIn("class MediaCache(Protocol)", ports)
+        self.assertIn("def get_record(", ports)
+        self.assertIn("def put_record(", ports)
+        self.assertNotIn("index: dict", ports)
 
 
 class Records(unittest.TestCase):
