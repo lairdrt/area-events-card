@@ -14,6 +14,7 @@ import time
 import unittest
 from unittest import mock
 
+from tests.db import database
 from discovery.service import app as app_module
 from discovery.service.api import ApiTokens
 from discovery.service.control import CreateAreaRequest, NotFound, ValidationFailed
@@ -28,11 +29,12 @@ from discovery.service.extraction import (
     StoredCandidateExtractor,
 )
 from discovery.service.host import HostConfig
-from discovery.service.processing import LeaseLost, StaleResult
-from discovery.service.repositories import SourceSpec
-from discovery.service.schema import LATEST, MIGRATIONS
-from discovery.service.store import DiscoveryStore
+from discovery.service.contracts import LeaseLost, StaleResult
+from discovery.service.contracts import SourceSpec
+from discovery.service.persistence.schema import LATEST, MIGRATIONS
+from discovery.service.persistence.store import DiscoveryStore
 
+from discovery.service.persistence.repositories import ChangeLog, PageRepository, SourceRepository
 from tests.records import document, put_document
 from tests.test_discovery_control import CONTROL_TOKEN, READ_TOKEN, request
 from tests.test_discovery_service import SPEC, Clock, FakeClient, city_pages
@@ -102,11 +104,11 @@ class Fixture(unittest.TestCase):
 
     def add_candidate(self, built, source_key, key, payload, url=None):
         now = int(self.clock())
-        with built.store.write() as tx:
-            source = built.service.sources.by_key(tx, source_key)
-            page_id = built.service.pages.touch(tx, url, source["source_id"], "event", now)[0] if url else None
+        with database(built).write() as tx:
+            source = SourceRepository().by_key(tx, source_key)
+            page_id = PageRepository().touch(tx, url, source["source_id"], "event", now)[0] if url else None
             digest = put_document(tx, key, source["source_id"], page_id, payload, now)
-            built.service.changes.append(tx, "candidate", key, digest, now)
+            ChangeLog().append(tx, "candidate", key, digest, now)
 
     def all_events(self, built, **kwargs):
         events, cursor = [], None
@@ -170,7 +172,7 @@ class Pipeline(Fixture):
             self.add_candidate(built, "sandiego_gov", key, payload)
         report = self.drain(built)
         self.assertEqual((report.submitted, report.failed), (7, 0))
-        with built.store.read() as connection:
+        with database(built).read() as connection:
             failures = {r[0]: r[1] for r in connection.execute("SELECT c.candidate_key, x.failure_reason FROM extractions x JOIN candidates c USING (candidate_id) WHERE x.status='failed'")}
         self.assertEqual(sorted(failures), ["s:1", "s:2", "s:3"])
         self.assertIn("no UTC offset", failures["s:1"])
@@ -367,7 +369,7 @@ class Processing(Fixture):
 
     def test_a_result_and_its_checkpoint_commit_together_or_not_at_all(self):
         item = self.claim()[0]
-        with mock.patch.object(self.built.processing._changes, "append", side_effect=RuntimeError("disk full")):
+        with mock.patch.object(self.built.persistence.processing._changes, "append", side_effect=RuntimeError("disk full")):
             with self.assertRaises(RuntimeError):
                 self.built.processing.submit(item.candidate_key, NAME, VERSION, item.lease_token, self.result(item))
         self.assertEqual((self.count("extractions"), self.count("events"), self.count("event_candidates")), (0, 0, 0), "nothing of the failed attempt remains")
@@ -649,7 +651,7 @@ class Readers(Fixture):
         self.assertEqual(self.count("events"), 7)
         values = sorted(latencies)
         summary = {"clients": 20, "requests": len(values), "p50_ms": round(values[len(values) // 2] * 1000, 1), "p95_ms": round(values[int(len(values) * 0.95)] * 1000, 1),
-                   "max_ms": round(values[-1] * 1000, 1), "writes": built.store.stats.summary()}
+                   "max_ms": round(values[-1] * 1000, 1), "writes": built.reader.status().write_stats}
         print("\nevent readers (simulated pages, development machine):", json.dumps(summary))
         self.assertEqual(summary["writes"]["failures"], 0)
         self.assertGreater(len(self.client.urls), fetched, "the crawls came from the made-due jobs")
@@ -672,7 +674,7 @@ class Storage(Fixture):
         old.close()
         self.assertEqual(self.check_version(), 2)
         built = self.build()
-        self.assertEqual(built.store.version(), LATEST)
+        self.assertEqual(database(built).version(), LATEST)
         self.add_candidate(built, "sandiego_gov", "s:1", candidate_payload())
         self.assertEqual(self.drain(built).submitted, 1)
         self.assertEqual(self.count("events"), 1)
@@ -698,10 +700,10 @@ class Storage(Fixture):
     def test_foreign_keys_and_constraints_protect_the_event_tables(self):
         built = self.build()
         with self.assertRaises(sqlite3.IntegrityError):
-            with built.store.write() as tx:
+            with database(built).write() as tx:
                 tx.execute("INSERT INTO event_candidates (candidate_id, event_id, role, linked_at) VALUES (999, 999, 'primary', 1)")
         with self.assertRaises(sqlite3.IntegrityError):
-            with built.store.write() as tx:
+            with database(built).write() as tx:
                 tx.execute("INSERT INTO events (event_key, title, starts_at, location_status, status, first_extracted_at, updated_at) VALUES ('ev-12345678', 't', 1, 'precise', 'complete', 1, 1)")
 
 
@@ -721,7 +723,7 @@ class Boundaries(unittest.TestCase):
 
     def test_the_extraction_worker_has_no_database_access(self):
         imports = self.imports_of("extraction.py")
-        self.assertFalse(imports & {"sqlite3", ".store", ".repositories", ".events", ".schema", ".app"}, imports)
+        self.assertFalse(imports & {"sqlite3", ".persistence", ".persistence.store", ".store", ".repositories", ".events", ".schema", ".app"}, imports)
         with open(os.path.join(SERVICE_DIR, "extraction.py"), encoding="utf-8") as handle:
             source = handle.read()
         self.assertNotIn("sqlite", source.lower())
@@ -731,13 +733,12 @@ class Boundaries(unittest.TestCase):
             tree = ast.parse(handle.read())
         service = [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "EventQueryService"][0]
         calls = {n.func.attr for n in ast.walk(service) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
-        self.assertIn("read", calls)
-        self.assertFalse(calls & {"write", "append", "apply", "execute"}, calls)
-        self.assertFalse(self.imports_of("events.py") & {".processing", ".extraction", ".service", ".scheduler", ".host"})
+        self.assertFalse(calls & {"read", "write", "append", "apply", "execute"}, "the query service holds no SQL and no transaction: it asks the EventQueries port")
+        self.assertFalse(self.imports_of("events.py") & {".processing", ".extraction", ".service", ".scheduler", ".host", "sqlite3"})
 
     def test_discovery_does_not_import_processing_or_extraction(self):
-        for name in ("service.py", "scheduler.py", "host.py", "reader.py", "control.py"):
-            self.assertFalse(self.imports_of(name) & {".processing", ".extraction", ".events"}, name)
+        for name in ("service.py", "scheduler.py", "host.py", "persistence/reading.py", "control.py"):
+            self.assertFalse(self.imports_of(name) & {".processing", ".extraction", ".events", "..processing", "..extraction", "..events"}, name)
 
 
 if __name__ == "__main__":

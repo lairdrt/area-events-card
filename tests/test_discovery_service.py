@@ -14,22 +14,27 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from discovery import safe
+from tests.db import database
 from discovery.safe import FetchError
 from discovery.safe import BlockedError, HostPolicy, Response, SafeFetcher
 from discovery.service import app as app_module
-from discovery.service import store as store_module
+from discovery.service.persistence import store as store_module
 from discovery.service.contracts import CandidateQuery
 from discovery.service.producer import EventCandidate, ProducerResult
-from discovery.service.repositories import (
+from discovery.service.persistence.events import EventRepository
+from discovery.service.persistence.repositories import (
+    CandidateRepository,
+    ChangeLog,
     JobRepository,
+    Retention,
     PageRepository,
     RetentionPolicy,
     SourceRepository,
     SourceSpec,
 )
-from discovery.service.schema import LATEST
+from discovery.service.persistence.schema import LATEST
 from discovery.service.service import DiscoveryConfig, job_key_for
-from discovery.service.store import DiscoveryStore, StorageUnavailable
+from discovery.service.persistence.store import DiscoveryStore, StorageUnavailable
 from discovery.service.urls import canonical_url, url_key
 
 from tests.test_site_discovery import CITY_URL, city_detail, city_listing
@@ -103,8 +108,8 @@ class Fixture(unittest.TestCase):
 class Schema(Fixture):
     def test_a_fresh_database_is_created_at_the_latest_version_in_wal_mode(self):
         built = self.build()
-        self.assertEqual(built.store.version(), store_module.SCHEMA_VERSION)
-        with built.store.read() as connection:
+        self.assertEqual(database(built).version(), store_module.SCHEMA_VERSION)
+        with built.persistence._store.read() as connection:
             tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertTrue({"sources", "pages", "source_pages", "contents", "fetches", "candidates", "evidence", "jobs", "changes", "consumers",
                              "schema_migrations", "store_meta"} <= tables)
@@ -112,7 +117,7 @@ class Schema(Fixture):
             self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
             self.assertEqual(connection.execute("PRAGMA query_only").fetchone()[0], 1)
             self.assertEqual(connection.execute("PRAGMA busy_timeout").fetchone()[0], 5000)
-        with built.store.write() as tx:
+        with built.persistence._store.write() as tx:
             self.assertEqual(tx.execute("PRAGMA foreign_keys").fetchone()[0], 1)
 
     def test_migrations_apply_once_in_order_and_a_newer_database_is_refused(self):
@@ -133,11 +138,11 @@ class Schema(Fixture):
     def test_constraints_hold(self):
         built = self.build()
         with self.assertRaises(sqlite3.IntegrityError):
-            with built.store.write() as tx:
+            with database(built).write() as tx:
                 tx.execute("INSERT INTO candidates (candidate_key, source_id, method, extractor, payload_json, payload_hash, first_seen_at, last_seen_at, updated_at) "
                            "VALUES ('x:1', 999, 'm', 'e', '{}', ?, 1, 1, 1)", ("0" * 64,))
         built.service.register_source(SPEC)
-        with built.store.write() as tx:
+        with database(built).write() as tx:
             source_id = SourceRepository().upsert(tx, SPEC, 1)
             PageRepository().touch(tx, "https://Example.org/a", source_id, "detail", 1)
         for bad in ("INSERT INTO pages (url_key, url, first_seen_at) VALUES ((SELECT url_key FROM pages LIMIT 1), 'u', 1)",
@@ -145,7 +150,7 @@ class Schema(Fixture):
                     "UPDATE jobs SET state='leased'",
                     "INSERT INTO sources (source_key, adapter, name, base_url, interval_s, created_at, updated_at) VALUES ('s', 'a', 'n', 'u', 5, 1, 1)"):
             with self.assertRaises(sqlite3.IntegrityError, msg=bad):
-                with built.store.write() as tx:
+                with database(built).write() as tx:
                     tx.execute(bad)
 
 
@@ -163,7 +168,7 @@ class Identity(Fixture):
     def test_one_page_row_however_many_sources_discover_it(self):
         built = self.build()
         other = SourceSpec("other_source", "sandiego_gov", "Other", "https://other.example/", interval_s=3600)
-        with built.store.write() as tx:
+        with database(built).write() as tx:
             a, b = SourceRepository().upsert(tx, SPEC, 1), SourceRepository().upsert(tx, other, 1)
             first, new1 = PageRepository().touch(tx, "https://www.sandiego.gov/event/e1#x", a, "detail", 1)
             second, new2 = PageRepository().touch(tx, "https://WWW.sandiego.gov/event/e1", b, "event", 2)
@@ -257,11 +262,11 @@ class Running(Fixture):
     def test_an_unexpected_storage_error_releases_the_job_with_backoff_instead_of_leaving_it_leased(self):
         built = self.build(city_pages(1))
         built.service.register_source(SPEC)
-        with mock.patch.object(built.service, "_store", side_effect=sqlite3.IntegrityError("FOREIGN KEY constraint failed")):
+        with mock.patch.object(built.persistence.crawl, "_store_plan", side_effect=sqlite3.IntegrityError("FOREIGN KEY constraint failed")):
             report = built.service.run_once()
         self.assertEqual(report.outcome, "store_failed")
         self.assertIn("FOREIGN KEY", report.error)
-        with built.store.read() as connection:
+        with database(built).read() as connection:
             job = connection.execute("SELECT state, attempts, lease_token FROM jobs").fetchone()
         self.assertEqual((job["state"], job["attempts"], job["lease_token"]), ("ready", 1, None), "released with a failed attempt, not held until the lease expires")
         self.assertEqual(self.count("candidates"), 0, "nothing of the failed run was written")
@@ -274,7 +279,7 @@ class Jobs(Fixture):
         return built
 
     def claim(self, built, worker, token, lease=600):
-        with built.store.write() as tx:
+        with database(built).write() as tx:
             return JobRepository().claim(tx, worker, token, self.clock(), lease)
 
     def test_first_run_completed_not_yet_due_and_due_again(self):
@@ -282,7 +287,7 @@ class Jobs(Fixture):
         job = self.claim(built, "w1", "t1")
         self.assertIsNotNone(job)
         self.assertIsNone(self.claim(built, "w2", "t2"), "a leased job is never claimed twice")
-        with built.store.write() as tx:
+        with database(built).write() as tx:
             self.assertTrue(JobRepository().complete(tx, job["job_id"], "t1", self.clock(), self.clock() + 3600))
         self.assertIsNone(self.claim(built, "w2", "t2"), "completed and not yet due")
         self.clock.t += 3599
@@ -297,7 +302,7 @@ class Jobs(Fixture):
         self.clock.t += 11
         second = self.claim(built, "w2", "new", lease=600)
         self.assertEqual((second["job_id"], second["attempts"]), (first["job_id"], 2))
-        with built.store.write() as tx:
+        with database(built).write() as tx:
             jobs = JobRepository()
             self.assertFalse(jobs.lease_valid(tx, first["job_id"], "old", self.clock()))
             self.assertFalse(jobs.complete(tx, first["job_id"], "old", self.clock(), self.clock() + 3600))
@@ -334,7 +339,7 @@ class Jobs(Fixture):
 
     def test_writes_are_atomic(self):
         built = self.seeded()
-        original = built.service.candidates.upsert
+        original = built.persistence.crawl._candidates.upsert
         calls = {"n": 0}
 
         def failing(*args, **kwargs):
@@ -343,7 +348,7 @@ class Jobs(Fixture):
                 raise sqlite3.OperationalError("disk I/O error")
             return original(*args, **kwargs)
 
-        with mock.patch.object(built.service.candidates, "upsert", side_effect=failing):
+        with mock.patch.object(built.persistence.crawl._candidates, "upsert", side_effect=failing):
             with self.assertRaises(sqlite3.OperationalError):
                 built.service.run_once()
         for table in ("candidates", "changes", "contents", "fetches", "evidence"):
@@ -361,7 +366,7 @@ class Jobs(Fixture):
         for attempt in range(1, 5):
             report = built.service.run_once()
             self.assertEqual(report.outcome, "fetch_failed")
-            with built.store.read() as connection:
+            with database(built).read() as connection:
                 job = JobRepository().get(connection, job_key_for("sandiego_gov"))
             waits.append((job["state"], job["next_run_at"] - self.clock()))
             self.clock.t = job["next_run_at"]
@@ -375,7 +380,7 @@ class Recovery(Fixture):
     def test_pending_work_survives_a_restart_and_a_new_process_reads_the_database(self):
         first = self.build()
         first.service.register_source(SPEC)
-        with first.store.write() as tx:
+        with database(first).write() as tx:
             JobRepository().claim(tx, "crashed-worker", "lost", self.clock(), 600)  # the process dies holding the lease
         first.close()
         self.clock.t += 601
@@ -398,10 +403,10 @@ class Recovery(Fixture):
         self.assertEqual(built.service.run_once().outcome, "paused")
         blocker.execute("ROLLBACK")
         blocker.close()
-        self.assertGreater(built.store.stats.summary()["retries"], 0)
+        self.assertGreater(built.reader.status().write_stats["retries"], 0)
         self.clock.t += 61
         self.assertEqual(built.service.run_once().outcome, "completed", "once the database can be written again")
-        with mock.patch.object(built.store, "write", side_effect=StorageUnavailable("database or disk is full")):
+        with mock.patch.object(built.persistence._store, "write", side_effect=StorageUnavailable("database or disk is full")):
             pauses = []
             for _ in range(8):
                 self.clock.t = max(self.clock.t, built.service.paused_until) + 0
@@ -453,7 +458,7 @@ class ChangeFeed(Fixture):
         built.reader.acknowledge("processing", 4)
         built.reader.acknowledge("processing", 2)  # an older acknowledgement never moves the checkpoint back
         built.reader.acknowledge("processing", 10_000)  # nor beyond what exists
-        with built.store.read() as connection:
+        with database(built).read() as connection:
             self.assertEqual(connection.execute("SELECT acked_seq FROM consumers").fetchone()[0], 9)
 
     def test_a_consumer_behind_the_retained_history_must_resync_and_misses_nothing(self):
@@ -464,8 +469,8 @@ class ChangeFeed(Fixture):
         built.reader.acknowledge("slow", 0)
         self.clock.t += 2 * 86400
         policy = RetentionPolicy(change_min_age_s=86400, change_max_rows=3)
-        with built.store.write() as tx:
-            removed = built.service.retention.prune(tx, self.clock(), policy)
+        with database(built).write() as tx:
+            removed = Retention(ChangeLog(), EventRepository()).prune(tx, self.clock(), policy)
         self.assertEqual(removed["changes"], 6, "the cap applies even though one consumer is behind")
         stale = built.reader.changes(0)
         self.assertTrue(stale.resync_required)
@@ -486,17 +491,17 @@ class ChangeFeed(Fixture):
         built = self.build()
         built.service.register_source(SPEC)
         built.service.run_once()
-        with built.store.read() as connection:
+        with database(built).read() as connection:
             evidence_hashes = {r[0] for r in connection.execute("SELECT DISTINCT content_hash FROM evidence WHERE content_hash IS NOT NULL")}
         self.clock.t += 2 * 86400
-        with built.store.write() as tx:
-            built.service.retention.prune(tx, self.clock(), RetentionPolicy(content_budget_bytes=1, candidate_days_after_start=30))
-        with built.store.read() as connection:
+        with database(built).write() as tx:
+            Retention(ChangeLog(), EventRepository()).prune(tx, self.clock(), RetentionPolicy(content_budget_bytes=1, candidate_days_after_start=30))
+        with database(built).read() as connection:
             remaining = {r[0] for r in connection.execute("SELECT content_hash FROM contents")}
         self.assertTrue(evidence_hashes <= remaining, "content referenced by evidence or by a page's current state is never pruned")
         self.clock.t += 40 * 86400
-        with built.store.write() as tx:
-            removed = built.service.retention.prune(tx, self.clock(), RetentionPolicy())
+        with database(built).write() as tx:
+            removed = Retention(ChangeLog(), EventRepository()).prune(tx, self.clock(), RetentionPolicy())
         self.assertEqual(removed["candidates"], 4)
         self.assertEqual(removed["pages"], 5, "pages nothing refers to and no source has seen for 30 days go too")
         self.assertEqual(self.count("evidence"), 0)
@@ -556,10 +561,11 @@ class NoGlobals(unittest.TestCase):
     ALLOWED_CALLS = {"frozenset", "tuple", "re.compile", "types.MappingProxyType", "SourceSpec", "os.path.join", "RetentionPolicy", "DiscoveryConfig", "logging.getLogger", "SchedulerConfig", "HostConfig", "re.compile"}
 
     def test_the_service_package(self):
-        for name in sorted(os.listdir(SERVICE_DIR)):
-            if not name.endswith(".py"):
-                continue
-            tree = ast.parse(open(os.path.join(SERVICE_DIR, name), encoding="utf-8").read())
+        files = sorted(os.path.relpath(os.path.join(folder, name), SERVICE_DIR) for folder, _, names in os.walk(SERVICE_DIR) if "__pycache__" not in folder
+                       for name in names if name.endswith(".py"))
+        for name in files:
+            with open(os.path.join(SERVICE_DIR, name), encoding="utf-8") as handle:
+                tree = ast.parse(handle.read())
             for node in ast.walk(tree):
                 self.assertNotIsInstance(node, (ast.Global, ast.Nonlocal), f"{name}: global statement")
             for node in tree.body:
@@ -588,12 +594,12 @@ class Readers(Fixture):
                 n += 1
                 started = time.perf_counter()
                 try:
-                    with built.store.write() as tx:
+                    with database(built).write() as tx:
                         source_id = SourceRepository().upsert(tx, other, n)
                         page_id, _ = PageRepository().touch(tx, f"https://other.example/event/{n}", source_id, "detail", n)
-                        built.service.candidates.upsert(tx, f"other_source:{n}", source_id, page_id, "adapter", "test",
+                        CandidateRepository().upsert(tx, f"other_source:{n}", source_id, page_id, "adapter", "test",
                                                         EventCandidate(local_id=str(n), title=f"Zeta {n}", starts_at="2030-01-01T00:00:00+00:00"), n)
-                        built.service.changes.append(tx, "candidate", f"other_source:{n}", "0" * 64, n)
+                        ChangeLog().append(tx, "candidate", f"other_source:{n}", "0" * 64, n)
                 except Exception as error:  # pragma: no cover - reported below
                     errors.append(repr(error))
                 write_latency.append(time.perf_counter() - started)
@@ -629,7 +635,7 @@ class Readers(Fixture):
             return round(values[min(len(values) - 1, int(q * len(values)))] * 1000, 1)
         summary = {"readers": 20, "reads": len(read_latency), "read_p50_ms": pct(read_latency, 0.5), "read_p95_ms": pct(read_latency, 0.95),
                    "writes": len(write_latency), "write_p50_ms": pct(write_latency, 0.5), "write_p95_ms": pct(write_latency, 0.95),
-                   "lock_retries": built.store.stats.summary()["retries"], "lock_failures": built.store.stats.summary()["failures"]}
+                   "lock_retries": built.reader.status().write_stats["retries"], "lock_failures": built.reader.status().write_stats["failures"]}
         print("\nconcurrency (development machine):", json.dumps(summary))
         self.assertEqual(summary["lock_failures"], 0)
 

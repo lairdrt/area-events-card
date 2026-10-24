@@ -16,26 +16,30 @@ import time
 import types
 from dataclasses import dataclass
 
+from ..media import MediaService
 from ..safe import HostPolicy, SafeFetcher
+from .api import ApiTokens, DiscoveryApi, DiscoveryApiServer
+from .contracts import ProcessingConfig, SourceSpec
+from .control import LocalDiscoveryControl
+from .deduplication.exact import ExactMatch
+from .deduplication.tolerant import TolerantMatch
+from .enrichment import EnrichmentConfig, MediaEnrichmentService, SourcePhotos
+from .events import EventQueryService
+from .extraction import ExtractionConfig, ExtractionService, LocalProcessingClient, StoredCandidateExtractor
+from .host import DiscoveryHost, HostConfig
+from .persistence.build import open_persistence
+from .processing import ProcessingService
 from .producers import city_of_san_diego
 from .producers.city_of_san_diego import CityOfSanDiegoProducer
 from .producers.craft_fairs import CraftFairProducer
 from .producers.localist import LocalistProducer
-from .api import ApiTokens, DiscoveryApi, DiscoveryApiServer
-from .areas import AreaRepository, SettingsRepository
-from .control import LocalDiscoveryControl
-from ..media import MediaService
-from .enrichment import EnrichmentConfig, MediaEnrichmentService, SourcePhotos
-from .events import EventQueryService, EventRepository
-from .extraction import ExtractionConfig, ExtractionService, LocalProcessingClient, StoredCandidateExtractor
-from .host import DiscoveryHost, HostConfig
-from .media_store import LocalMediaFiles, LocalMediaWork, MediaRepository, SqliteMediaStore
-from .processing import LocalProcessing, ProcessingConfig, ProcessingRepository
-from .reader import LocalDiscoveryReader
-from .repositories import CandidateRepository, ChangeLog, JobRepository, PageRepository, Retention, SourceRepository, SourceSpec
 from .scheduler import AreaPacing, DiscoveryScheduler, SchedulerConfig
 from .service import DiscoveryConfig, DiscoveryService
-from .store import DiscoveryStore
+
+# The deduplication strategies, by the name an operator or a test selects. Replacing the matching algorithm means choosing another name (or passing another object that
+# implements `deduplication.Deduplicator`) here; nothing else in the application changes.
+DEDUPLICATORS = types.MappingProxyType({"exact": ExactMatch, "tolerant": TolerantMatch})
+DEFAULT_DEDUPLICATION = "exact"
 
 KNOWN_SOURCES = types.MappingProxyType({  # read-only
     "san-diego-city": SourceSpec("sandiego_gov", "sandiego_gov", city_of_san_diego.NAME, city_of_san_diego.LISTING_URL,
@@ -53,19 +57,19 @@ KNOWN_SOURCES = types.MappingProxyType({  # read-only
 
 @dataclass
 class DiscoveryApp:
-    store: DiscoveryStore
+    persistence: object
     policy: HostPolicy
     service: DiscoveryService
-    reader: LocalDiscoveryReader
+    reader: object
     control: LocalDiscoveryControl
     scheduler: DiscoveryScheduler
     host: DiscoveryHost
-    processing: LocalProcessing
+    processing: ProcessingService
     events: EventQueryService
     extraction: ExtractionService
     enrichment: MediaEnrichmentService
-    media_files: LocalMediaFiles
-    media_work: LocalMediaWork
+    media_files: object
+    media_work: object
 
     def register_known_sources(self):
         """Register every built-in source (idempotent). A source that no enabled area uses is registered but idle."""
@@ -75,39 +79,38 @@ class DiscoveryApp:
         self.enrichment.stop()
         self.extraction.stop()
         self.host.stop()
-        self.store.close()
+        self.persistence.close()
 
 
 def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None, worker_id="worker-1", request_interval=2.0, store_options=None,
           host_config=HostConfig(), scheduler_config=SchedulerConfig(), service_gate=True,
-          extraction_config=ExtractionConfig(), processing_config=ProcessingConfig(), enrichment_config=EnrichmentConfig(), media_dir=None, nominatim_interval=15.0):
+          extraction_config=ExtractionConfig(), processing_config=ProcessingConfig(), enrichment_config=EnrichmentConfig(), media_dir=None, nominatim_interval=15.0,
+          deduplication=DEFAULT_DEDUPLICATION):
     """The connected Discovery Service objects for one database. `fetch_client` replaces the network client (tests); otherwise a
     SafeFetcher is made with the given (or a new) HostPolicy, which every fetcher of this service shares. With the default `config` the
     service crawls only sources that an enabled area uses and honours the operator's pause; pass a DiscoveryConfig (require_area False)
-    and service_gate=False for the earlier, area-less behaviour."""
-    store = DiscoveryStore(db_path, **(store_options or {})).open()
+    and service_gate=False for the earlier, area-less behaviour. `deduplication` is the name of a strategy in DEDUPLICATORS, or an object
+    that implements the Deduplicator interface."""
     policy = policy or HostPolicy()
     client = fetch_client or SafeFetcher(request_interval, state=policy)
-    sources, pages, candidates, jobs, changes = SourceRepository(), PageRepository(), CandidateRepository(), JobRepository(), ChangeLog()
-    media_repository = MediaRepository()
-    areas, settings, event_repository = AreaRepository(), SettingsRepository(), EventRepository(media_repository)
-    pacing = AreaPacing(areas, settings, scheduler_config)
-    scheduler = DiscoveryScheduler(store, areas, settings, jobs, changes, clock, pacing)
+    deduplicator = DEDUPLICATORS[deduplication]() if isinstance(deduplication, str) else deduplication
+    persistence = open_persistence(db_path, deduplicator, clock, store_options, media_dir)
+    pacing = AreaPacing(scheduler_config)
+    scheduler = DiscoveryScheduler(persistence.scheduling, pacing)
     config = config or DiscoveryConfig(require_area=service_gate)
-    service = DiscoveryService(store, sources, pages, candidates, jobs, changes, Retention(changes, event_repository), client, {"sandiego_gov": CityOfSanDiegoProducer(), "localist": LocalistProducer(), "craft_fairs": CraftFairProducer()}, clock,
+    service = DiscoveryService(persistence.crawl, client, {"sandiego_gov": CityOfSanDiegoProducer(), "localist": LocalistProducer(), "craft_fairs": CraftFairProducer()}, clock,
                                config, worker_id, pacing=pacing if service_gate else None, gate=scheduler if service_gate else None)
-    reader = LocalDiscoveryReader(store, sources, pages, candidates, jobs, changes, clock)
     host = DiscoveryHost(service, scheduler, clock, host_config)
-    control = LocalDiscoveryControl(store, sources, areas, settings, jobs, changes, clock, runtime=host.status)
-    processing = LocalProcessing(store, ProcessingRepository(), event_repository, candidates, pages, changes, clock, processing_config)
-    events = EventQueryService(store, event_repository, areas, sources, changes)
+    control = LocalDiscoveryControl(persistence.control, runtime=host.status)
+    processing = ProcessingService(persistence.processing, clock, processing_config)
+    events = EventQueryService(persistence.events)
     extraction = ExtractionService(LocalProcessingClient(processing), StoredCandidateExtractor(), clock, extraction_config, worker_id="extractor-local")
     media_folder = media_dir or os.path.join(os.path.dirname(os.path.abspath(db_path)), "media")
-    media_store = SqliteMediaStore(store, media_repository, media_folder, clock)
-    media_work = LocalMediaWork(store, media_repository, clock)
-    resolver = MediaService(os.path.dirname(media_folder), client, clock, nominatim_interval=nominatim_interval, store=media_store)
-    enrichment = MediaEnrichmentService(media_work, resolver, SourcePhotos(client, media_store, media_work, clock, enrichment_config), clock, enrichment_config)
-    return DiscoveryApp(store, policy, service, reader, control, scheduler, host, processing, events, extraction, enrichment, LocalMediaFiles(media_store), media_work)
+    resolver = MediaService(os.path.dirname(media_folder), client, clock, nominatim_interval=nominatim_interval, store=persistence.media_store)
+    enrichment = MediaEnrichmentService(persistence.media_work, resolver, SourcePhotos(client, persistence.media_store, persistence.media_work, clock, enrichment_config), clock,
+                                        enrichment_config)
+    return DiscoveryApp(persistence, policy, service, persistence.reader, control, scheduler, host, processing, events, extraction, enrichment, persistence.media_files,
+                        persistence.media_work)
 
 
 def build_api(app, tokens, clock=time.time, host="127.0.0.1", port=8780, allow_remote=False, tls=None, allow_plain=False):

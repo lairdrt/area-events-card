@@ -27,6 +27,6 @@ The new application stands on its own. `service/` and the neutral modules it use
 1. The imagery libraries (`media`, `maps`, `images`, `classify`, `classifiers`) are shared with the earlier engine and take their own dictionary input; `enrichment._imagery_input` builds it from the standard record's fields in one place.
 2. The earlier engine and its tests are still in the repository. It imports the producers' reading functions for City and Localist, keeps its own `DetailWork` and event dictionaries (`core.make_event`), and is not deployed with the service. Retiring it is a separate decision.
 3. Producers and known sources are wired by hand in `app.py` (and `cli.py`).
-4. Deduplication is exact (title, start, street address) and lives in event persistence (`EventRepository.apply`), not in a module of its own.
+4. (Resolved in step 4: deduplication is its own module behind an interface, and Persistence owns all database mechanics; see deduplication-and-persistence.md.)
 5. The Home Assistant feed adapter has a per-source display-name table and drops categories; the card classifies by keywords.
 6. The candidate read API (`CandidateRecord.payload`) serves the standard document under the unchanged `discovery.v1` label.

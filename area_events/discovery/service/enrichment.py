@@ -15,13 +15,16 @@ events are usable from the first moment (their illustration is decided at once).
 """
 import hashlib
 import logging
+import math
 import threading
 from dataclasses import dataclass
 
 from .. import classifiers, images
 from ..safe import FetchError
 from ..safe import BlockedError
-from .media_store import ENRICHMENT_VERSION, MAX_FILE_BYTES, inside_area
+from ..media import distance_m
+from .contracts import ENRICHMENT_VERSION, MAX_FILE_BYTES
+from .persistence.ports import MediaWork  # noqa: F401
 from .text import place_label
 
 log = logging.getLogger("area-events.enrichment")
@@ -29,6 +32,16 @@ PHOTO_TYPES = ("image/jpeg", "image/png", "image/webp")
 MEDIA_URL = "/area_events/media"
 PHOTO_TTL = 60 * 86400
 REFUSAL_TTL = 14 * 86400
+
+
+def inside_area(event_geo, area, slack_miles=5):
+    """Are coordinates the source gave within the area's radius (plus slack)? Used to call a source's own coordinates for a venue 'confirmed'."""
+    try:
+        lat, lon = float(event_geo["latitude"]), float(event_geo["longitude"])
+        return (not math.isnan(lat) and -90 <= lat <= 90 and -180 <= lon <= 180
+                and distance_m(lat, lon, area["latitude"], area["longitude"]) <= (area["radius_miles"] + slack_miles) * 1609.344)
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 @dataclass(frozen=True)

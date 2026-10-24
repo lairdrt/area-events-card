@@ -10,7 +10,7 @@ checkpoint is older than the retained history (`after < pruned_through`), the ba
 consumer then pages through `snapshot()` and continues with `changes(after=snapshot.as_of_seq)`. Changes made during the snapshot
 appear again after `as_of_seq`, so nothing is missed; some records may be delivered twice, which idempotent upserts absorb.
 """
-from .contracts import SCHEMA, ChangeBatch, DiscoveryStatus, SnapshotPage
+from ..contracts import SCHEMA, ChangeBatch, DiscoveryStatus, SnapshotPage
 
 
 class LocalDiscoveryReader:

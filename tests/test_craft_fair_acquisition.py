@@ -17,8 +17,8 @@ from discovery.service.producers.craft_fairs import (
     CraftFairProducer,
     SourceAcquirer,
 )
-from discovery.service.repositories import SourceSpec
-from discovery.service.schema import LATEST
+from discovery.service.contracts import SourceSpec
+from discovery.service.persistence.schema import LATEST
 from discovery.service.producers.craft_fairs import reading as craftfairs
 
 from tests.test_discovery_service import Clock, FakeClient

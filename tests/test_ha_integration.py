@@ -19,6 +19,7 @@ import unittest
 from functools import wraps
 from unittest import mock
 
+from tests.db import database
 from discovery.service import app as app_module
 from discovery.service.api import ApiTokens
 from discovery.service.host import HostConfig
@@ -551,7 +552,7 @@ class Imagery(Service):
         store = self.built.enrichment._resolver.store
         store.put_file("p0123456789abcdef01234567.jpg", JPEG)
         store.put_file("mabcdef0123456789-light.svg", b"<svg xmlns='http://www.w3.org/2000/svg'/>")
-        with self.built.store.read() as connection:
+        with database(self.built).read() as connection:
             self.candidate = connection.execute("SELECT candidate_id, payload_hash FROM candidates WHERE candidate_key LIKE 'sandiego_gov:%' ORDER BY candidate_id LIMIT 1").fetchone()
         self.built.media_work.finish([{"candidate_id": self.candidate["candidate_id"], "payload_hash": self.candidate["payload_hash"], "complete": True,
                                        "illustration": {"category": "markets", "strength": "strong", "reasons": ["title"], "fallback": False},

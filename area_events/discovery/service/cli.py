@@ -30,7 +30,7 @@ import urllib.request
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from .app import KNOWN_SOURCES, build, build_api, load_tokens
+from .app import DEDUPLICATORS, DEFAULT_DEDUPLICATION, KNOWN_SOURCES, build, build_api, load_tokens
 from .contracts import CandidateQuery
 from .control import ControlError, CreateAreaRequest, RevisionConflict, SettingsRequest, UpdateAreaRequest
 from .events import EventQuery
@@ -66,7 +66,7 @@ def cmd_run(args):
     spec = replace(spec, options=tuple(sorted(options.items())))
     tracemalloc.start()
     started = time.perf_counter()
-    app = build(args.db, service_gate=False)
+    app = build(args.db, service_gate=False, deduplication=args.deduplication)
     try:
         source = app.service.register_source(spec)
         recovered = app.service.recover()
@@ -98,7 +98,7 @@ def cmd_run(args):
 # --- the service -----------------------------------------------------------------------------------------------------
 
 def cmd_serve(args):
-    app = build(args.db)
+    app = build(args.db, deduplication=args.deduplication)
     directory = os.path.dirname(os.path.abspath(args.db))
     tokens, token_path = load_tokens(directory, read=True, process=True)
     app.register_known_sources()
@@ -159,7 +159,7 @@ def cmd_extract(args):
             return 1
         service, where = ExtractionService(HttpProcessingClient(args.url, token, cafile=args.ca_file), extractor, time.time, worker_id=args.worker), args.url
     else:
-        app = build(args.db, service_gate=False)
+        app = build(args.db, service_gate=False, deduplication=args.deduplication)
         service, where = app.extraction, os.path.normpath(args.db)
     try:
         if args.once:
@@ -188,7 +188,7 @@ def _event_line(e):
 
 
 def cmd_events(args):
-    app = build(args.db)
+    app = build(args.db, deduplication=args.deduplication)
     try:
         if args.event:
             detail = app.events.get(args.event)
@@ -258,7 +258,7 @@ def _guard(function):
 
 @_guard
 def cmd_areas(args):
-    app = build(args.db)
+    app = build(args.db, deduplication=args.deduplication)
     try:
         app.register_known_sources()
         control = app.control
@@ -289,7 +289,7 @@ def cmd_areas(args):
 
 @_guard
 def cmd_settings(args):
-    app = build(args.db)
+    app = build(args.db, deduplication=args.deduplication)
     try:
         control = app.control
         if args.mode or args.intensity:
@@ -306,7 +306,7 @@ def cmd_settings(args):
 
 @_guard
 def cmd_pause_resume(args):
-    app = build(args.db)
+    app = build(args.db, deduplication=args.deduplication)
     try:
         result = app.control.pause() if args.command == "pause" else app.control.resume()
         print(("already " + ("paused" if args.command == "pause" else "running") + " (idempotent)") if result.replayed
@@ -317,7 +317,7 @@ def cmd_pause_resume(args):
 
 
 def cmd_status(args):
-    app = build(args.db)
+    app = build(args.db, deduplication=args.deduplication)
     try:
         status = app.reader.status()
         control = app.control.get_status()
@@ -347,7 +347,7 @@ def cmd_status(args):
 
 
 def cmd_changes(args):
-    app = build(args.db)
+    app = build(args.db, deduplication=args.deduplication)
     try:
         batch = app.reader.changes(args.after, args.limit)
     finally:
@@ -362,7 +362,7 @@ def cmd_changes(args):
 
 
 def cmd_inspect(args):
-    app = build(args.db)
+    app = build(args.db, deduplication=args.deduplication)
     try:
         records = app.reader.candidates(CandidateQuery(source_key=args.source, title_contains=args.title, limit=args.limit))
         detailed = [app.reader.candidate(r.candidate_key) for r in records]
@@ -398,6 +398,7 @@ def main(argv=None):
     def add(name, help_text):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--db", default=os.path.normpath(DEFAULT_DB))
+        p.add_argument("--deduplication", choices=sorted(DEDUPLICATORS), default=DEFAULT_DEDUPLICATION, help="the event-matching strategy (default: the conservative exact match)")
         common.append(p)
         return p
 

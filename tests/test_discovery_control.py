@@ -14,17 +14,18 @@ import time
 import unittest
 from unittest import mock
 
+from tests.db import database
 from discovery.core import FetchError
 from discovery.service import app as app_module
 from discovery.service.api import ApiTokens, DiscoveryApi, DiscoveryApiServer, MAX_BODY
-from discovery.service.areas import AreaRepository, SettingsRepository
+from discovery.service.persistence.areas import AreaRepository, SettingsRepository
 from discovery.service.contracts import CandidateQuery
 from discovery.service.control import (CONTROL_SCHEMA, CreateAreaRequest, NotFound, RevisionConflict, SettingsRequest, UpdateAreaRequest, ValidationFailed)
 from discovery.service.host import HostConfig
-from discovery.service.repositories import SourceSpec
+from discovery.service.contracts import SourceSpec
 from discovery.service.scheduler import AreaPacing, SchedulerConfig
-from discovery.service.schema import LATEST, MIGRATIONS
-from discovery.service.store import DiscoveryStore
+from discovery.service.persistence.schema import LATEST, MIGRATIONS
+from discovery.service.persistence.store import DiscoveryStore
 from tests.test_discovery_service import Clock, FakeClient, SPEC, city_pages
 from tests.test_site_discovery import CITY_URL
 
@@ -117,7 +118,7 @@ class Areas(Fixture):
         self.assertEqual(self.count("area_sources"), 3)
         updated = built.control.update_area(UpdateAreaRequest(b.area_key, 1, sources=("other_city",)))
         self.assertEqual((updated.area.sources, updated.area.revision), (("other_city",), 2))
-        with built.store.read() as connection:
+        with database(built).read() as connection:
             eligible = AreaRepository().eligible_sources(connection)
         self.assertEqual([row[1] for row in eligible], ["other_city", "sandiego_gov"], "one row per source however many areas use it")
 
@@ -182,12 +183,12 @@ class Areas(Fixture):
             tx.execute("DELETE FROM changes WHERE seq = 2")  # a pruned sequence number must never be reused
         store.close()
         built = self.build()
-        self.assertEqual(built.store.version(), LATEST)
+        self.assertEqual(database(built).version(), LATEST)
         batch = built.reader.changes(0)
         self.assertEqual([(c.seq, c.entity, c.kind) for c in batch.changes], [(1, "candidate", "candidate.changed")])
         built.control.pause()
         self.assertEqual(built.reader.changes(0).changes[-1].seq, 3)
-        with built.store.read() as connection:
+        with database(built).read() as connection:
             self.assertEqual(connection.execute("SELECT value FROM settings WHERE key='mode'").fetchone()[0], "automatic")
 
 
@@ -222,13 +223,13 @@ class Scheduling(Fixture):
         built.control.create_area(self.area())
         built.scheduler.plan()
         built.service.run_once()
-        with built.store.read() as connection:
+        with database(built).read() as connection:
             before = connection.execute("SELECT next_run_at FROM jobs WHERE job_key='crawl_source:sandiego_gov'").fetchone()[0]
         self.assertEqual(before, self.clock() + 3600)
         built.control.set_discovery_mode(SettingsRequest(1, mode="manual", intensity="high"))
         plan = built.scheduler.plan()
         self.assertEqual((plan["changed"], plan["brought_forward"]), (True, 1))
-        with built.store.read() as connection:
+        with database(built).read() as connection:
             after = connection.execute("SELECT next_run_at FROM jobs WHERE job_key='crawl_source:sandiego_gov'").fetchone()[0]
             seen = int(SettingsRepository().get(connection, "scheduler_seen_seq"))
             latest = connection.execute("SELECT MAX(seq) FROM changes WHERE entity IN ('area','settings')").fetchone()[0]
@@ -236,11 +237,11 @@ class Scheduling(Fixture):
         self.assertEqual(seen, latest)
         built.control.set_discovery_mode(SettingsRequest(2, intensity="low"))
         built.scheduler.plan()
-        with built.store.read() as connection:
+        with database(built).read() as connection:
             self.assertEqual(connection.execute("SELECT next_run_at FROM jobs WHERE job_key='crawl_source:sandiego_gov'").fetchone()[0], after, "slower pacing never delays a job already scheduled")
 
     def test_pacing_by_intensity_and_by_how_often_a_source_changes(self):
-        pacing = AreaPacing(AreaRepository(), SettingsRepository(), SchedulerConfig())
+        pacing = AreaPacing(SchedulerConfig())
         self.assertEqual([pacing.interval(3600, i, "manual", 9) for i in ("low", "normal", "high")], [7200, 3600, 1800])
         self.assertEqual([pacing.interval(3600, "normal", "automatic", q) for q in (0, 1, 2, 3, 4, 50)], [3600, 3600, 7200, 7200, 14400, 14400])
         self.assertEqual(pacing.interval(100, "high", "manual", 0), 300, "never faster than the floor")
@@ -251,7 +252,7 @@ class Scheduling(Fixture):
         waits = []
         for _ in range(5):
             built.service.run_once()
-            with built.store.read() as connection:
+            with database(built).read() as connection:
                 waits.append(connection.execute("SELECT next_run_at FROM jobs WHERE job_key='crawl_source:sandiego_gov'").fetchone()[0] - self.clock())
             self.clock.t += 20000
         self.assertEqual(waits, [3600, 3600, 7200, 7200, 14400], "a source that stays unchanged is asked for less often")
@@ -285,7 +286,7 @@ class Scheduling(Fixture):
             outcomes.append(built.service.run_once().outcome)
         self.assertEqual(sorted(outcomes[:2]), ["completed", "fetch_failed"])
         self.assertEqual(self.count("candidates"), 4, "the healthy source was stored")
-        with built.store.read() as connection:
+        with database(built).read() as connection:
             stalled = connection.execute("SELECT state, next_run_at - ?, attempts FROM jobs WHERE job_key='crawl_source:other_city'", (self.clock(),)).fetchone()
         self.assertEqual((stalled[0], stalled[1], stalled[2]), ("ready", 900, 1), "the failing source waits with backoff while the others continue")
 
@@ -342,8 +343,7 @@ class Host(Fixture):
 
     def test_a_job_interrupted_by_a_crash_is_recovered_when_the_host_restarts(self):
         built = self.make_host()
-        with built.store.write() as tx:
-            built.service.jobs.claim(tx, "crashed", "lost", self.clock(), 600)
+        built.persistence.crawl.claim_job("crashed", "lost", 600, False)
         built.close()
         self.clock.t += 601
         restarted = self.build(host_config=HostConfig(idle_wait_s=0.05, busy_wait_s=0.01))
@@ -515,7 +515,7 @@ class Api(ApiFixture):
         self.assertEqual(self.count("candidates"), 6, "discovery kept writing while 20 clients read")
         values = sorted(latencies)
         summary = {"clients": 20, "requests": len(values), "p50_ms": round(values[len(values) // 2] * 1000, 1), "p95_ms": round(values[int(len(values) * 0.95)] * 1000, 1),
-                   "write_stats": self.built.store.stats.summary()}
+                   "write_stats": self.built.reader.status().write_stats}
         print("\napi concurrency (simulated, development machine):", json.dumps(summary))
         self.assertEqual(summary["write_stats"]["failures"], 0)
 
@@ -682,14 +682,14 @@ class EndToEnd(Fixture):
             self.assertTrue(self.wait_for(lambda: self.count("candidates") == 4), "discovery ran with no card involved")
             self.assertEqual(self.count("pages"), 6)
             self.assertGreaterEqual(self.count("fetches"), 5)
-            with built.store.read() as connection:
+            with database(built).read() as connection:
                 first_next = connection.execute("SELECT next_run_at FROM jobs WHERE job_key='crawl_source:sandiego_gov'").fetchone()[0]
             status, settings = request(server, "PUT", "/v1/discovery/settings", body={"expected_revision": 1, "mode": "manual", "intensity": "high"})
             self.assertEqual(status, 200)
             self.assertEqual(request(server, "PATCH", f"/v1/areas/{key}", body={"expected_revision": 1, "radius": 40})[0], 200)
             moved = self.wait_for(lambda: self.count("settings", "key='scheduler_seen_seq' AND CAST(value AS INTEGER) >= 3"))
             self.assertTrue(moved, "the scheduler noticed the configuration change")
-            with built.store.read() as connection:
+            with database(built).read() as connection:
                 second_next = connection.execute("SELECT next_run_at FROM jobs WHERE job_key='crawl_source:sandiego_gov'").fetchone()[0]
             self.assertLess(second_next, first_next, "high intensity brought the next run forward")
             kinds = [c["kind"] for c in request(server, "GET", "/v1/changes?after=0&limit=200", token=READ_TOKEN)[1]["changes"]]

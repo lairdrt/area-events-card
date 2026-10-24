@@ -12,6 +12,7 @@ import types
 import unittest
 from datetime import datetime, timezone
 
+from tests.db import database
 from discovery.service import app as app_module
 from discovery.service import producer
 from discovery.service.api import ApiTokens
@@ -21,8 +22,9 @@ from discovery.service.producer import EventCandidate, ProducerResult, Provenanc
 from discovery.service.producers.city_of_san_diego import CityOfSanDiegoProducer
 from discovery.service.producers.craft_fairs import CraftFairProducer
 from discovery.service.producers.localist import LocalistProducer
-from discovery.service.repositories import SourceSpec
+from discovery.service.contracts import SourceSpec
 from discovery.sources import localist, sandiego_gov
+from discovery.service.persistence.repositories import CandidateRepository, SourceRepository
 from tests.records import record
 from tests.test_austin import API, Recorder, sample_pages
 from tests.test_austin import options as localist_options
@@ -326,12 +328,12 @@ class Substitution(Fixture):
         built = self.build()
         built.service.adapters["independent"] = IndependentProducer()
         built.service.register_source(SourceSpec("independent_feed", "independent", "Independent feed", self.FEED, interval_s=3600))
-        with built.store.write() as tx:
-            source_id = built.service.sources.by_key(tx, "independent_feed")["source_id"]
+        with database(built).write() as tx:
+            source_id = SourceRepository().by_key(tx, "independent_feed")["source_id"]
             tx.execute("INSERT INTO candidates (candidate_key, source_id, method, extractor, payload_json, payload_hash, first_seen_at, last_seen_at, updated_at) "
                        "VALUES ('independent_feed:old', ?, 'adapter', 'x', ?, ?, 1, 1, 1)", (source_id, json.dumps({"id": "independent_feed:old", "title": "Old", "start": START}), "0" * 64))
-        with built.store.read() as connection:
-            self.assertEqual(built.service.candidates.previous(connection, source_id), ())
+        with database(built).read() as connection:
+            self.assertEqual(CandidateRepository().previous(connection, source_id), ())
 
 
 class ReplayProducer:

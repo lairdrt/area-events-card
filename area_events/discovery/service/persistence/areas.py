@@ -4,37 +4,9 @@ Same rules as the data repositories: explicit SQL, writes take the caller's tran
 between calls. An area names a place to cover (center, radius, unit); it is never geocoded here (coordinates are validated by the
 control service), and nothing in it constrains which source evidence is stored.
 """
-from dataclasses import dataclass
 from typing import Optional
 
-INTENSITIES = ("low", "normal", "high")
-MODES = ("automatic", "manual")
-UNITS = ("mi", "km")
-
-
-@dataclass(frozen=True)
-class AreaRecord:
-    area_key: str
-    name: str
-    latitude: float
-    longitude: float
-    radius: float
-    unit: str
-    enabled: bool
-    intensity: str
-    revision: int
-    created_at: int
-    updated_at: int
-    sources: tuple = ()             # source keys
-
-
-@dataclass(frozen=True)
-class SettingsRecord:
-    mode: str
-    intensity: str
-    paused: bool
-    revision: int
-    updated_at: int
+from ..contracts import INTENSITIES, MODES, UNITS, AreaRecord, SettingsRecord  # noqa: F401
 
 
 class AreaRepository:

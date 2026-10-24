@@ -8,12 +8,11 @@ import hashlib
 import json
 import logging
 import zlib
-from dataclasses import dataclass
 from datetime import datetime
 
-from . import producer
-from .contracts import CandidateRecord, Change, EvidenceRecord, JobCounts, PageRecord, SourceRecord
-from .urls import canonical_url, url_key
+from .. import producer
+from ..contracts import CandidateRecord, Change, EvidenceRecord, JobCounts, PageRecord, RetentionPolicy, SourceRecord, SourceSpec  # noqa: F401
+from ..urls import canonical_url, url_key
 
 log = logging.getLogger("area_events.discovery.repositories")
 MAX_CONTENT_BYTES = 2_000_000
@@ -21,19 +20,6 @@ MAX_CONTENT_BYTES = 2_000_000
 
 def content_hash(body):
     return hashlib.sha256(body).hexdigest()
-
-
-@dataclass(frozen=True)
-class SourceSpec:
-    source_key: str
-    adapter: str
-    name: str
-    base_url: str
-    options: tuple = ()             # (key, value) pairs, so the spec stays immutable
-    interval_s: int = 3600
-
-    def options_dict(self):
-        return dict(self.options)
 
 
 class SourceRepository:
@@ -328,18 +314,6 @@ class ChangeLog:
         deleted = tx.execute("DELETE FROM changes WHERE seq <= ?", (removed_through,)).rowcount
         tx.execute("UPDATE store_meta SET value=? WHERE key='pruned_through_seq' AND CAST(value AS INTEGER) < ?", (str(removed_through), removed_through))
         return deleted
-
-
-@dataclass(frozen=True)
-class RetentionPolicy:
-    fetch_history_days: int = 30
-    fetches_per_page: int = 20
-    candidate_days_after_start: int = 3       # the EXISTING retention_days
-    unreferenced_content_days: int = 1
-    content_budget_bytes: int = 200_000_000
-    change_min_age_s: int = 86400
-    change_max_rows: int = 500_000
-    page_days: int = 30                       # pages no source has seen for this long, and that nothing refers to
 
 
 class Retention:

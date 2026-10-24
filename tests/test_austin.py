@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from datetime import date, datetime, timedelta, timezone
 
+from tests.db import database
 from discovery.safe import FetchError
 from discovery.safe import Response
 from discovery.service import app as app_module
@@ -18,7 +19,7 @@ from discovery.service.control import CreateAreaRequest
 from discovery.service.events import EventQuery
 from discovery.service.producers.localist import LocalistProducer
 from discovery.service.service import DiscoveryService
-from discovery.service.store import DiscoveryStore
+from discovery.service.persistence.store import DiscoveryStore
 from discovery.service.urls import canonical_url
 
 from tests.test_discovery_service import SPEC, Clock, city_pages
@@ -192,7 +193,7 @@ class Pipeline(unittest.TestCase):
 
     def test_times_are_the_instants_the_source_gave_with_their_offsets(self):
         self.discover_and_extract()
-        with self.built.store.read() as connection:
+        with database(self.built).read() as connection:
             rows = connection.execute("SELECT c.payload_json, e.starts_at FROM candidates c JOIN event_candidates l USING (candidate_id) JOIN events e ON e.event_id = l.event_id "
                                       "WHERE c.candidate_key LIKE 'ut_austin:%'").fetchall()
         self.assertEqual(len(rows), 7)
@@ -212,7 +213,7 @@ class Pipeline(unittest.TestCase):
 
     def test_provenance_and_evidence_point_at_the_stored_api_responses(self):
         self.discover_and_extract()
-        with self.built.store.read() as connection:
+        with database(self.built).read() as connection:
             feeds = connection.execute("SELECT p.url, sp.role, p.status FROM pages p JOIN source_pages sp USING (page_id) JOIN sources s USING (source_id) "
                                        "WHERE s.source_key='ut_austin' AND sp.role='feed'").fetchall()
             quotes = connection.execute("SELECT e.field, e.quote, p.url FROM evidence e JOIN candidates c USING (candidate_id) JOIN pages p ON p.page_id = e.page_id "
@@ -254,7 +255,7 @@ class Pipeline(unittest.TestCase):
         reports = {r.job_key: r for r in self.built.service.run_until_idle(10) if r.job_key}
         self.assertEqual((reports["crawl_source:ut_austin"].outcome, reports["crawl_source:sandiego_gov"].outcome), ("fetch_failed", "completed"))
         self.assertEqual(self.count("candidates", "candidate_key LIKE 'ut_austin:%'"), 0, "half a calendar is not stored")
-        with self.built.store.read() as connection:
+        with database(self.built).read() as connection:
             job = connection.execute("SELECT state, attempts, next_run_at FROM jobs WHERE job_key='crawl_source:ut_austin'").fetchone()
         self.assertEqual((job["state"], job["attempts"], job["next_run_at"] - self.clock()), ("ready", 1, 900))
         self.pages[API + "2"] = sample_pages()[1]
@@ -263,8 +264,7 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(self.count("candidates", "candidate_key LIKE 'ut_austin:%'"), 7)
 
     def test_a_service_restart_in_the_middle_of_a_crawl_loses_nothing(self):
-        with self.built.store.write() as tx:
-            self.built.service.jobs.claim(tx, "crashed", "lost-lease", self.clock(), 600, True)   # the process dies holding a lease
+        self.built.persistence.crawl.claim_job("crashed", "lost-lease", 600, True)   # the process dies holding a lease
         self.built.close()
         self.clock.t += 601
         again = self.build()

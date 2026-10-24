@@ -17,17 +17,10 @@ import sqlite3
 import threading
 import time
 
+from ..contracts import StaleLease, StorageUnavailable  # noqa: F401
 from .schema import LATEST, MIGRATIONS
 
 MIN_SQLITE = (3, 35, 0)  # RETURNING
-
-
-class StorageUnavailable(Exception):
-    """The database cannot take a write now (locked beyond the retries, full, or failing)."""
-
-
-class StaleLease(Exception):
-    """The worker's job lease is no longer valid: another worker may own the job, so nothing is written."""
 
 
 def _statements(script):

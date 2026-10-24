@@ -1,35 +1,30 @@
-"""DiscoveryService: registers sources, schedules and runs their discovery jobs, and stores what they find.
+"""DiscoveryService: registers sources, schedules and runs their discovery jobs, and hands what they find to Persistence.
 
 One job run:
 
-    1. claim         a write transaction: the next due job, leased to this worker with a fresh token
-    2. read          a read transaction: the source and its stored candidates (so event pages already read are reused)
-    3. crawl         no transaction: the adapter fetches through a RecordingFetcher over the shared-policy SafeFetcher
-    4. prepare       no transaction: hash and compress bodies, compute payload hashes, locate evidence in the stored pages
-    5. store         one write transaction: verify the lease (token and expiry) and, only then, write pages, source attribution,
-                     contents, fetches, candidates, evidence and change records, mark the source and complete the job
-    6. on failure    a write transaction releases the job with backoff (guarded by the same token)
+    1. claim         Persistence leases the next due job to this worker with a fresh token
+    2. read          the source's settings and its previous records (so event pages already read are reused)
+    3. crawl         the producer fetches through a RecordingFetcher over the shared-policy SafeFetcher and answers with standard records
+    4. prepare       hash and compress bodies, compute the records' digests, locate evidence in the stored pages (no transaction)
+    5. record        Persistence verifies the lease and writes the whole run atomically; the job completes
+    6. on failure    Persistence releases the job with backoff (guarded by the same token)
 
-The service never calls classification, geocoding, validation, imagery or Home Assistant; consumers read the change feed later.
-If the database cannot be written, the service pauses for a bounded, growing time and reports it; the job's lease then expires
-and the work is done again, so nothing is acknowledged that was not stored.
+The service holds no SQL and no connection: every database operation is a call on the CrawlStorage port, and each atomic operation is one call. It never calls classification,
+geocoding, validation, imagery or Home Assistant; consumers read the change feed later. If the database cannot be written, the service pauses for a bounded, growing time and
+reports it; the job's lease then expires and the work is done again, so nothing is acknowledged that was not stored.
 """
 import hashlib
 import json
-import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from ..safe import FetchError
 from .. import evidence as evidence_text
+from ..safe import FetchError
 from . import producer
-from .contracts import RunReport
+from .contracts import RetentionPolicy, RunReport, SourceSpec, StaleLease, StorageUnavailable, StoreRejected, job_key_for  # noqa: F401
 from .fetching import RecordingFetcher
-from .repositories import RetentionPolicy, SourceSpec, compress
-from .scheduler import FixedPacing
-from .store import StaleLease, StorageUnavailable
-from .urls import canonical_url, url_key
+from .persistence.ports import CandidatePlan, CrawlStorage, FailedFetch, PacingDecision, PagePlan, RunPlan
 
 
 @dataclass(frozen=True)
@@ -46,16 +41,17 @@ class DiscoveryConfig:
     retention: RetentionPolicy = field(default_factory=RetentionPolicy)
 
 
-def job_key_for(source_key):
-    return f"crawl_source:{source_key}"
+class FixedPacing:
+    """A source is asked for again after its own interval."""
+
+    def next_run(self, facts):
+        return PacingDecision(facts.now + int(facts.interval_s))
 
 
 class DiscoveryService:
-    def __init__(self, store, sources, pages, candidates, jobs, changes, retention, fetch_client, adapters, clock, config=DiscoveryConfig(),
-                 worker_id="worker-1", new_token=lambda: uuid.uuid4().hex, pacing=None, gate=None):
-        self.store, self.sources, self.pages, self.candidates = store, sources, pages, candidates
-        self.jobs, self.changes, self.retention = jobs, changes, retention
-        self.fetch_client, self.adapters, self.clock, self.config = fetch_client, dict(adapters), clock, config
+    def __init__(self, storage: CrawlStorage, fetch_client, adapters, clock, config=DiscoveryConfig(), worker_id="worker-1", new_token=lambda: uuid.uuid4().hex,
+                 pacing=None, gate=None):
+        self.storage, self.fetch_client, self.adapters, self.clock, self.config = storage, fetch_client, dict(adapters), clock, config
         self.worker_id, self.new_token = worker_id, new_token
         self.pacing, self.gate = pacing or FixedPacing(), gate   # gate.paused(): operator pause
         self.paused_until, self.pause_seconds, self.last_storage_error = 0, 0, None
@@ -65,26 +61,18 @@ class DiscoveryService:
     def register_source(self, spec: SourceSpec):
         if spec.adapter not in self.adapters:
             raise ValueError(f"no adapter '{spec.adapter}' is installed")
-        now = self._now()
-        with self.store.write() as tx:
-            source_id = self.sources.upsert(tx, spec, now)
-            self.jobs.ensure(tx, job_key_for(spec.source_key), source_id, now, max_attempts=self.config.max_attempts)
-        with self.store.read() as connection:
-            return self.sources.record(self.sources.by_key(connection, spec.source_key))
+        return self.storage.register_source(spec, self.config.max_attempts)
 
     def make_due(self, source_key):
         """Run a source's job at the next opportunity instead of at its scheduled time (an operator's 'run now')."""
-        with self.store.write() as tx:
-            return self.jobs.make_due(tx, job_key_for(source_key), self._now())
+        return self.storage.make_due(source_key)
 
     def recover(self):
         """Release leases that have expired (a worker that stopped mid-job). Returns how many."""
-        with self.store.write() as tx:
-            return self.jobs.recover_expired(tx, self._now())
+        return self.storage.recover_expired_jobs()
 
     def prune(self):
-        with self.store.write() as tx:
-            return self.retention.prune(tx, self._now(), self.config.retention)
+        return self.storage.prune(self.config.retention)
 
     # --- one job --------------------------------------------------------------------------------------------------
 
@@ -97,50 +85,36 @@ class DiscoveryService:
             return RunReport(None, "paused", error=f"storage unavailable; retrying after {self.paused_until - now} s: {self.last_storage_error}")
         token = self.new_token()
         try:
-            with self.store.write() as tx:
-                job = self.jobs.claim(tx, worker, token, now, self.config.lease_s, self.config.require_area)
-                if job:
-                    self.sources.attempted(tx, job["source_id"], now)
+            job = self.storage.claim_job(worker, token, self.config.lease_s, self.config.require_area)
         except StorageUnavailable as error:
             return self._pause(error, None)
         if not job:
             return RunReport(None, "nothing_due")
-        with self.store.read() as connection:
-            source = self.sources.by_id(connection, job["source_id"])
-            previous = self.candidates.previous(connection, job["source_id"])
-        adapter = self.adapters.get(source["adapter"])
+        state = self.storage.load_source(job)
+        adapter = self.adapters.get(state.adapter)
         fetcher = RecordingFetcher(self.fetch_client, self.config.max_requests_per_job, self.config.max_job_seconds)
-        options = {**json.loads(source["options_json"]), "source_key": source["source_key"], "name": source["name"], "url": source["base_url"]}
+        options = {**state.options, "source_key": state.source_key, "name": state.name, "url": state.base_url}
         try:
             if adapter is None:
-                raise FetchError(f"no adapter '{source['adapter']}' is installed")
-            answer = adapter.crawl(fetcher, previous, options)
+                raise FetchError(f"no adapter '{state.adapter}' is installed")
+            answer = adapter.crawl(fetcher, state.previous, options)
         except FetchError as error:
-            return self._release(job, token, fetcher, error)
+            return self._release(job, fetcher, error)
         try:
             result = producer.accept(answer)   # the one boundary: only valid standard records pass
         except TypeError as error:   # a producer that answers with something that is not a ProducerResult is a defect: the job is released with backoff and the reason recorded
-            return self._release(job, token, fetcher, FetchError(f"the producer's answer is not a ProducerResult: {error}"))
-        plan = self._prepare(source, adapter, fetcher, result)
+            return self._release(job, fetcher, FetchError(f"the producer's answer is not a ProducerResult: {error}"))
+        plan = self._prepare(state, adapter, fetcher, result)
         try:
-            with self.store.write() as tx:
-                stored_at = self._now()
-                if not self.jobs.lease_valid(tx, job["job_id"], token, stored_at):
-                    raise StaleLease(job["job_key"])
-                counts = self._store(tx, job, source, plan, stored_at)
-                self.sources.succeeded(tx, source["source_id"], stored_at)
-                changed = bool(counts["candidates_new"] or counts["candidates_changed"] or counts["changes_appended"])
-                next_run = self.pacing.after_run(tx, source["source_id"], int(source["interval_s"]), stored_at, changed)
-                if not self.jobs.complete(tx, job["job_id"], token, stored_at, next_run):
-                    raise StaleLease(job["job_key"])
+            counts = self.storage.record_run(job, plan, self.pacing)
         except StaleLease:
-            return RunReport(job["job_key"], "stale_lease", requests=fetcher.requests, error="the lease expired or was taken over; nothing was written")
+            return RunReport(job.job_key, "stale_lease", requests=fetcher.requests, error="the lease expired or was taken over; nothing was written")
         except StorageUnavailable as error:
-            return self._pause(error, job["job_key"], fetcher.requests)
-        except sqlite3.IntegrityError as error:   # a defect in what was about to be stored: nothing was written; release the job with backoff and say why
-            return self._release(job, token, fetcher, FetchError(f"storing the results failed: {error}"), "store_failed")
+            return self._pause(error, job.job_key, fetcher.requests)
+        except StoreRejected as error:   # a defect in what was about to be stored: nothing was written; release the job with backoff and say why
+            return self._release(job, fetcher, FetchError(f"storing the results failed: {error}"), "store_failed")
         self.pause_seconds = 0
-        return RunReport(job["job_key"], "completed", requests=fetcher.requests, details_reused=int(result.notes.get("detail_reused", 0)),
+        return RunReport(job.job_key, "completed", requests=fetcher.requests, details_reused=int(result.notes.get("detail_reused", 0)),
                          notes={k: v for k, v in result.notes.items() if not isinstance(v, (list, dict))}, **counts)
 
     def run_until_idle(self, max_jobs=10):
@@ -163,48 +137,40 @@ class DiscoveryService:
         self.last_storage_error = str(error)[:200]
         return RunReport(job_key, "storage_unavailable", requests=requests, error=f"{error} (pausing {self.pause_seconds} s; the job will be repeated)")
 
-    def _release(self, job, token, fetcher, error, outcome="fetch_failed"):
-        now = self._now()
+    def _release(self, job, fetcher, error, outcome="fetch_failed"):
+        failed = tuple(FailedFetch(f.url, f.outcome, f.error) for f in fetcher.fetches if f.outcome != "ok")   # its content was not stored, and an 'ok' fetch must name stored content
         try:
-            with self.store.write() as tx:
-                if self.jobs.lease_valid(tx, job["job_id"], token, now):
-                    for fetch in fetcher.fetches:  # what was tried is history worth keeping, even when the run failed
-                        if fetch.outcome == "ok":
-                            continue   # its content was not stored, and an 'ok' fetch must name stored content
-                        page_id, _ = self.pages.touch(tx, fetch.url, job["source_id"], "other", now)
-                        self.pages.record_fetch(tx, page_id, job["job_id"], now, fetch.outcome, error=fetch.error)
-                state = self.jobs.fail(tx, job["job_id"], token, now, error, self.config.backoff_base_s, self.config.backoff_cap_s, self._interval(tx, job))
+            state = self.storage.release(job, failed, str(error), self.config.backoff_base_s, self.config.backoff_cap_s)
         except StorageUnavailable as storage_error:
-            return self._pause(storage_error, job["job_key"], fetcher.requests)
-        return RunReport(job["job_key"], outcome, requests=fetcher.requests, error=f"{error} (job {state or 'not released: lease lost'})")
+            return self._pause(storage_error, job.job_key, fetcher.requests)
+        return RunReport(job.job_key, outcome, requests=fetcher.requests, error=f"{error} (job {state or 'not released: lease lost'})")
 
-    def _interval(self, connection, job):
-        return int(connection.execute("SELECT interval_s FROM sources WHERE source_id=?", (job["source_id"],)).fetchone()[0])
-
-    def _prepare(self, source, adapter, fetcher, result):
-        """Everything slow, before the write transaction: bodies hashed and compressed, payload hashes, evidence located."""
+    def _prepare(self, state, adapter, fetcher, result):
+        """Everything slow, before Persistence's atomic write: bodies hashed and compressed, digests, evidence located."""
         pages, texts, feeds = [], {}, set()
         for fetch in fetcher.fetches:
-            entry = {"fetch": fetch, "role": adapter.page_role(fetch.url, source["base_url"]), "digest": None}
+            role = adapter.page_role(fetch.url, state.base_url)
             if fetch.outcome == "ok" and fetch.body is not None:
-                digest, packed, size = compress(fetch.body)
-                entry.update(digest=digest, packed=packed, size=size, fingerprint=digest)
+                digest, packed, size = self.storage.prepare_content(fetch.body)
+                fingerprint = digest
                 if (fetch.media_type or "").startswith("text/html") or (fetch.media_type or "") == "":
                     text = evidence_text.visible_text(fetch.body.decode("utf-8", "replace"))
                     # pages carry random ids and tokens; their readable text decides whether they changed
-                    entry["fingerprint"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                    fingerprint = hashlib.sha256(text.encode("utf-8")).hexdigest()
                     texts[fetch.url] = (digest, text)
                 elif (fetch.media_type or "").startswith("application/json"):
                     # a JSON feed (an API page): its string values are the readable text, searched for every event the feed lists
                     text = evidence_text.squeeze(" . ".join(self._json_strings(fetch.body)))
-                    entry["fingerprint"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                    fingerprint = hashlib.sha256(text.encode("utf-8")).hexdigest()
                     texts[fetch.url] = (digest, text)
                     feeds.add(fetch.url)
-            pages.append(entry)
-        candidates = []
-        for record in result.candidates:
-            candidates.append({"record": record, "key": f"{source['source_key']}:{record.local_id}", "evidence": self._evidence(record, source["base_url"], texts, feeds)})
-        return {"pages": pages, "candidates": candidates, "leads": list(result.leads)}
+                pages.append(PagePlan(fetch.url, fetch.outcome, role, fetch.final_url, fetch.http_status, fetch.media_type, fetch.error, digest, packed, size, fingerprint))
+            else:
+                pages.append(PagePlan(fetch.url, fetch.outcome, role, fetch.final_url, fetch.http_status, fetch.media_type, fetch.error))
+        extractor = getattr(adapter, "extractor", state.adapter)
+        candidates = [CandidatePlan(record, f"{state.source_key}:{record.local_id}", tuple(self._evidence(record, state.base_url, texts, feeds)), extractor,
+                                    producer.candidate_digest(record)) for record in result.candidates]
+        return RunPlan(tuple(pages), tuple(candidates), tuple(result.leads))
 
     @staticmethod
     def _json_strings(body, limit=2_000_000):
@@ -255,58 +221,3 @@ class DiscoveryService:
         for line in record.verification.evidence:
             rows.append(("verification", "recorded", None, None, None, line[:300]))
         return rows
-
-    def _store(self, tx, job, source, plan, now):
-        counts = dict(pages_seen=0, pages_new=0, content_new=0, content_unchanged=0, candidates_seen=0, candidates_new=0, candidates_changed=0,
-                      candidates_unchanged=0, evidence_written=0, changes_appended=0)
-        page_ids, stored_as = {}, {}   # stored_as: the content hash fetched -> the hash actually kept (a page whose readable text is unchanged keeps its old snapshot)
-        for entry in plan["pages"]:
-            fetch = entry["fetch"]
-            page_id, new = self.pages.touch(tx, fetch.url, source["source_id"], entry["role"], now)
-            page_ids[canonical_url(fetch.url)] = page_id
-            counts["pages_seen"] += 1
-            counts["pages_new"] += int(new)
-            changed = False
-            if entry["digest"]:
-                known_fingerprint, known_digest = self.pages.fingerprint(tx, page_id)
-                final_url = fetch.final_url if fetch.final_url != fetch.url else None
-                if known_fingerprint == entry["fingerprint"] and known_digest:
-                    counts["content_unchanged"] += 1  # same readable text: keep the stored snapshot, record only the fetch
-                    stored_as[entry["digest"]] = known_digest
-                    entry["digest"] = known_digest
-                    self.pages.record_fetch(tx, page_id, job["job_id"], now, "ok", fetch.http_status, entry["size"], known_digest, fetch.media_type, final_url)
-                else:
-                    stored = self.pages.store_content(tx, entry["digest"], entry["packed"], entry["size"], fetch.media_type, now)
-                    counts["content_new" if stored else "content_unchanged"] += 1
-                    changed = self.pages.record_fetch(tx, page_id, job["job_id"], now, "ok", fetch.http_status, entry["size"], entry["digest"], fetch.media_type,
-                                                      final_url, fingerprint=entry["fingerprint"])
-            else:
-                self.pages.record_fetch(tx, page_id, job["job_id"], now, fetch.outcome, fetch.http_status, error=fetch.error)
-            if changed:
-                self.changes.append(tx, "page", url_key(fetch.url), entry["digest"], now)
-                counts["changes_appended"] += 1
-        for item in plan["candidates"]:
-            record, key = item["record"], item["key"]
-            counts["candidates_seen"] += 1
-            page_id = None
-            if record.url:
-                url = canonical_url(record.url)
-                page_id = page_ids.get(url)
-                if page_id is None:
-                    page_id, new = self.pages.touch(tx, record.url, source["source_id"], "event", now)
-                    page_ids[url] = page_id
-                    counts["pages_new"] += int(new)
-            candidate_id, outcome = self.candidates.upsert(tx, key, source["source_id"], page_id, "adapter", self._extractor(source), record, now)
-            counts[f"candidates_{outcome}"] += 1
-            if outcome != "unchanged":
-                rows = [(f, k, q, page_ids.get(canonical_url(u)) if u else None, stored_as.get(d, d), n) for f, k, q, u, d, n in item["evidence"]]
-                counts["evidence_written"] += self.candidates.replace_evidence(tx, candidate_id, rows)
-                self.changes.append(tx, "candidate", key, producer.candidate_digest(record), now)
-                counts["changes_appended"] += 1
-        if plan["leads"]:
-            self.sources.save_leads(tx, source["source_id"], plan["leads"], now)
-        return counts
-
-    def _extractor(self, source):
-        adapter = self.adapters.get(source["adapter"])
-        return getattr(adapter, "extractor", source["adapter"])

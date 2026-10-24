@@ -7,4 +7,4 @@
 Everything about this source lives in this package; it imports only the contract, the fetch client, URL identity and the neutral text and time utilities."""
 from .acquisition import AcquisitionConfig, CraftFairProducer, SourceAcquirer
 
-__all__ = ["AcquisitionConfig", "CraftFairProducer", "SourceAcquirer"]
+__all__ = ("AcquisitionConfig", "CraftFairProducer", "SourceAcquirer")

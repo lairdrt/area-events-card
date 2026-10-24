@@ -10,23 +10,19 @@ Files are named by content or by what they depict, validated on every read and w
 expire, files no record uses are removed, and the whole folder is kept under a byte budget by dropping the oldest records.
 """
 import json
-import math
 import os
 import re
 import time
 import types
 
-from ..media import distance_m
+from ..contracts import ENRICHMENT_VERSION, MAX_FILE_BYTES, MEDIA_SCHEMA
 
 FILE_NAME = re.compile(r"[a-z0-9][a-z0-9.-]{3,60}\.(svg|jpg|png|webp)")
 CONTENT_TYPES = types.MappingProxyType({"svg": "image/svg+xml", "jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"})
-MAX_FILE_BYTES = 2_000_000
 RECORD_TTL = 60 * 86400
 REFUSAL_TTL = 14 * 86400
 MAX_RECORDS = 4000
 MILES_PER_KM = 0.621371
-MEDIA_SCHEMA = "discovery.media.v1"
-ENRICHMENT_VERSION = 2   # 2: maps carry a short place label; candidates enriched under an older version are enriched again (places and pictures stay cached)
 
 
 def content_type_of(name):
@@ -255,14 +251,3 @@ class LocalMediaFiles:
         kind = content_type_of(name)
         data = self._store.read_file(name) if kind else None
         return (data, kind) if data and len(data) <= MAX_FILE_BYTES else None
-
-
-def inside_area(event_geo, area, slack_miles=5):
-    """Are coordinates the source gave within the area's radius (plus slack)? Used to call a source's own coordinates for a venue 'confirmed'."""
-    try:
-        lat, lon = float(event_geo["latitude"]), float(event_geo["longitude"])
-        return (not math.isnan(lat) and -90 <= lat <= 90 and -180 <= lon <= 180
-                and distance_m(lat, lon, area["latitude"], area["longitude"]) <= (area["radius_miles"] + slack_miles) * 1609.344)
-    except (KeyError, TypeError, ValueError):
-        return False
-

@@ -21,8 +21,7 @@ from urllib.parse import urlsplit
 
 from .. import evidence as evidence_text
 from .. import textloc
-from .control import ValidationFailed
-from .processing import LeaseLost, StaleResult
+from .contracts import LeaseLost, StaleResult, ValidationFailed
 from .text import decode_entities
 
 EXTRACTOR = "stored-candidate"

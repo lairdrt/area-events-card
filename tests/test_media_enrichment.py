@@ -13,6 +13,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 
 from discovery import classify
+from tests.db import database
 from discovery.safe import FetchError
 from discovery.safe import BlockedError
 from discovery.service import app as app_module
@@ -20,9 +21,11 @@ from discovery.service.api import ApiTokens
 from discovery.service.control import CreateAreaRequest
 from discovery.service.enrichment import EnrichmentConfig
 from discovery.service.events import EventQuery
-from discovery.service.media_store import SqliteMediaStore, content_type_of, inside_area
-from discovery.service.schema import LATEST
+from discovery.service.enrichment import inside_area
+from discovery.service.persistence.media import SqliteMediaStore, content_type_of
+from discovery.service.persistence.schema import LATEST
 
+from discovery.service.persistence.repositories import CandidateRepository, SourceRepository
 from tests.records import record
 from tests.test_austin import API, JsonClient, sample_pages
 from tests.test_discovery_control import CONTROL_TOKEN, READ_TOKEN, request
@@ -142,14 +145,14 @@ class Enrichment(Fixture):
     def test_a_verified_venue_photograph_is_shown_with_its_licence_and_a_cached_one_is_not_fetched_again(self):
         self.discover_and_extract()
         self.pages["https://www.sandiego.gov/event/e0"] = self.pages["https://www.sandiego.gov/event/e0"]   # (unchanged) the City pages stay as they are
-        with self.built.store.write() as tx:   # a stored San Diego candidate that names Viejas Arena
-            source = self.built.service.sources.by_key(tx, "sandiego_gov")
+        with database(self.built).write() as tx:   # a stored San Diego candidate that names Viejas Arena
+            source = SourceRepository().by_key(tx, "sandiego_gov")
             event = record("weezer", "Weezer", time.strftime("%Y-%m-%dT20:00:00-07:00", time.gmtime(time.time() + 3 * 86400)), venue="Viejas Arena",
                            address="5500 Canyon Crest Dr., San Diego", timezone="America/Los_Angeles", url="https://example.org/weezer")
-            self.built.service.candidates.upsert(tx, "sandiego_gov:weezer", source["source_id"], None, "adapter", "test", event, int(self.clock()))
+            CandidateRepository().upsert(tx, "sandiego_gov:weezer", source["source_id"], None, "adapter", "test", event, int(self.clock()))
         self.enrich()
         weezer = self.events(self.sd, self.built) if False else None
-        with self.built.store.read() as connection:
+        with database(self.built).read() as connection:
             row = connection.execute("SELECT media_json FROM candidate_media m JOIN candidates c USING (candidate_id) WHERE c.candidate_key='sandiego_gov:weezer'").fetchone()
         media = json.loads(row["media_json"])
         self.assertEqual((media["photo"]["license"], media["photo"]["creator"]), ("CC BY-SA 3.0", "A. Photographer"))
@@ -172,15 +175,15 @@ class Enrichment(Fixture):
         self.discover_and_extract()
         shared = "https://localist-images.azureedge.net/photos/1/huge/shared.jpg"
         self.pictures[shared] = JPEG
-        with self.built.store.write() as tx:
-            source = self.built.service.sources.by_key(tx, "ut_austin")
+        with database(self.built).write() as tx:
+            source = SourceRepository().by_key(tx, "ut_austin")
             for n in range(4):
                 event = record(f"shared{n}", f"Different event {n}", time.strftime("%Y-%m-%dT10:00:00-05:00", time.gmtime(time.time() + 86400 * (n + 2))),
                                image_url=shared, image_source="Localist API photo_url", url=f"https://calendar.utexas.edu/event/s{n}")
-                self.built.service.candidates.upsert(tx, f"ut_austin:shared{n}", source["source_id"], None, "adapter", "test", event, int(self.clock()))
+                CandidateRepository().upsert(tx, f"ut_austin:shared{n}", source["source_id"], None, "adapter", "test", event, int(self.clock()))
         self.enrich()
         self.assertNotIn(shared, self.router.picture_urls, "the shared picture was never even downloaded")
-        with self.built.store.read() as connection:
+        with database(self.built).read() as connection:
             rows = connection.execute("SELECT media_json FROM candidate_media m JOIN candidates c USING (candidate_id) WHERE c.candidate_key LIKE 'ut_austin:shared%'").fetchall()
         self.assertEqual(len(rows), 4)
         self.assertTrue(all("image" not in json.loads(r["media_json"]) for r in rows))
@@ -195,7 +198,7 @@ class Enrichment(Fixture):
         self.pictures[flaky] = FetchError("timed out")
         self.enrich()
         first_pass = {u: self.router.picture_urls.count(u) for u in urls[:4]}
-        with self.built.store.read() as connection:
+        with database(self.built).read() as connection:
             open_candidates = connection.execute("SELECT COUNT(*) FROM candidate_media WHERE complete = 0").fetchone()[0]
         self.assertGreaterEqual(open_candidates, 1, "the temporary failure leaves its candidate open")
         for url in (gone, junk, huge):
@@ -207,7 +210,7 @@ class Enrichment(Fixture):
         self.enrich()
         self.assertEqual({u: self.router.picture_urls.count(u) for u in (gone, junk, huge)}, {u: first_pass[u] for u in (gone, junk, huge)}, "refusals are remembered, not retried")
         self.assertGreater(self.router.picture_urls.count(flaky), first_pass[flaky])
-        with self.built.store.read() as connection:
+        with database(self.built).read() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM candidate_media WHERE complete = 0").fetchone()[0], 0)
 
     def test_a_picture_host_that_forbids_fetching_is_respected_and_the_source_s_own_address_is_offered_instead(self):
@@ -392,14 +395,14 @@ class Schema(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             built = app_module.build(os.path.join(folder, "discovery.db"), clock=Clock(), fetch_client=JsonClient({}))
             try:
-                with built.store.write() as tx:
-                    source = built.service.sources.upsert(tx, SPEC, 1)
-                    built.service.candidates.upsert(tx, "sandiego_gov:x", source, None, "adapter", "t", record("x", "T", "2030-01-01T00:00:00+00:00"), 1)
+                with database(built).write() as tx:
+                    source = SourceRepository().upsert(tx, SPEC, 1)
+                    CandidateRepository().upsert(tx, "sandiego_gov:x", source, None, "adapter", "t", record("x", "T", "2030-01-01T00:00:00+00:00"), 1)
                     cid = tx.execute("SELECT candidate_id FROM candidates").fetchone()[0]
                     tx.execute("INSERT INTO candidate_media (candidate_id, payload_hash, media_json, complete, updated_at) VALUES (?, ?, '{}', 1, 1)", (cid, "0" * 64))
-                with built.store.write() as tx:
+                with database(built).write() as tx:
                     tx.execute("DELETE FROM candidates")
-                with built.store.read() as connection:
+                with database(built).read() as connection:
                     self.assertEqual(connection.execute("SELECT COUNT(*) FROM candidate_media").fetchone()[0], 0)
                     self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], LATEST)
             finally:
