@@ -133,6 +133,13 @@ Check 'DPAPI credential file round-trips despite Set-Content line ending' {
     Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
   }
 }
+Check 'remote Python transport preserves source without shell quoting' {
+  $command=New-AreaEventsRemotePythonCommand -Code 'print("quoted-value")' -Variables @{probe='value'} -TimeoutSeconds 17
+  if ($command -match '["'']' -or $command -notmatch '^printf %s [A-Za-z0-9+/=]+ \| base64 -d \| timeout --signal=TERM --kill-after=5s 17s python3 -$') { throw 'remote command is not shell quote-free or bounded' }
+  $encoded=[regex]::Match($command,'^printf %s ([A-Za-z0-9+/=]+)').Groups[1].Value
+  $wrapper=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded))
+  if ($wrapper -notmatch 'base64\.b64decode\("' -or $wrapper -notmatch '<ae>') { throw 'encoded Python wrapper lost its quoting or source framing' }
+}
 Check 'missing HA administrator prerequisite fails safely' {
   $threw=$false
   try { Assert-AreaEventsHaPrerequisites -Config ([pscustomobject]@{state='RUNNING';components=@('area_events')}) -CurrentUser ([pscustomobject]@{is_admin=$false}) | Out-Null } catch { $threw=$true }

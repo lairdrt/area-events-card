@@ -9,6 +9,18 @@ function Import-AreaEventsDpapiCredential {
   return ConvertTo-SecureString $ciphertext
 }
 
+function New-AreaEventsRemotePythonCommand {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$Code, [hashtable]$Variables=@{}, [ValidateRange(5,600)][int]$TimeoutSeconds=60)
+  $json=ConvertTo-Json -InputObject $Variables -Compress -Depth 4
+  $env64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+  $code64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Code))
+  $wrapper='import base64,json,os;os.environ.update(json.loads(base64.b64decode("'+$env64+'")));exec(compile(base64.b64decode("'+$code64+'"),"<ae>","exec"))'
+  $wrapper64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($wrapper))
+  $timeoutText="${TimeoutSeconds}s"
+  return "printf %s $wrapper64 | base64 -d | timeout --signal=TERM --kill-after=5s $timeoutText python3 -"
+}
+
 function Test-AreaEventsShareCapabilities {
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$Root)
@@ -73,4 +85,4 @@ function Assert-AreaEventsFeedResponse {
   return $true
 }
 
-Export-ModuleMember -Function Import-AreaEventsDpapiCredential, Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsRequiredFrontendAssets, Assert-AreaEventsFeedResponse
+Export-ModuleMember -Function Import-AreaEventsDpapiCredential, New-AreaEventsRemotePythonCommand, Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsRequiredFrontendAssets, Assert-AreaEventsFeedResponse

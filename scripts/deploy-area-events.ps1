@@ -76,11 +76,7 @@ function Invoke-BoundedBlock([scriptblock]$Block,[object[]]$Arguments,[int]$Time
 function Get-SshBase { @('-o','BatchMode=yes','-o','ConnectTimeout=8','-o','ServerAliveInterval=3','-o','ServerAliveCountMax=3') }
 function Invoke-Cubi([string]$Command,[int]$Timeout=90) { Invoke-Bounded 'ssh.exe' (@(Get-SshBase)+@($script:Cubi,$Command)) $Timeout }
 function Invoke-CubiPython([string]$Code,[hashtable]$Variables=@{},[int]$Timeout=90) {
-  $json=ConvertTo-Json -InputObject $Variables -Compress -Depth 4
-  $env64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
-  $code64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Code))
-  $q=[string][char]39
-  $remote='timeout --signal=TERM --kill-after=5s '+[Math]::Max(5,$Timeout-10)+'s python3 -c '+$q+'import base64,json,os;os.environ.update(json.loads(base64.b64decode("'+$env64+'")));exec(compile(base64.b64decode("'+$code64+'"),"<ae>","exec"))'+$q
+  $remote=New-AreaEventsRemotePythonCommand -Code $Code -Variables $Variables -TimeoutSeconds ([Math]::Max(5,$Timeout-10))
   Invoke-Cubi $remote $Timeout
 }
 function Invoke-Build {
