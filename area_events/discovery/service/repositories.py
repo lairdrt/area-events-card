@@ -57,6 +57,18 @@ class SourceRepository:
     def all(self, connection):
         return [self.record(row) for row in connection.execute("SELECT * FROM sources ORDER BY source_key")]
 
+    def save_leads(self, tx, source_id, leads, now):
+        """Record the pages a source-acquisition adapter considered (one row per page, updated each run). Returns how many rows were written."""
+        for lead in leads:
+            tx.execute("""INSERT INTO source_leads (source_id, url_key, url, host, kind, decision, reasons_json, score, found_on, link_text, events, fetched, first_seen_at, last_seen_at)
+                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          ON CONFLICT(source_id, url_key) DO UPDATE SET kind=excluded.kind, decision=excluded.decision, reasons_json=excluded.reasons_json, score=excluded.score,
+                            found_on=COALESCE(source_leads.found_on, excluded.found_on), link_text=COALESCE(source_leads.link_text, excluded.link_text), events=excluded.events,
+                            fetched=excluded.fetched, last_seen_at=excluded.last_seen_at""",
+                       (source_id, url_key(lead["url"]), lead["url"], lead["host"], lead["kind"], lead["decision"], json.dumps(lead["reasons"], ensure_ascii=False), int(lead["score"]),
+                        lead.get("found_on"), (lead.get("link_text") or None), int(lead["events"]), 1 if lead["fetched"] else 0, now, now))
+        return len(leads)
+
     def attempted(self, tx, source_id, now):
         tx.execute("UPDATE sources SET last_attempt_at=?, updated_at=? WHERE source_id=?", (now, now, source_id))
 

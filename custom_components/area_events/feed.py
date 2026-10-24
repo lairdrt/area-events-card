@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 FEED_SCHEMA = "area-events.feed.v1"
-SOURCE_NAMES = types.MappingProxyType({"sandiego_gov": "City of San Diego"})
+SOURCE_NAMES = types.MappingProxyType({"sandiego_gov": "City of San Diego", "sd_craft_fairs": "San Diego craft fairs (organizer pages)"})
 UNVERIFIED_LOCATIONS = frozenset(("description_only", "unknown"))
 
 

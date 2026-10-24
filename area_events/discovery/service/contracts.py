@@ -189,3 +189,4 @@ class SourceAdapter(Protocol):
 class AdapterResult:
     candidates: list
     notes: dict
+    leads: list = field(default_factory=list)   # source-acquisition adapters: the pages they considered, with the decision and its reasons

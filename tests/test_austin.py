@@ -276,7 +276,7 @@ class Pipeline(unittest.TestCase):
     def test_registering_the_known_sources_twice_registers_them_once(self):
         self.built.register_known_sources()
         self.built.register_known_sources()
-        self.assertEqual((self.count("sources"), self.count("jobs")), (2, 2))
+        self.assertEqual((self.count("sources"), self.count("jobs")), (3, 3))
         self.assertEqual(self.count("area_sources"), 2)
 
     def test_the_one_database_stays_consistent(self):
@@ -305,7 +305,7 @@ class DatabaseOpens(unittest.TestCase):
             DiscoveryStore(db).open().close()
             built = app_module.build(db, clock=Clock(), fetch_client=JsonClient({}))
             try:
-                self.assertEqual(len(built.register_known_sources()), 2)
+                self.assertEqual(len(built.register_known_sources()), 3)
             finally:
                 built.close()
 

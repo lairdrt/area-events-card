@@ -400,7 +400,7 @@ class Schema(unittest.TestCase):
                     tx.execute("DELETE FROM candidates")
                 with built.store.read() as connection:
                     self.assertEqual(connection.execute("SELECT COUNT(*) FROM candidate_media").fetchone()[0], 0)
-                    self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+                    self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
             finally:
                 built.close()
 

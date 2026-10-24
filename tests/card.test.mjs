@@ -376,6 +376,18 @@ test("keywords match whole words only", () => {
   assert.deepEqual([...categoriesFor({ title: "Farmers Markets" })], ["markets"]);
 });
 
+test("craft fairs found by the acquisition pilot get Craft Fair; farmers markets and generic fairs do not", () => {
+  const ids = (title, description) => [...categoriesFor({ title, description, categories: ["Craft Fair"].slice(0, 0) })].sort();
+  assert.ok(ids("54th Annual Coronado Artisans Alley Craft Fair").includes("craft-fair"));
+  assert.ok(ids("Seven Oaks Holiday Craft Fair").includes("craft-fair"));
+  assert.ok(ids("North Park Winter Fair", "Artisan marketplace with unique vendors, seasonal eats & drinks").includes("craft-fair"), "the feed carries no categories: the description decides");
+  assert.ok(ids("Golden Makers Market").includes("craft-fair") && ids("Golden Makers Market").includes("markets"), "a makers market is both");
+  assert.ok(categoriesFor({ title: "Seven Oaks Holiday Craft Fair", categories: ["Craft Fair"] }).has("craft-fair"), "the source category the pilot sets matches by name");
+  for (const title of ["Downtown Farmers Market", "County Fair and Rodeo", "Holiday in the Village", "Halloween Skate Event"]) {
+    assert.ok(!ids(title).includes("craft-fair"), title);
+  }
+});
+
 test("the retired history category id is dropped from saved filters and card config, never converted", () => {
   const custom = [{ id: "c_abc123", name: "History", keywords: ["history"] }];
   const mixed = normalizePrefs({ v: 1, selected: ["history", "markets", "craft-fair", "c_abc123", "music"], custom });

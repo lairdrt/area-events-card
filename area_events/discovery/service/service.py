@@ -204,7 +204,7 @@ class DiscoveryService:
             except (KeyError, TypeError, ValueError):
                 starts_at = None
             candidates.append({"event": event, "digest": digest, "starts_at": starts_at, "evidence": self._evidence(event, source["base_url"], texts, feeds)})
-        return {"pages": pages, "candidates": candidates}
+        return {"pages": pages, "candidates": candidates, "leads": list(getattr(result, "leads", None) or [])}
 
     @staticmethod
     def _json_strings(body, limit=2_000_000):
@@ -227,7 +227,8 @@ class DiscoveryService:
     @staticmethod
     def _evidence(event, base_url, texts, feeds=()):
         """Evidence rows (field, kind, quote, url, content_hash, note): a quote only where the value is found verbatim in a page read."""
-        listing = [(url, d, t) for url, (d, t) in texts.items() if url.split("?")[0].rstrip("/") == base_url.split("?")[0].rstrip("/") or url in feeds]
+        found_on = set(event.get("found_on") or ())   # listings an acquisition adapter read this event on
+        listing = [(url, d, t) for url, (d, t) in texts.items() if url.split("?")[0].rstrip("/") == base_url.split("?")[0].rstrip("/") or url in feeds or url in found_on]
         own = [(url, d, t) for url, (d, t) in texts.items() if url == event.get("url")]
 
         def find(value, places):
@@ -303,6 +304,8 @@ class DiscoveryService:
                 counts["evidence_written"] += self.candidates.replace_evidence(tx, candidate_id, rows)
                 self.changes.append(tx, "candidate", event["id"], item["digest"], now)
                 counts["changes_appended"] += 1
+        if plan["leads"]:
+            self.sources.save_leads(tx, source["source_id"], plan["leads"], now)
         return counts
 
     def _extractor(self, source):

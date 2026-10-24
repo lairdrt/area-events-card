@@ -325,6 +325,27 @@ CREATE INDEX candidate_media_open ON candidate_media(complete, updated_at);
     (5, "media enrichment version per candidate (maps gain a short place label)", """
 ALTER TABLE candidate_media ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
 """),
+    (6, "source leads: pages a source-acquisition adapter considered, where it found them, and why they were accepted or rejected", """
+CREATE TABLE source_leads (
+  lead_id       INTEGER PRIMARY KEY,
+  source_id     INTEGER NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+  url_key       TEXT NOT NULL,
+  url           TEXT NOT NULL,
+  host          TEXT NOT NULL,
+  kind          TEXT NOT NULL,
+  decision      TEXT NOT NULL CHECK (decision IN ('accepted', 'rejected', 'pending')),
+  reasons_json  TEXT NOT NULL DEFAULT '[]',
+  score         INTEGER NOT NULL DEFAULT 0,
+  found_on      TEXT,
+  link_text     TEXT,
+  events        INTEGER NOT NULL DEFAULT 0,
+  fetched       INTEGER NOT NULL DEFAULT 0 CHECK (fetched IN (0, 1)),
+  first_seen_at INTEGER NOT NULL,
+  last_seen_at  INTEGER NOT NULL,
+  UNIQUE (source_id, url_key)
+);
+CREATE INDEX source_leads_by_decision ON source_leads (source_id, decision);
+"""),
 )
 
 LATEST = MIGRATIONS[-1][0]

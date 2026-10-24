@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from ..safe import HostPolicy, SafeFetcher
 from ..sources import sandiego_gov
-from .adapters import CityOfSanDiegoAdapter, LocalistAdapter
+from .adapters import CityOfSanDiegoAdapter, CraftFairAcquisitionAdapter, LocalistAdapter
 from .api import ApiTokens, DiscoveryApi, DiscoveryApiServer
 from .areas import AreaRepository, SettingsRepository
 from .control import LocalDiscoveryControl
@@ -41,6 +41,11 @@ KNOWN_SOURCES = types.MappingProxyType({  # read-only
     # Austin: the University of Texas at Austin's public events calendar (Localist, key-less JSON API; exact times with UTC offsets, venues, many with addresses)
     "ut-austin": SourceSpec("ut_austin", "localist", "UT Austin Events", "https://calendar.utexas.edu",
                             options=(("days", 14), ("max_pages", 5), ("timezone", "America/Chicago")), interval_s=3600),
+    # San Diego craft fairs (source acquisition pilot): two public vendor listings are the seeds; the organizers' pages are found by following their links
+    "sd-craft-fairs": SourceSpec("sd_craft_fairs", "craft_fairs", "San Diego craft fairs", "https://www.sweetandquirky.com/pages/upcoming-events",
+                                 options=(("seeds", ("https://www.sweetandquirky.com/pages/upcoming-events", "https://my2dragonflies.com/pages/local-markets",
+                                                     "https://www.holyfamilysd.org/ia-events/2026-holiday-craft-fair/")),
+                                          ("max_organizer_pages", 10), ("horizon_days", 150), ("seed_region", "San Diego County")), interval_s=21600),
 })
 
 
@@ -87,7 +92,7 @@ def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None,
     pacing = AreaPacing(areas, settings, scheduler_config)
     scheduler = DiscoveryScheduler(store, areas, settings, jobs, changes, clock, pacing)
     config = config or DiscoveryConfig(require_area=service_gate)
-    service = DiscoveryService(store, sources, pages, candidates, jobs, changes, Retention(changes, event_repository), client, {"sandiego_gov": CityOfSanDiegoAdapter(), "localist": LocalistAdapter()}, clock,
+    service = DiscoveryService(store, sources, pages, candidates, jobs, changes, Retention(changes, event_repository), client, {"sandiego_gov": CityOfSanDiegoAdapter(), "localist": LocalistAdapter(), "craft_fairs": CraftFairAcquisitionAdapter()}, clock,
                                config, worker_id, pacing=pacing if service_gate else None, gate=scheduler if service_gate else None)
     reader = LocalDiscoveryReader(store, sources, pages, candidates, jobs, changes, clock)
     host = DiscoveryHost(service, scheduler, clock, host_config)

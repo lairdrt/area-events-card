@@ -288,7 +288,7 @@ const DEFAULT_CATEGORIES = [
   ["community", "Community", "community, neighborhood, volunteer, cleanup, charity, fundraiser, civic, town hall, nonprofit"],
   ["outdoors", "Outdoors", "outdoor, outdoors, hike, hiking, trail, park, beach, garden, nature, camping, kayak, wildlife, birding"],
   ["education", "Education", "education, class, classes, workshop, lecture, seminar, course, lesson, learn, learning, library, training, tutorial"],
-  ["craft-fair", "Craft Fair", "craft fair, craft show, craft sale, craft bazaar, craft market, crafts fair, crafts show, handmade market, handmade fair, handmade show, artisan fair, artisan show, artisan craft, artisans fair, makers market, makers fair, maker faire, holiday craft"],
+  ["craft-fair", "Craft Fair", "craft fair, craft show, craft sale, craft bazaar, craft market, crafts fair, crafts show, handmade market, handmade fair, handmade show, artisan fair, artisan show, artisan craft, artisan marketplace, artisans fair, makers market, makers fair, maker faire, holiday craft"],
   ["theater", "Theater", "theater, theatre, broadway, drama, ballet, dance, cabaret, shakespeare, performing arts"],
   ["comedy", "Comedy", "comedy, comedian, stand up, standup, improv, open mic, humor"],
   ["markets", "Markets", "market, markets, farmers, bazaar, swap meet, flea, vendor, artisan, artisans, mercato"],

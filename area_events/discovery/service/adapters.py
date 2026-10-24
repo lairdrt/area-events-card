@@ -3,7 +3,9 @@
 An adapter reads a source only through the fetcher it is given (a RecordingFetcher over the shared-policy SafeFetcher) and returns
 candidates: the event dicts the existing adapter already produces. It never stores anything itself.
 """
+from .. import core
 from ..sources import localist, sandiego_gov
+from .acquisition import AcquisitionConfig, SourceAcquirer
 from .contracts import AdapterResult
 
 
@@ -46,3 +48,28 @@ class LocalistAdapter:
     @staticmethod
     def page_role(url, base_url):
         return "feed"
+
+
+class CraftFairAcquisitionAdapter:
+    """Source acquisition pilot: craft fairs found by following public listings to the organizers' own pages (`acquisition.SourceAcquirer`).
+    The source's `seeds` option lists the listing pages it starts from; everything else (organizer and event pages) is found by following their links.
+    The pages it considered are returned as leads and stored with the reasons they were accepted or rejected."""
+
+    adapter = "craft_fairs"
+    extractor = "sources/craftfairs@v1"
+    method = "adapter"
+
+    def __init__(self, today=lambda: core.now_pacific().date()):
+        self._today = today
+
+    def crawl(self, fetcher, previous, options):
+        seeds = tuple(options.get("seeds") or (options["url"],))
+        config = AcquisitionConfig(max_organizer_pages=int(options.get("max_organizer_pages", 10)), horizon_days=int(options.get("horizon_days", 150)),
+                                   seed_region=str(options.get("seed_region", "")))
+        acquirer = SourceAcquirer(fetcher, options["source_key"], options.get("name", "Craft fairs"), self._today(), config)
+        events, leads, notes = acquirer.run(seeds)
+        return AdapterResult(events, notes, leads)
+
+    @staticmethod
+    def page_role(url, base_url):
+        return "listing" if url.split("?")[0].rstrip("/") == base_url.split("?")[0].rstrip("/") else "detail"
