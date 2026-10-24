@@ -37,7 +37,7 @@ import time
 from urllib.parse import urlencode
 
 from . import maps, textloc
-from .core import FetchError
+from .safe import FetchError
 
 log = logging.getLogger("area-events.media")
 

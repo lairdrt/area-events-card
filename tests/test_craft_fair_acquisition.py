@@ -9,7 +9,7 @@ import sqlite3
 import unittest
 from datetime import date
 
-from discovery.core import FetchError
+from discovery.safe import FetchError
 from discovery.service.control import CreateAreaRequest
 from discovery.service.fetching import RecordingFetcher
 from discovery.service.producers.craft_fairs import (
@@ -19,7 +19,7 @@ from discovery.service.producers.craft_fairs import (
 )
 from discovery.service.repositories import SourceSpec
 from discovery.service.schema import LATEST
-from discovery.sources import craftfairs
+from discovery.service.producers.craft_fairs import reading as craftfairs
 
 from tests.test_discovery_service import Clock, FakeClient
 from tests.test_extraction import Fixture

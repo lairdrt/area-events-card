@@ -2,17 +2,36 @@
 URL and its `days`, `max_pages` and `timezone` as options. The timezone is the calendar's own: the API gives each time with its UTC offset, and the zone name is only recorded,
 never used to guess a time. Coordinates are only the API's own `geo` block."""
 import json
+import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from ...core import FetchError
-from ...sources import localist
+from ...safe import FetchError
 from ..producer import EventCandidate, ProducerResult, Provenance, stated
+
+PAGE_SIZE = 100
+
+
+def host_of(site):
+    return urlparse(site).hostname or site
+
+
+def clean(value):
+    return re.sub(r"\s+", " ", value).strip() if isinstance(value, str) and value.strip() else None
+
+
+def geo_of(raw):
+    """The venue coordinates in the API's own `geo` block, else None: coordinates are never guessed."""
+    try:
+        latitude, longitude = float(raw["latitude"]), float(raw["longitude"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {"latitude": latitude, "longitude": longitude, "source": "Localist API geo"}
 
 
 class LocalistProducer:
     adapter = "localist"
-    extractor = "sources/localist@v1"
+    extractor = "producers/localist@v1"
     method = "adapter"
 
     def crawl(self, fetcher, previous, options):
@@ -22,7 +41,7 @@ class LocalistProducer:
         notes = {"site": site, "api_events": 0, "instances": 0, "all_day_skipped": 0, "not_live_skipped": 0, "ended_skipped": 0, "pages": 0}
         candidates, seen = [], set()
         for page in range(1, max_pages + 1):
-            url = f"{site}/api/2/events?days={days}&pp={localist.PAGE_SIZE}&page={page}"
+            url = f"{site}/api/2/events?days={days}&pp={PAGE_SIZE}&page={page}"
             try:
                 payload = json.loads(fetcher.get(url))
             except ValueError as error:
@@ -63,11 +82,11 @@ class LocalistProducer:
         start = datetime.fromisoformat(instance["start"])
         end = datetime.fromisoformat(instance["end"]) if instance.get("end") else None
         categories = tuple(c["name"] for c in (event.get("filters") or {}).get("event_types") or [] if c.get("name"))
-        geo = localist._geo(event.get("geo"))
+        geo = geo_of(event.get("geo"))
         url = event.get("localist_url") or event.get("url")
-        venue = localist._clean(event.get("location_name") or event.get("location"))
-        address, description = localist._clean(event.get("address")), localist._clean(event.get("description_text"))
-        host = localist._host(site)
+        venue = clean(event.get("location_name") or event.get("location"))
+        address, description = clean(event.get("address")), clean(event.get("description_text"))
+        host = host_of(site)
         evidence = [f"start time from the {host} Localist API event instance ({instance['start']})"]
         page_host = urlparse(url or "").hostname
         if page_host and page_host == host:
@@ -76,10 +95,10 @@ class LocalistProducer:
             evidence.append(f"venue coordinates from the API ({geo['latitude']}, {geo['longitude']})")
         in_range = event.get("first_date") and event.get("last_date") and event["first_date"] <= start.date().isoformat() <= event["last_date"]
         image = event.get("photo_url") or None
-        return EventCandidate(local_id=f"{event['id']}:{instance['id']}", title=localist._clean(event.get("title")), starts_at=start.isoformat(),
+        return EventCandidate(local_id=f"{event['id']}:{instance['id']}", title=clean(event.get("title")), starts_at=start.isoformat(),
                               ends_at=end.isoformat() if end else None, timezone=options.get("timezone"), venue=venue, address=address, description=description, url=url,
                               image_url=image, image_source="Localist API photo_url" if image else None, categories=categories,
-                              price="Free" if event.get("free") else localist._clean(event.get("ticket_cost")), geo=geo,
+                              price="Free" if event.get("free") else clean(event.get("ticket_cost")), geo=geo,
                               provenance=Provenance(options.get("name", "Localist"), f"{site}/", retrieved_at),
                               verification=stated(evidence, bool(in_range and page_host == host), end.isoformat() if end else None, venue, address, description, image))
 

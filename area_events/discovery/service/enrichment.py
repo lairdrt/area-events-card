@@ -19,7 +19,7 @@ import threading
 from dataclasses import dataclass
 
 from .. import classifiers, images
-from ..core import FetchError
+from ..safe import FetchError
 from ..safe import BlockedError
 from .media_store import ENRICHMENT_VERSION, MAX_FILE_BYTES, inside_area
 from .text import place_label

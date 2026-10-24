@@ -14,10 +14,11 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
-from .. import textloc
-from ..core import clean_text, clock_range
-from . import webparse, webtext
-from .webtime import parse_when
+from .... import textloc
+from ....textutil import clean_text
+from ....timeutil import clock_range
+from . import pages
+from .pages import DATE, LABEL, NOT_AN_EVENT, TIME, TIME_RANGE
 
 SKIP_TAGS = frozenset({"script", "style", "noscript", "svg", "template", "form", "button", "select"})
 BLOCK_TAGS = frozenset({"p", "div", "li", "ul", "ol", "tr", "td", "section", "article", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "dd", "dt", "header", "footer", "nav", "aside"})
@@ -132,21 +133,21 @@ def card_lines(node):
 
 
 def _absolute(base, href):
-    url = webparse.absolute(base, href)
+    url = pages.absolute(base, href)
     return url if url and urlsplit(url).scheme in ("http", "https") else None
 
 
 def _day(line, today):
-    match = webtext.DATE.search(line)
-    if not match or not webtext._month_number(match.group("mon")):
+    match = DATE.search(line)
+    if not match or not pages.month_number(match.group("mon")):
         return None, None
-    return webtext._day_of(webtext._month_number(match.group("mon")), match.group("day"), match.group("year"), today), match
+    return pages.day_of(pages.month_number(match.group("mon")), match.group("day"), match.group("year"), today), match
 
 
 def _clock(lines):
     for line in lines[:4]:
-        found = webtext.TIME_RANGE.search(line)
-        if found and webtext.TIME.search(line):
+        found = TIME_RANGE.search(line)
+        if found and TIME.search(line):
             start, end = clock_range(found.group(1).replace(".", "").replace("–", "-").replace("—", "-"))
             if start:
                 return start, end
@@ -182,7 +183,7 @@ def _place(lines, date_index):
             venue = before
         elif index:
             prior = LABELED.sub("", after[index - 1])
-            if len(prior) <= 80 and not webtext.TIME.search(prior) and not webtext.DATE.search(prior) and not re.search(r"[.!?]$", prior) and not STREETISH.match(prior):
+            if len(prior) <= 80 and not TIME.search(prior) and not DATE.search(prior) and not re.search(r"[.!?]$", prior) and not STREETISH.match(prior):
                 venue = prior
         return venue, address
     return None, None
@@ -191,12 +192,12 @@ def _place(lines, date_index):
 def listing_entries(html, base_url, today):
     """The dated cards of a listing page. Each is a dict: title, day (date), start/end ((h, m) or None), venue, address, description, links [(url, text)],
     evidence_text. A card is the innermost list item or article that holds one calendar date; a card with no clock time or no title is not an entry."""
-    page = webparse.scan(html, base_url)
+    page = pages.read_page(html, base_url)
     cards = []
     for n in page.root.walk():
         if n.tag in ("li", "article"):
             text = n.text()
-            if len(text) < 4000 and webtext.DATE.search(text):
+            if len(text) < 4000 and DATE.search(text):
                 cards.append(n)
     inner = [n for n in cards if not any(c is not n and c in cards and _inside(c, n) for c in cards)]
     entries, seen = [], set()
@@ -209,9 +210,9 @@ def listing_entries(html, base_url, today):
         if day is None or day < today:
             continue
         start, end = _clock(lines[index:index + 4])
-        heading = next((card_lines(n)[0] for n in card.walk() if n.tag in HEADINGS and card_lines(n) and not webtext.DATE.search(card_lines(n)[0])), None)
+        heading = next((card_lines(n)[0] for n in card.walk() if n.tag in HEADINGS and card_lines(n) and not DATE.search(card_lines(n)[0])), None)
         title = heading or (lines[index - 1] if index else None)
-        if not start or not title or not webtext.valid_title(title):
+        if not start or not title or not pages.valid_title(title):
             continue
         venue, address = _place(lines, index)
         used = {title, lines[index]}
@@ -261,27 +262,27 @@ def _clean_title(text, site=None):
     return re.sub(r"^20\d{2}\s+", "", title).strip()
 
 
-def page_event(html, url, today, zone_name="America/Los_Angeles"):
+def page_event(html, url, today):
     """The event an organizer page states about itself, or None. Structured (schema.org) data first, else the first upcoming date with a clock time in the
     page's main text. A dict: title, start (aware datetime), end, venue, address, description, image, organizer, method, evidence_text."""
-    page = webparse.scan(html, url)
+    page = pages.read_page(html, url)
     today = today.date() if isinstance(today, datetime) else today
     now = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
     image = page.meta.get("og:image") or None
     image = _absolute(url, image) if image else None
-    for candidate in (page.jsonld or []) + (page.micro or []):
-        start, reason = parse_when(candidate.get("start"), candidate.get("tz"), zone_name)
-        if reason or start is None or start < now:
+    for candidate in page.events:
+        start = pages.when(candidate.get("start"))
+        if start is None or start < now:
             continue
-        end, _ = parse_when(candidate.get("end"), candidate.get("tz"), zone_name) if candidate.get("end") else (None, None)
+        end = pages.when(candidate.get("end")) if candidate.get("end") else None
         return {"title": _clean_title(candidate.get("title")), "start": start, "end": end if end and end >= start else None, "venue": clean_text(candidate.get("venue") or "") or None,
                 "address": _tidy_address(candidate.get("address")), "description": (clean_text(candidate.get("description") or "")[:400] or None),
-                "image": candidate.get("image") or image, "organizer": candidate.get("organizer"), "method": candidate.get("kind", "jsonld"),
+                "image": candidate.get("image") or image, "organizer": candidate.get("organizer"), "method": "jsonld",
                 "evidence_text": f"{candidate.get('title')} {candidate.get('start')}"}
     body = next((n for n in page.root.walk() if n.tag == "body"), page.root)
     lines = _main_lines(body)
     for index, line in enumerate(lines):
-        if webtext.NOT_AN_EVENT.search(line) or len(line) > 300:
+        if NOT_AN_EVENT.search(line) or len(line) > 300:
             continue
         day, match = _day(line, today)
         if day is None or day < today:
@@ -293,7 +294,7 @@ def page_event(html, url, today, zone_name="America/Los_Angeles"):
         if not title:
             continue
         venue, address = _place(lines, index)
-        label = webtext.LABEL.search(" ".join(lines[index:index + 3]))
+        label = LABEL.search(" ".join(lines[index:index + 3]))
         if label and not venue:
             text = label.group(1)
             found = textloc.extract_addresses(text)
@@ -310,7 +311,7 @@ def page_event(html, url, today, zone_name="America/Los_Angeles"):
 
 def page_summary(html, url):
     """What a page is about, for deciding whether to keep it: its name, whether its headings or title name a craft fair, and the county place it states."""
-    page = webparse.scan(html, url)
+    page = pages.read_page(html, url)
     body = next((n for n in page.root.walk() if n.tag == "body"), page.root)
     lines = _main_lines(body)
     names = [page.meta.get("og:title"), page.title, page.meta.get("og:description"), page.meta.get("description")] + [n.text() for n in page.root.walk() if n.tag in HEADINGS][:15]

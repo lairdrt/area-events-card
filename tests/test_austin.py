@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from datetime import date, datetime, timedelta, timezone
 
-from discovery.core import FetchError
+from discovery.safe import FetchError
 from discovery.safe import Response
 from discovery.service import app as app_module
 from discovery.service.control import CreateAreaRequest

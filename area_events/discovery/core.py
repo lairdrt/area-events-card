@@ -1,25 +1,19 @@
-"""Shared plumbing: polite fetching, Pacific time handling, storage."""
-import html
-import html.entities
+"""The earlier engine's plumbing: its polite fetcher, event dictionaries and feed storage. Nothing in the Discovery Service imports this module; the generic utilities it used
+to hold live in timeutil, textutil and safe, and are re-exported here for the earlier engine."""
 import json
 import os
-import re
 import time
 import urllib.error
 import urllib.request
 import urllib.robotparser
-from datetime import datetime, timedelta, timezone
-from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
-USER_AGENT = "area-events-card-poc/0.1 (personal Home Assistant project; +https://github.com/lairdrt/area-events-card)"
+from .safe import USER_AGENT, FetchError  # noqa: F401  (re-exported)
+from .textutil import clean_text, html_to_text, repair_mojibake  # noqa: F401  (re-exported)
+from .timeutil import (TIMEZONE_NAME, clock_range, localize_pacific, now_pacific, pacific_offset, parse_clock, parse_compact_utc, to_pacific)  # noqa: F401  (re-exported)
+
 REQUEST_INTERVAL = 2.0  # seconds between requests to the same host
 TIMEOUT = 20
-TIMEZONE_NAME = "America/Los_Angeles"
-
-
-class FetchError(Exception):
-    pass
 
 
 class Fetcher:
@@ -64,104 +58,7 @@ class Fetcher:
             self._last[host] = time.monotonic()
 
 
-# --- America/Los_Angeles without tzdata (not installed on Windows) ----------
-
-def _nth_sunday(year, month, n):
-    day = datetime(year, month, 1)
-    first_sunday = day + timedelta(days=(6 - day.weekday()) % 7)
-    return first_sunday + timedelta(weeks=n - 1)
-
-
-def pacific_offset(utc):
-    """UTC offset of America/Los_Angeles at a UTC instant (US rules since 2007)."""
-    naive = utc.replace(tzinfo=None)
-    dst_start = _nth_sunday(naive.year, 3, 2) + timedelta(hours=10)  # 02:00 PST
-    dst_end = _nth_sunday(naive.year, 11, 1) + timedelta(hours=9)  # 02:00 PDT
-    return timedelta(hours=-7 if dst_start <= naive < dst_end else -8)
-
-
-def to_pacific(utc):
-    return utc.astimezone(timezone(pacific_offset(utc)))
-
-
-def parse_compact_utc(value):
-    """'20261020T233000Z' -> aware UTC datetime."""
-    return datetime.strptime(value, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-
-
-# --- HTML helpers -----------------------------------------------------------
-
-class _TextExtractor(HTMLParser):
-    BLOCK = {"p", "br", "li", "div", "h1", "h2", "h3", "h4", "ul", "ol"}
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.parts = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag in self.BLOCK:
-            self.parts.append("\n")
-
-    def handle_data(self, data):
-        self.parts.append(data)
-
-
-def repair_mojibake(text):
-    """Undo UTF-8 text that the source double-encoded (e.g. 'â€™' -> apostrophe)."""
-    if "â€" not in text and "Ã" not in text:
-        return text
-    try:
-        return text.encode("cp1252").decode("utf-8")
-    except (UnicodeEncodeError, UnicodeDecodeError):
-        return text
-
-
-def html_to_text(fragment):
-    extractor = _TextExtractor()
-    extractor.feed(fragment)
-    lines = (re.sub(r"[ \t\xa0]+", " ", line).strip() for line in "".join(extractor.parts).splitlines())
-    return repair_mojibake("\n".join(line for line in lines if line))
-
-
-# --- text cleanup -----------------------------------------------------------
-
-_ENTITY = r"&(?:#\d{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});"
-_ANY_ENTITY = re.compile(_ENTITY)
-_DOUBLE_ENCODED = re.compile(r"&amp;" + _ENTITY[1:])  # "&amp;amp;", "&amp;#39;": an entity that was escaped a second time
-_CONTROLS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 TEXT_FIELDS = ("title", "venue", "address", "description", "organizer", "price", "neighborhood")
-
-
-def _decode_entity(match):
-    """One entity written with its semicolon, decoded strictly: unknown names and invalid numbers stay as written, and the
-    legacy "&not"-style prefixes html.unescape would also decode inside longer words are never touched."""
-    token = match.group(0)
-    body = token[1:-1]
-    if body[0] == "#":
-        try:
-            code = int(body[2:], 16) if body[1] in "xX" else int(body[1:])
-        except ValueError:
-            return token
-        return chr(code) if 0 < code <= 0x10FFFF and not 0xD800 <= code <= 0xDFFF else token
-    return html.entities.html5.get(body + ";", token)
-
-
-def clean_text(value):
-    """Visible text from a source that sometimes leaves HTML entities in it ("Hotel &amp; Suites" -> "Hotel & Suites").
-
-    Applied once, where events enter the engine, to the fields people read. Entities are decoded only when written in full
-    (with their semicolon). A second pass happens only when the original holds a *double-encoded* entity ("&amp;amp;"), so
-    valid text is not damaged by repeated decoding, and the result is stable when run again. Markup is not interpreted or
-    removed (the card shows text as text), and control characters that no listing means are dropped. Web addresses never
-    pass through here."""
-    if not isinstance(value, str):
-        return value
-    text = value
-    if "&" in text:
-        passes = 2 if _DOUBLE_ENCODED.search(text) else 1
-        for _ in range(passes):
-            text = _ANY_ENTITY.sub(_decode_entity, text)
-    return _CONTROLS.sub("", text)
 
 
 def normalize_event_text(event):
@@ -191,41 +88,6 @@ def save_events(document, path):
     finally:
         if os.path.exists(temporary):
             os.remove(temporary)
-
-
-# --- shared helpers for adapters ---------------------------------------------
-
-def localize_pacific(naive):
-    """Naive wall-clock time in America/Los_Angeles -> aware datetime."""
-    for hours in (-7, -8):
-        candidate = naive.replace(tzinfo=timezone(timedelta(hours=hours)))
-        if pacific_offset(candidate.astimezone(timezone.utc)) == timedelta(hours=hours):
-            return candidate
-    return naive.replace(tzinfo=timezone(timedelta(hours=-8)))  # nonexistent hour
-
-
-def parse_clock(text, default_meridiem=None):
-    """'5pm', '4:30 PM', '6:30' (with default_meridiem) -> (hour, minute) or None."""
-    match = re.fullmatch(r"\s*(\d{1,2})(?::(\d{2}))?\s*([ap])?\.?m?\.?\s*", text.lower().replace("noon", "12pm"))
-    if not match:
-        return None
-    meridiem = match.group(3) or default_meridiem
-    if not meridiem:
-        return None
-    return int(match.group(1)) % 12 + (12 if meridiem == "p" else 0), int(match.group(2) or 0)
-
-
-def clock_range(text):
-    """'2 - 7pm', '9:30am - 1:30pm', '8 pm', '7:30 pm - 11:30 pm' -> (start, end|None) as (h, m)."""
-    parts = [p.strip() for p in re.split(r"\s*(?:-|–|—|&ndash;|to)\s*", text.strip()) if p.strip()]
-    if not parts or len(parts) > 2:
-        return None, None
-    end_meridiem = re.search(r"([ap])\.?m", parts[-1].lower())
-    end = parse_clock(parts[-1])
-    start = parse_clock(parts[0], end_meridiem.group(1) if end_meridiem else None)
-    if start and len(parts) == 2 and end and not re.search(r"[ap]\.?m", parts[0].lower()) and start > end:
-        start = (start[0] - 12, start[1])  # '11 - 1pm' means 11am
-    return start, (end if len(parts) == 2 else None)
 
 
 def make_event(source_key, source_name, listing_url, url, title, start, **fields):
@@ -258,7 +120,3 @@ def finish_event(event, retrieved_at, evidence, corroborated):
         "note": "Single-source; verified stays false until independently confirmed.",
     }
     return event
-
-
-def now_pacific():
-    return to_pacific(datetime.now(tz=timezone.utc))

@@ -15,11 +15,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
-from ...core import FetchError, localize_pacific, now_pacific, to_pacific
-from ...sources import craftfairs
-from ..fetching import BudgetExceeded
-from ..producer import EventCandidate, ProducerResult, Provenance, SourceLead, stated
-from ..urls import canonical_url
+from ....safe import FetchError
+from ....timeutil import localize_pacific, now_pacific, to_pacific
+from ...fetching import BudgetExceeded
+from ...producer import EventCandidate, ProducerResult, Provenance, SourceLead, stated
+from ...urls import canonical_url
+from . import reading as craftfairs
 
 SOCIAL_HOSTS = ("facebook.com", "fb.com", "fb.me", "instagram.com", "tiktok.com", "twitter.com", "x.com", "youtube.com", "youtu.be", "pinterest.com", "linkedin.com",
                 "threads.net", "nextdoor.com", "meetup.com", "linktr.ee")
@@ -195,7 +196,7 @@ class SourceAcquirer:
     def _organizer_page(self, url, html, lead, found_on):
         """Assess one page reached by a link (or a seed that is itself an event page): craft fair? San Diego County? a dated event of its own?"""
         summary = craftfairs.page_summary(html, url)
-        event = craftfairs.page_event(html, url, self.today, self.config.zone)
+        event = craftfairs.page_event(html, url, self.today)
         region = summary["region"] or (f"declared by the seed list ({self.config.seed_region})" if found_on is None and self.config.seed_region else None)
         reasons = [f"page names a craft fair: {'yes' if summary['craft'] else 'no'}",
                    f"San Diego County: {region or 'not stated on the page'}",

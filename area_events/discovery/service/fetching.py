@@ -8,8 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from ..core import FetchError
-from ..safe import BlockedError
+from ..safe import BlockedError, FetchError
 
 
 @dataclass
@@ -65,5 +64,5 @@ class RecordingFetcher:
         return response
 
     def get(self, url, check_robots=True):
-        """The interface registry adapters use (core.Fetcher.get): the page's text."""
+        """The interface registry adapters use (the earlier engine's Fetcher.get): the page's text."""
         return self.fetch(url, check_robots).text

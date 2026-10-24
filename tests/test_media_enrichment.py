@@ -13,7 +13,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 
 from discovery import classify
-from discovery.core import FetchError
+from discovery.safe import FetchError
 from discovery.safe import BlockedError
 from discovery.service import app as app_module
 from discovery.service.api import ApiTokens

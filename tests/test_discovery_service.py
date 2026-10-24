@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from discovery import safe
-from discovery.core import FetchError
+from discovery.safe import FetchError
 from discovery.safe import BlockedError, HostPolicy, Response, SafeFetcher
 from discovery.service import app as app_module
 from discovery.service import store as store_module

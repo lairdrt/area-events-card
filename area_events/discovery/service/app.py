@@ -17,7 +17,7 @@ import types
 from dataclasses import dataclass
 
 from ..safe import HostPolicy, SafeFetcher
-from ..sources import sandiego_gov
+from .producers import city_of_san_diego
 from .producers.city_of_san_diego import CityOfSanDiegoProducer
 from .producers.craft_fairs import CraftFairProducer
 from .producers.localist import LocalistProducer
@@ -38,7 +38,7 @@ from .service import DiscoveryConfig, DiscoveryService
 from .store import DiscoveryStore
 
 KNOWN_SOURCES = types.MappingProxyType({  # read-only
-    "san-diego-city": SourceSpec("sandiego_gov", "sandiego_gov", sandiego_gov.NAME, sandiego_gov.LISTING_URL,
+    "san-diego-city": SourceSpec("sandiego_gov", "sandiego_gov", city_of_san_diego.NAME, city_of_san_diego.LISTING_URL,
                                  options=(("pages", 2), ("max_details_per_run", 10)), interval_s=3600),
     # Austin: the University of Texas at Austin's public events calendar (Localist, key-less JSON API; exact times with UTC offsets, venues, many with addresses)
     "ut-austin": SourceSpec("ut_austin", "localist", "UT Austin Events", "https://calendar.utexas.edu",

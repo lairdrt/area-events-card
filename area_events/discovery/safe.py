@@ -23,7 +23,11 @@ import urllib.robotparser
 import zlib
 from urllib.parse import urljoin, urlsplit
 
-from .core import USER_AGENT, FetchError
+USER_AGENT = "area-events-card-poc/0.1 (personal Home Assistant project; +https://github.com/lairdrt/area-events-card)"
+
+
+class FetchError(Exception):
+    """A page could not be fetched or was refused."""
 
 MAX_BYTES = 1_500_000
 MAX_REDIRECTS = 4

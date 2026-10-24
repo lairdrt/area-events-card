@@ -14,31 +14,17 @@ without them are kept and classified `unknown` by the shared location filter.
 All-day entries (exhibits, deadlines) have no start time and are skipped.
 """
 import json
-import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from ..core import FetchError, finish_event, make_event
+from ..service.producers.localist import PAGE_SIZE, clean, geo_of, host_of
 
 ACCEPTS_LOCATION = True
 MULTIPLE = True  # any number of Localist sites can be registered
-PAGE_SIZE = 100
 
 
-def _host(site):
-    return urlparse(site).hostname or site
-
-
-def _clean(value):
-    return re.sub(r"\s+", " ", value).strip() if isinstance(value, str) and value.strip() else None
-
-
-def _geo(raw):
-    try:
-        latitude, longitude = float(raw["latitude"]), float(raw["longitude"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    return {"latitude": latitude, "longitude": longitude, "source": "Localist API geo"}
+_host, _clean, _geo = host_of, clean, geo_of
 
 
 def _event_from(event, instance, key, name, site, listing_url, retrieved_at, timezone_name):

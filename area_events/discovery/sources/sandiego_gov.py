@@ -6,96 +6,15 @@ machine-readable data and no event imagery, so images are left empty. Date
 lines that are not a single day with a start time (multi-day runs, "all day")
 are skipped rather than guessed.
 """
-import re
-from datetime import datetime
-from html import unescape
-from urllib.parse import urljoin
+from datetime import datetime  # noqa: F401  (kept for callers of the earlier module)
 
-from .. import textloc
-from ..core import FetchError, clock_range, finish_event, html_to_text, localize_pacific, make_event, now_pacific
+from ..core import FetchError, finish_event, make_event, now_pacific
+# The page reading belongs to the Discovery Service's producer for this source; the earlier engine's adapter below only assembles its own event dictionaries from it.
+from ..service.producers.city_of_san_diego import (DETAIL_VERSION, LISTING_URL, NAME, REPEATED_ADDRESS, directions_address,  # noqa: F401
+                                                   parse_detail as _parse_detail, parse_listing as _parse_listing, parse_start_end as _parse_start_end)
 from .detailwork import DetailWork
 
 KEY = "sandiego_gov"
-NAME = "City of San Diego"
-LISTING_URL = "https://www.sandiego.gov/events"
-MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December"
-DATE_LINE = re.compile(rf"^\w+, ({MONTHS}) (\d{{1,2}}), (\d{{4}}),\s*(.+)$")
-
-
-def _clean(value):
-    return re.sub(r"\s+", " ", unescape(value)).strip() if value else None
-
-
-def _parse_listing(page, listing_url=LISTING_URL):
-    for block in page.split('class="grid-x grid-margin-x event-listing-large"')[1:]:
-        title = _clean(re.search(r"<h2[^>]*>(.*?)</h2>", block, re.S) and re.search(r"<h2[^>]*>(.*?)</h2>", block, re.S).group(1))
-        date_text = _clean(re.search(r'class="post__date[^>]*>\s*<strong>(.*?)</strong>', block, re.S) and
-                           re.search(r'class="post__date[^>]*>\s*<strong>(.*?)</strong>', block, re.S).group(1))
-        link = re.search(r'<a href="(/event/[^"]+)"', block)
-        info = block.split('</p>', 1)[1] if '</p>' in block else ""
-        description = html_to_text(info.split('<p><a href="/event/')[0].replace("<br>", "\n")) if info else None
-        if title and date_text and link:
-            yield {"title": title, "date_text": date_text, "url": urljoin(listing_url, link.group(1)), "description": description or None}
-
-
-def _parse_start_end(date_text):
-    match = DATE_LINE.match(date_text)
-    if not match:
-        return None, None
-    start_hm, end_hm = clock_range(match.group(4))
-    if not start_hm:
-        return None, None
-    day = datetime.strptime(f"{match.group(1)} {match.group(2)} {match.group(3)}", "%B %d %Y")
-    start = localize_pacific(day.replace(hour=start_hm[0], minute=start_hm[1]))
-    end = localize_pacific(day.replace(hour=end_hm[0], minute=end_hm[1])) if end_hm else None
-    return start, end
-
-
-DETAIL_VERSION = 2  # 2: also reads the "Get Directions" address (events read at version 1 are read again)
-REPEATED_ADDRESS = 3  # an address that heads this many different events is a general one (an office, a footer), not a venue
-_COORDINATES = re.compile(r"^\s*-?\d+\.\d+\s*,\s*-?\d+\.\d+")
-_STREET_NAME = re.compile(r"((?:[NSEW]\.?\s+|North\s+|South\s+|East\s+|West\s+)?(?:[A-Z0-9][\w']*\s+){0,3}?[A-Z0-9][\w']*)\s+"
-                          r"(?:Street|St|Avenue|Ave|Boulevard|Blvd|Drive|Dr|Road|Rd|Way|Lane|Ln|Court|Ct|Place|Pl|Highway|Hwy)\b")
-_DIRECTIONS = ("the", "of", "and", "from", "to", "north", "south", "east", "west", "n", "s", "e", "w")
-
-
-def _street_words(text):
-    """The lower-case name words of the streets a piece of text mentions ("4900 block of Newport Avenue" -> {"newport"})."""
-    words = set()
-    for match in _STREET_NAME.finditer(text or ""):
-        words |= {w.lower() for w in re.findall(r"[A-Za-z0-9']+", match.group(1)) if w.lower() not in _DIRECTIONS}
-    return words
-
-
-def directions_address(line, location_text):
-    """The street address on an event page's "Get Directions" line, or None when it is not usable as the event's: coordinates, no house
-    number and street, or a street that the page's own location text does not mention while it names others (an organizer's address)."""
-    line = _clean(line) or ""
-    if not line or _COORDINATES.match(line):
-        return None
-    found = textloc.extract_addresses(line, ["San Diego"])
-    if len(found) != 1:
-        return None
-    address = found[0]["address"]
-    mentioned, own = _street_words(location_text), _street_words(re.sub(r"^\d+\s+", "", address))
-    if mentioned and own and not (mentioned & own):
-        return None
-    if "," not in address:
-        head = address
-        tail = line[line.find(head) + len(head):] if head in line else ""
-        place = re.match(r"^[,.\s]*([A-Z][A-Za-z]+(?:\s[A-Z][A-Za-z]+)?),?\s*(?:CA|Ca)\b", tail)
-        address = f"{address}, {place.group(1)}, CA" if place else address
-    return address
-
-
-def _parse_detail(page, title, start):
-    text = unescape(re.sub(r"<[^>]+>", " ", page.split("<main", 1)[-1]))
-    match = re.search(r"Location:\s*(.+?)(?:\s{2,}|-->|Get Directions)", text, re.S)
-    day = f"{start:%B} {start.day}, {start.year}"
-    venue = _clean(match.group(1)) if match else None
-    line = re.search(r"Location:.*?-->\s*(.*?)\s*Get Directions", text, re.S)
-    return {"venue": venue, "address": directions_address(line.group(1), venue) if line else None,
-            "date_on_page": _clean(text) is not None and day in _clean(text) and title in _clean(text)}
 
 
 def discover(fetcher, previous, details=True, limit=None, pages=4, max_details_per_run=20, source_id=KEY, source_name=NAME, url=LISTING_URL, **_):

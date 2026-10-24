@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from ..core import FetchError
+from ..safe import FetchError
 from .. import evidence as evidence_text
 from . import producer
 from .contracts import RunReport

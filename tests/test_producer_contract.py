@@ -334,5 +334,66 @@ class Substitution(Fixture):
             self.assertEqual(built.service.candidates.previous(connection, source_id), ())
 
 
+class ReplayProducer:
+    """Answers with the records it was given: stands in for any producer, so what a real producer made can be run through the real pipeline."""
+
+    adapter = "replay"
+    extractor = "tests/replay@v1"
+    method = "adapter"
+
+    def __init__(self, result):
+        self.result = result
+
+    def crawl(self, fetcher, previous, options):
+        fetcher.fetch(options["url"])
+        return self.result
+
+    @staticmethod
+    def page_role(url, base_url):
+        return "listing"
+
+
+class EveryProducerThroughTheSamePipeline(Fixture):
+    """Whatever produced them, standard records become events by the same rules: extraction, the event record, the API and the feed see no difference."""
+    FEED = "https://replay.test/events"
+
+    def test_each_producers_real_output_is_processed_identically(self):
+        independent = ReplayProducer(ProducerResult((record("i1", "Independent Fair", "2030-06-01T10:00:00-07:00", ends_at="2030-06-01T14:00:00-07:00", venue="Independent Hall",
+                                                           address="700 Independent Way, San Diego, CA", description="Written against the contract."),
+                                                    record("i2", "Bare Minimum", "2030-06-02T10:00:00-07:00"),
+                                                    record("bad", "No offset", "2030-06-03T10:00:00"))))
+        outputs = {name: run()[1] for name, run in RUNS.items()}
+        outputs["Independent substitute"] = independent.result
+        for name, result in outputs.items():
+            with self.subTest(name):
+                built = self.build()
+                replay = ReplayProducer(result)
+                built.service.adapters["replay"] = replay
+                self.pages[self.FEED] = "<html>feed</html>"
+                key = "replay_" + "".join(c if c.isalnum() else "_" for c in name.lower())
+                built.service.register_source(SourceSpec(key, "replay", name, self.FEED, interval_s=3600))
+                area = built.control.create_area(CreateAreaRequest(f"Area {key}", 32.7157, -117.1611, 25, sources=(key,))).area
+                built.service.make_due(key)
+                report = next(r for r in (built.service.run_once() for _ in range(8)) if r.job_key == f"crawl_source:{key}")
+                valid = [c for c in result.candidates if producer.accept(ProducerResult((c,))).candidates]
+                self.assertEqual((report.outcome, report.candidates_new, report.notes["records_rejected"]), ("completed", len(valid), len(result.candidates) - len(valid)))
+                self.drain(built)
+                events = self.all_events(built, area_key=area.area_key)
+                self.assertEqual(self.count("events", f"event_id IN (SELECT event_id FROM event_candidates WHERE role='primary' AND candidate_id IN "
+                                                      f"(SELECT candidate_id FROM candidates WHERE candidate_key LIKE '{key}:%'))"), len(valid), "every valid candidate, and only those, became an event")
+                self.assertEqual(len(events), len(valid))
+                by_title = {e.title: e for e in events}
+                for candidate in valid:
+                    event = by_title[candidate.title]
+                    self.assertEqual((event.starts_at, event.source_url == candidate.url), (int(datetime.fromisoformat(candidate.starts_at).timestamp()), True))
+                    if candidate.address:
+                        self.assertEqual(event.location_status, "address")
+                    else:   # extraction's own rules decide between a venue name, location text and an address found in the description; a candidate with no place never gets one
+                        self.assertIn(event.location_status, ("venue", "description_only", "address") if candidate.venue else ("unknown", "address"))
+                    self.assertEqual(event.status, "partial" if event.missing else "complete")
+                    self.assertEqual(event.sources, (key,))
+                    self.assertIn(event.revision, (1,))
+
+
 if __name__ == "__main__":
     unittest.main()
