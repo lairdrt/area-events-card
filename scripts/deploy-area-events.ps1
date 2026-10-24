@@ -192,8 +192,13 @@ def api(path):
  req=urllib.request.Request('https://192.168.1.88:8780/v1/'+path,headers={'Authorization':'Bearer '+token})
  with urllib.request.urlopen(req,context=context,timeout=8) as r: return json.load(r)
 status=api('discovery/status'); z['api_state']=status.get('state') or status.get('runtime',{}).get('state'); z['api_samples']={}
+areas_page=api('areas')
+if not isinstance(areas_page,dict) or not isinstance(areas_page.get('areas'),list): raise RuntimeError('invalid area feed schema')
+area_keys={x.get('name'):x.get('area_key') for x in areas_page['areas'] if isinstance(x,dict)}
 for area in ('San Diego','Austin'):
- page=api('events?area='+urllib.parse.quote(area)+'&limit=1')
+ area_key=area_keys.get(area)
+ if not area_key: raise RuntimeError('configured area missing: '+area)
+ page=api('events?area='+urllib.parse.quote(area_key)+'&limit=1')
  if not isinstance(page,dict) or not isinstance(page.get('events'),list): raise RuntimeError('invalid event feed schema for '+area)
  z['api_samples'][area]=len(page['events'])
 p=os.path.expanduser('~/.local/state/area-events-deploy.json'); z['receipt']=json.load(open(p)) if os.path.isfile(p) else None
@@ -363,8 +368,13 @@ def get(path):
  q=urllib.request.Request('https://192.168.1.88:8780/v1/'+path,headers={'Authorization':'Bearer '+token})
  with urllib.request.urlopen(q,context=ctx,timeout=3) as r: return json.load(r)
 s=get('discovery/status'); samples={}
+areas_page=get('areas')
+if not isinstance(areas_page,dict) or not isinstance(areas_page.get('areas'),list): raise RuntimeError('invalid area feed schema')
+area_keys={x.get('name'):x.get('area_key') for x in areas_page['areas'] if isinstance(x,dict)}
 for area in ('San Diego','Austin'):
- page=get('events?area='+urllib.parse.quote(area)+'&limit=1')
+ area_key=area_keys.get(area)
+ if not area_key: raise RuntimeError('configured area missing: '+area)
+ page=get('events?area='+urllib.parse.quote(area_key)+'&limit=1')
  if not isinstance(page,dict) or not isinstance(page.get('events'),list): raise RuntimeError('invalid event feed schema for '+area)
  samples[area]=len(page['events'])
 print(json.dumps({'state':s.get('state'),'samples':samples}))
