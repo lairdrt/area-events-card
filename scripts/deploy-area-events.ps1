@@ -191,7 +191,7 @@ token=open(root+'/data/discovery/api-read-token',encoding='utf-8').read().strip(
 def api(path):
  req=urllib.request.Request('https://192.168.1.88:8780/v1/'+path,headers={'Authorization':'Bearer '+token})
  with urllib.request.urlopen(req,context=context,timeout=8) as r: return json.load(r)
-status=api('discovery/status'); z['api_state']=status.get('state') or status.get('runtime',{}).get('state'); z['api_samples']={}
+status=api('discovery/status'); status_data=status.get('status',status); z['api_state']=status_data.get('state') or status_data.get('runtime',{}).get('state'); z['api_samples']={}
 areas_page=api('areas')
 if not isinstance(areas_page,dict) or not isinstance(areas_page.get('areas'),list): raise RuntimeError('invalid area feed schema')
 area_keys={x.get('name'):x.get('area_key') for x in areas_page['areas'] if isinstance(x,dict)}
@@ -367,7 +367,7 @@ root='/home/robohobo/area-events-discovery'; token=open(root+'/data/discovery/ap
 def get(path):
  q=urllib.request.Request('https://192.168.1.88:8780/v1/'+path,headers={'Authorization':'Bearer '+token})
  with urllib.request.urlopen(q,context=ctx,timeout=3) as r: return json.load(r)
-s=get('discovery/status'); samples={}
+s=get('discovery/status'); s=s.get('status',s); state=s.get('state') or s.get('runtime',{}).get('state'); samples={}
 areas_page=get('areas')
 if not isinstance(areas_page,dict) or not isinstance(areas_page.get('areas'),list): raise RuntimeError('invalid area feed schema')
 area_keys={x.get('name'):x.get('area_key') for x in areas_page['areas'] if isinstance(x,dict)}
@@ -377,7 +377,7 @@ for area in ('San Diego','Austin'):
  page=get('events?area='+urllib.parse.quote(area_key)+'&limit=1')
  if not isinstance(page,dict) or not isinstance(page.get('events'),list): raise RuntimeError('invalid event feed schema for '+area)
  samples[area]=len(page['events'])
-print(json.dumps({'state':s.get('state'),'samples':samples}))
+print(json.dumps({'state':state,'samples':samples}))
 '@
   $deadline=(Get-Date).AddSeconds(90); $h=$null; $last='no response'
   while ((Get-Date) -lt $deadline) {
