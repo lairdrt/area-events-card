@@ -4,6 +4,7 @@ Extraction and Event Query services, next to San Diego, in the one database.
 The regression data are a small sample of the REAL API (tests/data/localist_ut_austin_page*.json, long texts cut), re-dated at load so the events are upcoming.
 The sample includes the awkward cases: an all-day entry, an entry that starts at 00:00 without being flagged all-day, an event without a venue, a venue
 without an address. No website is contacted."""
+import types
 import json
 import os
 import sqlite3
@@ -87,7 +88,9 @@ class Adapter(unittest.TestCase):
     def crawl(self, pages=None):
         pages = pages or sample_pages()
         recorder = Recorder({API + "1": pages[0], API + "2": pages[1]})
-        return LocalistAdapter().crawl(recorder, [], options()), recorder
+        answer = LocalistAdapter().crawl(recorder, [], options())
+        # the adapter answers with standard records; the assertions below are about the event documents the service stores for them (unchanged)
+        return types.SimpleNamespace(candidates=[c.to_payload(UT.source_key) for c in answer.candidates], notes=dict(answer.notes)), recorder
 
     def test_the_known_source_is_a_real_localist_calendar_with_its_own_time_zone(self):
         self.assertEqual((UT.source_key, UT.adapter, UT.base_url), ("ut_austin", "localist", SITE))

@@ -1,12 +1,13 @@
 """Source adapters for the Discovery Service: the EXISTING adapters behind the small `SourceAdapter` protocol.
 
-An adapter reads a source only through the fetcher it is given (a RecordingFetcher over the shared-policy SafeFetcher) and returns
-candidates: the event dicts the existing adapter already produces. It never stores anything itself.
+An adapter reads a source only through the fetcher it is given (a RecordingFetcher over the shared-policy SafeFetcher) and returns a `producer.ProducerResult`: the standard,
+versioned records (EventCandidate, SourceLead) every producer answers with. The existing reading code still builds event dictionaries; `ProducerResult.from_events` is the one place
+they become records, so no adapter normalizes anything itself. An adapter never stores anything.
 """
 from .. import core
 from ..sources import localist, sandiego_gov
 from .acquisition import AcquisitionConfig, SourceAcquirer
-from .contracts import AdapterResult
+from .producer import ProducerResult
 
 
 class CityOfSanDiegoAdapter:
@@ -22,7 +23,7 @@ class CityOfSanDiegoAdapter:
                                               max_details_per_run=int(options.get("max_details_per_run", 10)),
                                               source_id=options["source_key"], source_name=options.get("name", sandiego_gov.NAME),
                                               url=options.get("url", sandiego_gov.LISTING_URL))
-        return AdapterResult(events, notes)
+        return ProducerResult.from_events(events, options["source_key"], notes)
 
     @staticmethod
     def page_role(url, base_url):
@@ -43,7 +44,7 @@ class LocalistAdapter:
         events, notes = localist.discover(fetcher, previous, details=False, days=int(options.get("days", 14)), max_pages=int(options.get("max_pages", 5)),
                                           source_id=options["source_key"], source_name=options.get("name", "Localist"), url=options["url"],
                                           location={"timezone": zone} if zone else None)
-        return AdapterResult(events, notes)
+        return ProducerResult.from_events(events, options["source_key"], notes)
 
     @staticmethod
     def page_role(url, base_url):
@@ -68,7 +69,7 @@ class CraftFairAcquisitionAdapter:
                                    seed_region=str(options.get("seed_region", "")))
         acquirer = SourceAcquirer(fetcher, options["source_key"], options.get("name", "Craft fairs"), self._today(), config)
         events, leads, notes = acquirer.run(seeds)
-        return AdapterResult(events, notes, leads)
+        return ProducerResult.from_events(events, options["source_key"], notes, leads)
 
     @staticmethod
     def page_role(url, base_url):

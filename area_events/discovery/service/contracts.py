@@ -176,17 +176,18 @@ class DiscoveryReader(Protocol):
 
 
 class SourceAdapter(Protocol):
-    """A source's own reading logic. `crawl` fetches only through the client it is given and returns the candidates it found;
-    it never touches the database."""
+    """A producer: a source's own reading logic. `crawl` fetches only through the client it is given and returns a `producer.ProducerResult` (the standard,
+    versioned records: EventCandidate and SourceLead); it never touches the database. `page_role(url, base_url)` names the role of a page it fetched."""
 
     adapter: str
     extractor: str
 
-    def crawl(self, fetcher, previous: list, options: dict) -> "AdapterResult": ...
+    def crawl(self, fetcher, previous: list, options: dict) -> "ProducerResult": ...  # noqa: F821
 
 
 @dataclass
 class AdapterResult:
+    """The EARLIER producer answer: event dictionaries. Kept only so a producer not yet moved to the standard records still works; `producer.accept` converts it."""
     candidates: list
     notes: dict
-    leads: list = field(default_factory=list)   # source-acquisition adapters: the pages they considered, with the decision and its reasons
+    leads: list = field(default_factory=list)

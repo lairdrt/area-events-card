@@ -23,6 +23,7 @@ from datetime import datetime
 
 from ..core import FetchError
 from .. import evidence as evidence_text
+from . import producer
 from .contracts import RunReport
 from .fetching import RecordingFetcher
 from .repositories import RetentionPolicy, SourceSpec, compress, payload_hash
@@ -113,9 +114,13 @@ class DiscoveryService:
         try:
             if adapter is None:
                 raise FetchError(f"no adapter '{source['adapter']}' is installed")
-            result = adapter.crawl(fetcher, previous, options)
+            answer = adapter.crawl(fetcher, previous, options)
         except FetchError as error:
             return self._release(job, token, fetcher, error)
+        try:
+            result = producer.accept(answer, source["source_key"])   # the one boundary: only valid standard records pass
+        except TypeError as error:   # a producer that answers with something that is not a ProducerResult is a defect: the job is released with backoff and the reason recorded
+            return self._release(job, token, fetcher, FetchError(f"the producer's answer is not a ProducerResult: {error}"))
         plan = self._prepare(source, adapter, fetcher, result)
         try:
             with self.store.write() as tx:
@@ -197,14 +202,15 @@ class DiscoveryService:
                     feeds.add(fetch.url)
             pages.append(entry)
         candidates = []
-        for event in result.candidates:
+        for record in result.candidates:
+            event = record.to_payload(source["source_key"])   # the stored candidate document: unchanged by the standard records
             digest = payload_hash(event)
             try:
                 starts_at = int(datetime.fromisoformat(event["start"]).timestamp())
             except (KeyError, TypeError, ValueError):
                 starts_at = None
             candidates.append({"event": event, "digest": digest, "starts_at": starts_at, "evidence": self._evidence(event, source["base_url"], texts, feeds)})
-        return {"pages": pages, "candidates": candidates, "leads": list(getattr(result, "leads", None) or [])}
+        return {"pages": pages, "candidates": candidates, "leads": list(result.leads)}
 
     @staticmethod
     def _json_strings(body, limit=2_000_000):
