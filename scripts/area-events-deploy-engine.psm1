@@ -7,7 +7,7 @@ function Invoke-AreaEventsDeploymentEngine {
     [switch]$DryRun
   )
 
-  $required = @('Preflight', 'Build', 'Backup', 'Rehearse', 'DeployCubi', 'VerifyCubi', 'DeployHA', 'VerifyHA', 'Recover')
+  $required = @('Preflight', 'Build', 'Plan', 'Backup', 'Rehearse', 'DeployCubi', 'VerifyCubi', 'DeployHA', 'VerifyHA', 'Recover')
   foreach ($name in $required) {
     if (-not $Operations.ContainsKey($name) -or $Operations[$name] -isnot [scriptblock]) {
       throw "Deployment operation '$name' is missing."
@@ -23,13 +23,13 @@ function Invoke-AreaEventsDeploymentEngine {
   try {
     Write-Host '[1/8] Read-only preflight'
     $state = & ($Operations.Preflight)
-    if ($state.NoChanges) {
-      Write-Host 'Deployment already matches this source; no production changes are needed.'
-      return [pscustomobject]@{ Result = 'NoChange'; Phase = $phase }
-    }
-
     Write-Host '[2/8] Build frontend'
     & ($Operations.Build)
+    $state = & ($Operations.Plan) $state
+    if ($state.NoChanges) {
+      Write-Host 'Deployment already matches this built source; no production changes are needed.'
+      return [pscustomobject]@{ Result = 'NoChange'; Phase = $phase }
+    }
     if ($DryRun) {
       Write-Host '[dry run] Stopping before backups or any production write.'
       return [pscustomobject]@{ Result = 'DryRun'; Phase = $phase }

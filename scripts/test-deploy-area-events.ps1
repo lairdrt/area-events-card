@@ -5,6 +5,7 @@
 $ErrorActionPreference = 'Stop'
 $module = Join-Path $PSScriptRoot 'area-events-deploy-engine.psm1'
 Import-Module $module -Force
+Import-Module (Join-Path $PSScriptRoot 'area-events-deploy-hardening.psm1') -Force
 $script:failures = 0
 function Check([string]$Name, [scriptblock]$Test) {
   try { & $Test; Write-Host "ok   $Name" }
@@ -26,8 +27,9 @@ function New-Ops([string]$FailAt = '', [switch]$NoChanges, [switch]$SchemaChange
   $script:mockCall = $call
   $script:failAt = $FailAt
   return @{
-    Preflight = { & $script:mockCall 'preflight' ([pscustomobject]@{ NoChanges = $script:noChanges; CubiNeeded=$script:cubiNeeded; HANeeded=$script:haNeeded }) }
+    Preflight = { & $script:mockCall 'preflight' ([pscustomobject]@{ Stage='preflight' }) }
     Build = { & $script:mockCall 'build' }
+    Plan = { param($s) & $script:mockCall 'plan' ([pscustomobject]@{ NoChanges=$script:noChanges;CubiNeeded=$script:cubiNeeded;HANeeded=$script:haNeeded }) }
     Backup = { param($s) & $script:mockCall 'backup' }
     Rehearse = { param($s) & $script:mockCall 'rehearse' ([pscustomobject]@{ Passed = $true }) }
     DeployCubi = { param($s,$r) & $script:mockCall 'cubi' ([pscustomobject]@{ Changed = $true; SchemaChanged = $script:schemaChanged }) }
@@ -57,28 +59,29 @@ Check 'backup uses SQLite backup API and migration checks preserve stable keys a
 }
 Check 'HA restart and module verification are authenticated and bounded' {
   $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
-  if ($text -notmatch 'CoreRecoveryTimeoutSeconds' -or $text -notmatch 'Test-HaWebSocket' -or $text -notmatch 'six presentation modules') { throw 'HA restart, websocket or module checks are missing' }
+  if ($text -notmatch 'CoreRecoveryTimeoutSeconds' -or $text -notmatch 'Test-HaWebSocket' -or $text -notmatch 'Get-AreaEventsRequiredFrontendAssets') { throw 'HA restart, websocket or manifest-driven module checks are missing' }
+  if ($text -match 'Count -ne 6|six presentation modules|No current events|samples.*-lt 1') { throw 'hardcoded renderer count or nonempty event requirement remains' }
   if ($text -match 'ServerCertificateCustomValidationCallback|DangerousAcceptAnyServerCertificateValidator') { throw 'TLS verification is disabled' }
 }
 Check 'production preflight component decisions reach the orchestration engine' {
   $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
-  foreach($needle in @('CubiNeeded=$p.State.CubiNeeded','HANeeded=$p.State.HANeeded','cubi_hash','ha_hash')) { if ($text -notmatch [regex]::Escape($needle)) { throw "missing component deployment state: $needle" } }
+  foreach($needle in @('CubiNeeded=[bool]$cubiNeeded','HANeeded=[bool]$haNeeded','cubi_hash','ha_hash','Built artifacts fingerprinted')) { if ($text -notmatch [regex]::Escape($needle)) { throw "missing final component deployment state: $needle" } }
 }
 Check 'successful deployment uses required order' {
   $ops=New-Ops
   $result=Invoke-AreaEventsDeploymentEngine -Operations $ops
   if ($result.Result -ne 'Deployed') { throw "unexpected result $($result.Result)" }
-  if (($script:order -join ',') -ne 'preflight,build,backup,rehearse,cubi,verify-cubi,ha-file-transfer,ha-restart,health-check') { throw "wrong order: $($script:order -join ',')" }
+  if (($script:order -join ',') -ne 'preflight,build,plan,backup,rehearse,cubi,verify-cubi,ha-file-transfer,ha-restart,health-check') { throw "wrong order: $($script:order -join ',')" }
 }
 Check 'dry run builds locally but makes no production writes' {
   $ops=New-Ops
   $result=Invoke-AreaEventsDeploymentEngine -Operations $ops -DryRun
-  if ($result.Result -ne 'DryRun' -or ($script:order -join ',') -ne 'preflight,build') { throw "dry run performed unexpected steps: $($script:order -join ',')" }
+  if ($result.Result -ne 'DryRun' -or ($script:order -join ',') -ne 'preflight,build,plan') { throw "dry run performed unexpected steps: $($script:order -join ',')" }
 }
 Check 'no-change path skips deployment and restart' {
   $ops=New-Ops -NoChanges
   $result=Invoke-AreaEventsDeploymentEngine -Operations $ops
-  if ($result.Result -ne 'NoChange' -or ($script:order -join ',') -ne 'preflight') { throw 'no-change deployment was not idempotent' }
+  if ($result.Result -ne 'NoChange' -or ($script:order -join ',') -ne 'preflight,build,plan') { throw 'no-change deployment was not idempotent after built-artifact comparison' }
 }
 Check 'Cubi-only update skips Home Assistant copy and restart' {
   $ops=New-Ops -HANeeded $false
@@ -90,15 +93,65 @@ Check 'HA-only update skips Cubi restart and migration rehearsal' {
   $result=Invoke-AreaEventsDeploymentEngine -Operations $ops
   if ($result.Result -ne 'Deployed' -or $script:order -contains 'cubi' -or $script:order -contains 'rehearse') { throw 'unneeded Cubi work was performed' }
 }
-foreach ($failure in @('preflight','build','backup','rehearse','cubi','verify-cubi','ha-file-transfer','ha-restart','health-check')) {
+foreach ($failure in @('preflight','build','plan','backup','rehearse','cubi','verify-cubi','ha-file-transfer','ha-restart','health-check')) {
   Check "failure at $failure is surfaced" {
     $ops=New-Ops -FailAt $failure
     $threw=$false
     try { Invoke-AreaEventsDeploymentEngine -Operations $ops | Out-Null } catch { $threw=$_.Exception.Message -match "$failure simulated failure" }
     if (-not $threw) { throw 'failure was swallowed or replaced' }
-    if ($failure -in @('preflight','build','backup','rehearse') -and $script:recovered) { throw 'recovery ran before production modification was attempted' }
+    if ($failure -in @('preflight','build','plan','backup','rehearse') -and $script:recovered) { throw 'recovery ran before production modification was attempted' }
     if ($failure -in @('cubi','verify-cubi','ha-file-transfer','ha-restart','health-check') -and -not $script:recovered) { throw 'recovery was not attempted after production modification was attempted' }
   }
+}
+Check 'HA Samba write, rename, and removal preflight succeeds and cleans up' {
+  $root=Join-Path ([IO.Path]::GetTempPath()) ('ae-share-'+[guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $root | Out-Null
+  try {
+    if (-not (Test-AreaEventsShareCapabilities $root)) { throw 'share capability probe returned false' }
+    if (@(Get-ChildItem -LiteralPath $root -Force).Count) { throw 'temporary capability probe file was not removed' }
+  } finally { Remove-Item -LiteralPath $root -Force }
+}
+Check 'unwritable HA share fails preflight safely' {
+  $file=Join-Path ([IO.Path]::GetTempPath()) ('ae-not-dir-'+[guid]::NewGuid().ToString('N'))
+  Set-Content -LiteralPath $file -Value 'x'
+  try { $threw=$false; try { Test-AreaEventsShareCapabilities $file | Out-Null } catch { $threw=$true }; if (-not $threw) { throw 'invalid share unexpectedly passed' } }
+  finally { Remove-Item -LiteralPath $file -Force }
+}
+Check 'missing HA administrator prerequisite fails safely' {
+  $threw=$false
+  try { Assert-AreaEventsHaPrerequisites -Config ([pscustomobject]@{state='RUNNING';components=@('area_events')}) -CurrentUser ([pscustomobject]@{is_admin=$false}) | Out-Null } catch { $threw=$true }
+  if (-not $threw) { throw 'non-admin user unexpectedly passed' }
+}
+Check 'manifest-driven assets include an added renderer' {
+  $root=Join-Path ([IO.Path]::GetTempPath()) ('ae-manifest-'+[guid]::NewGuid().ToString('N'))
+  $presentation=Join-Path $root 'presentation'; New-Item -ItemType Directory -Path $presentation | Out-Null
+  try {
+    Set-Content (Join-Path $root 'area-events-card.js') 'card'
+    $names=@('manifest.js','registry.js','community.js','generic.js','nasa-mission.js','new-renderer.js')
+    foreach($name in $names) { Set-Content (Join-Path $presentation $name) 'module' }
+    Set-Content (Join-Path $presentation 'manifest.js') @'
+import { communityRenderer } from "./community.js";
+import { newRenderer } from "./new-renderer.js";
+'@
+    $assets=@(Get-AreaEventsRequiredFrontendAssets $root)
+    if ($assets.Count -ne 4 -or $assets -notcontains (Join-Path $presentation 'new-renderer.js')) { throw "new renderer not represented in required assets: $($assets.Count)" }
+  } finally { Remove-Item -LiteralPath $root -Recurse -Force }
+}
+Check 'valid empty event feeds pass and malformed feeds fail' {
+  Assert-AreaEventsFeedResponse -Response ([pscustomobject]@{events=@()}) -Area 'Empty' | Out-Null
+  $threw=$false; try { Assert-AreaEventsFeedResponse -Response ([pscustomobject]@{events=$null}) -Area 'Bad' | Out-Null } catch { $threw=$true }
+  if (-not $threw) { throw 'malformed feed unexpectedly passed' }
+}
+Check 'build-generated frontend change is observed before deployment planning' {
+  $artifact=Join-Path ([IO.Path]::GetTempPath()) ('ae-built-'+[guid]::NewGuid().ToString('N')+'.js')
+  Set-Content -LiteralPath $artifact -Value 'source'
+  try {
+    $ops=New-Ops -NoChanges
+    $ops.Build={ & $script:mockCall 'build'; Set-Content -LiteralPath $artifact -Value 'built-output' }
+    $ops.Plan={ param($s) & $script:mockCall 'plan' ([pscustomobject]@{NoChanges=((Get-Content -Raw $artifact).Trim() -eq 'source');CubiNeeded=$false;HANeeded=$true}) }
+    $result=Invoke-AreaEventsDeploymentEngine -Operations $ops
+    if ($result.Result -ne 'Deployed' -or ($script:order -join ',') -notmatch '^preflight,build,plan,backup') { throw 'planner did not evaluate the generated asset after build' }
+  } finally { Remove-Item -LiteralPath $artifact -Force }
 }
 Check 'failed recovery preserves the original deployment failure' {
   $ops=New-Ops -FailAt 'verify-cubi'

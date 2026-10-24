@@ -15,6 +15,7 @@ param(
   [int]$RestartTimeoutSeconds = 240
 )
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'area-events-deploy-hardening.psm1') -Force
 $script:Repo = Split-Path -Parent $PSScriptRoot
 $script:Cubi = 'robohobo@192.168.1.88'
 $script:RemoteRoot = '/home/robohobo/area-events-discovery'
@@ -115,8 +116,39 @@ function Get-CubiFingerprint {
   $bytes=[Text.Encoding]::UTF8.GetBytes($area+':'+$entry); $sha=[Security.Cryptography.SHA256]::Create()
   try { [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','').ToLowerInvariant() } finally { $sha.Dispose() }
 }
+function Get-HaCurrentUser {
+  $wsUrl=$script:BaseUrl -replace '^http','ws'
+  $socket=New-Object Net.WebSockets.ClientWebSocket
+  $cancel=New-Object Threading.CancellationTokenSource
+  $cancel.CancelAfter([TimeSpan]::FromSeconds(15))
+  $buffer=New-Object byte[] 16384
+  function Receive-PreflightMessage {
+    $text=''
+    do {
+      $segment=New-Object ArraySegment[byte] -ArgumentList @(,$buffer)
+      $part=$socket.ReceiveAsync($segment,$cancel.Token).GetAwaiter().GetResult()
+      $text+=[Text.Encoding]::UTF8.GetString($buffer,0,$part.Count)
+    } while (-not $part.EndOfMessage)
+    $text | ConvertFrom-Json
+  }
+  function Send-PreflightMessage($message) {
+    $bytes=[Text.Encoding]::UTF8.GetBytes(($message | ConvertTo-Json -Compress -Depth 4))
+    $segment=New-Object ArraySegment[byte] -ArgumentList @(,$bytes)
+    $socket.SendAsync($segment,[Net.WebSockets.WebSocketMessageType]::Text,$true,$cancel.Token).GetAwaiter().GetResult() | Out-Null
+  }
+  try {
+    $socket.ConnectAsync([Uri]($wsUrl+'/api/websocket'),$cancel.Token).GetAwaiter().GetResult() | Out-Null
+    if ((Receive-PreflightMessage).type -ne 'auth_required') { throw 'Unexpected HA WebSocket greeting during preflight.' }
+    Send-PreflightMessage @{type='auth';access_token=$script:Token}
+    if ((Receive-PreflightMessage).type -ne 'auth_ok') { throw 'HA rejected the stored token during WebSocket preflight.' }
+    Send-PreflightMessage @{id=1;type='auth/current_user'}
+    $result=Receive-PreflightMessage
+    if (-not $result.success) { throw "HA current-user permission check failed: $($result.error.code)" }
+    return $result.result
+  } finally { $cancel.Cancel(); $socket.Dispose(); $cancel.Dispose() }
+}
 function Invoke-Preflight {
-  Write-Step 'Read-only preflight'
+  Write-Step 'Preflight'
   $branch=(Invoke-Bounded 'git.exe' @('-C',$script:Repo,'branch','--show-current') 10).Trim()
   if ($branch -ne 'ha-native-refactor') { throw "Expected ha-native-refactor, found $branch." }
   $dirty=Invoke-Bounded 'git.exe' @('-C',$script:Repo,'status','--porcelain') 10
@@ -126,17 +158,38 @@ function Invoke-Preflight {
   $script:Token=Get-HaToken; $script:BaseUrl=$HaUrl.TrimEnd('/')
   if ($script:BaseUrl -notmatch '^https?://[^/]+$') { throw 'HA URL must be an HTTP(S) origin.' }
   $haApi=Invoke-RestMethod -Method Get -Uri "$script:BaseUrl/api/" -Headers @{Authorization="Bearer $script:Token"} -TimeoutSec 12
+  if ($haApi.message -notmatch 'API running') { throw 'HA REST API did not return its expected healthy response.' }
   $haConfig=Invoke-RestMethod -Method Get -Uri "$script:BaseUrl/api/config" -Headers @{Authorization="Bearer $script:Token"} -TimeoutSec 12
-  if ($haConfig.state -ne 'RUNNING') { throw 'Home Assistant Core is not RUNNING; refusing to start a deployment.' }
+  $haUser=Get-HaCurrentUser
+  Assert-AreaEventsHaPrerequisites -Config $haConfig -CurrentUser $haUser
+  $shareProbeModule=Join-Path $PSScriptRoot 'area-events-deploy-hardening.psm1'
+  $shareDestinations=@((Join-Path $ConfigShare 'custom_components'))
+  $integrationDestination=Join-Path $ConfigShare 'custom_components\area_events'
+  if (Test-Path -LiteralPath $integrationDestination -PathType Container) { $shareDestinations+= $integrationDestination }
+  foreach ($destination in $shareDestinations) {
+    try { $null=Invoke-BoundedBlock { param($path,$root) Import-Module $path -Force; Test-AreaEventsShareCapabilities -Root $root } @($shareProbeModule,$destination) 25 }
+    catch { throw "HA Samba destination failed temporary write/rename/remove preflight at '$destination': $($_.Exception.Message)" }
+  }
+  # The documented current-user API confirms administrator role. No read-only HA API can prove a future restart request will be accepted without issuing that mutating request.
+  $script:HaRestartPermissionEvidence='authenticated administrator confirmed; restart request itself is intentionally not probed'
   $script:HaLoaded=($haConfig.components -contains 'area_events')
   $py=@'
-import json,os,sqlite3,subprocess,ssl,urllib.parse,urllib.request
+import json,os,shutil,sqlite3,subprocess,ssl,urllib.parse,urllib.request
 root='/home/robohobo/area-events-discovery'; db=root+'/data/discovery/discovery.db'
 unit=subprocess.run(['systemctl','--user','show','area-events-discovery.service','--property=ActiveState','--property=WorkingDirectory','--property=ExecStart'],capture_output=True,text=True,timeout=12,check=True).stdout
+def can_create(path):
+ p=path
+ while not os.path.exists(p):
+  parent=os.path.dirname(p)
+  if parent==p: return False
+  p=parent
+ return os.access(p,os.W_OK|os.X_OK)
+backup_root=os.path.expanduser('~/backups/area-events-deploy')
+tools={name:shutil.which(name) is not None for name in ('python3','timeout','systemctl')}
 c=sqlite3.connect('file:'+db+'?mode=ro',uri=True,timeout=5)
 try:
  v=[r[0] for r in c.execute('select version from schema_migrations')]
- z={'unit':unit,'schema':max(v),'events':c.execute('select count(*) from events').fetchone()[0],'associations':c.execute('select count(*) from event_candidates').fetchone()[0],'integrity':c.execute('pragma quick_check').fetchone()[0],'foreign_keys':len(list(c.execute('pragma foreign_key_check')))}
+ z={'unit':unit,'schema':max(v),'events':c.execute('select count(*) from events').fetchone()[0],'associations':c.execute('select count(*) from event_candidates').fetchone()[0],'integrity':c.execute('pragma quick_check').fetchone()[0],'foreign_keys':len(list(c.execute('pragma foreign_key_check'))),'code_writable':os.access(root,os.W_OK|os.X_OK) and os.access(root+'/scripts',os.W_OK|os.X_OK),'backup_writable':can_create(backup_root),'required_tools':tools}
 finally: c.close()
 token=open(root+'/data/discovery/api-read-token',encoding='utf-8').read().strip(); context=ssl.create_default_context(cafile=root+'/certs/cert.pem')
 def api(path):
@@ -144,25 +197,41 @@ def api(path):
  with urllib.request.urlopen(req,context=context,timeout=8) as r: return json.load(r)
 status=api('discovery/status'); z['api_state']=status.get('state') or status.get('runtime',{}).get('state'); z['api_samples']={}
 for area in ('San Diego','Austin'):
- z['api_samples'][area]=len(api('events?area='+urllib.parse.quote(area)+'&limit=1').get('events',[]))
+ page=api('events?area='+urllib.parse.quote(area)+'&limit=1')
+ if not isinstance(page,dict) or not isinstance(page.get('events'),list): raise RuntimeError('invalid event feed schema for '+area)
+ z['api_samples'][area]=len(page['events'])
 p=os.path.expanduser('~/.local/state/area-events-deploy.json'); z['receipt']=json.load(open(p)) if os.path.isfile(p) else None
 print(json.dumps(z))
 '@
   $remote=Invoke-CubiPython $py @{} 40 | ConvertFrom-Json
   if ($remote.integrity -ne 'ok' -or $remote.foreign_keys -ne 0) { throw 'Cubi database integrity check failed.' }
+  if (-not $remote.code_writable -or -not $remote.backup_writable -or @($remote.required_tools.PSObject.Properties | Where-Object { -not $_.Value }).Count) { throw 'Cubi code/backup write access or a required remote command is unavailable.' }
   if ($remote.schema -gt $script:TargetSchema) { throw "Production schema $($remote.schema) is newer than this source ($script:TargetSchema); refusing to deploy older code." }
-  if ($remote.api_state -ne 'running' -or $remote.api_samples.'San Diego' -lt 1 -or $remote.api_samples.Austin -lt 1) { throw 'Cubi read API or representative area event pages failed preflight.' }
+  if ($remote.api_state -ne 'running') { throw 'Cubi discovery service API is not healthy.' }
   if ($remote.unit -notmatch 'ActiveState=active' -or $remote.unit -notmatch '/home/robohobo/area-events-discovery' -or $remote.unit -notmatch 'port 8780') { throw 'Expected Discovery service is not active on port 8780; refusing to act.' }
   $script:Head=(Invoke-Bounded 'git.exe' @('-C',$script:Repo,'rev-parse','HEAD') 10).Trim()
+  $script:PreflightRemote=$remote
+  $script:PreflightHaConfig=$haConfig
+  $script:State=[pscustomobject]@{Remote=$remote;Head=$script:Head;HAPath=(Join-Path $ConfigShare 'custom_components\area_events');HaLoaded=[bool]$script:HaLoaded}
+  Write-Host "HEAD $script:Head; schema $($remote.schema); events $($remote.events); HA administrator verified; restart permission not mutation-tested."
+  [pscustomobject]@{State=$script:State}
+}
+function Invoke-DeploymentPlan($preflight) {
+  $currentHead=(Invoke-Bounded 'git.exe' @('-C',$script:Repo,'rev-parse','HEAD') 10).Trim()
+  if ($currentHead -ne $preflight.Head) { throw 'Git HEAD changed between preflight and deployment planning.' }
+  $dirty=Invoke-Bounded 'git.exe' @('-C',$script:Repo,'status','--porcelain') 10
+  $unexpected=@($dirty -split [Environment]::NewLine | Where-Object { $_ -and $_ -notmatch '^(?:\?\? scripts/deploy-cubi-2f-display\.ps1\s*|.. custom_components/area_events/frontend/area-events-card\.js\s*)$' })
+  if ($unexpected.Count) { throw "Build changed unexpected source files; refusing inconsistent source/artifact deployment: $($unexpected -join ', ')" }
   $script:CubiFingerprint=Get-CubiFingerprint
   $haSource=Join-Path $script:Repo 'custom_components\area_events'
   $script:HAFingerprint=Get-FolderFingerprint $haSource
+  $remote=$preflight.Remote
   $ha=Test-FolderMatches $haSource (Join-Path $ConfigShare 'custom_components\area_events')
   $cubiNeeded=(-not $remote.receipt -or $remote.receipt.cubi_hash -ne $script:CubiFingerprint -or $remote.schema -lt $script:TargetSchema)
   $haNeeded=(-not $remote.receipt -or $remote.receipt.ha_hash -ne $script:HAFingerprint -or -not $ha -or -not $script:HaLoaded)
-  $script:State=[pscustomobject]@{Remote=$remote;Head=$script:Head;HAPath=(Join-Path $ConfigShare 'custom_components\area_events');CubiNeeded=[bool]$cubiNeeded;HANeeded=[bool]$haNeeded;HaLoaded=[bool]$script:HaLoaded;CubiFingerprint=$script:CubiFingerprint;HAFingerprint=$script:HAFingerprint}
+  $script:State=[pscustomobject]@{Remote=$remote;Head=$script:Head;HAPath=(Join-Path $ConfigShare 'custom_components\area_events');CubiNeeded=[bool]$cubiNeeded;HANeeded=[bool]$haNeeded;HaLoaded=[bool]$preflight.HaLoaded;CubiFingerprint=$script:CubiFingerprint;HAFingerprint=$script:HAFingerprint;RequiredAssets=@(Get-AreaEventsRequiredFrontendAssets (Join-Path $haSource 'frontend'))}
   $noChange=(-not $cubiNeeded -and -not $haNeeded)
-  Write-Host "HEAD $script:Head; schema $($remote.schema); events $($remote.events); Cubi update $cubiNeeded; HA update $haNeeded"
+  Write-Host "Built artifacts fingerprinted; Cubi update $cubiNeeded; HA update $haNeeded"
   [pscustomobject]@{NoChanges=[bool]$noChange;State=$script:State}
 }
 function Invoke-Backups($state) {
@@ -299,8 +368,9 @@ def get(path):
  with urllib.request.urlopen(q,context=ctx,timeout=3) as r: return json.load(r)
 s=get('discovery/status'); samples={}
 for area in ('San Diego','Austin'):
- samples[area]=len(get('events?area='+urllib.parse.quote(area)+'&limit=1').get('events',[]))
- if not samples[area]: raise RuntimeError('No current events for '+area)
+ page=get('events?area='+urllib.parse.quote(area)+'&limit=1')
+ if not isinstance(page,dict) or not isinstance(page.get('events'),list): raise RuntimeError('invalid event feed schema for '+area)
+ samples[area]=len(page['events'])
 print(json.dumps({'state':s.get('state'),'samples':samples}))
 '@
   $deadline=(Get-Date).AddSeconds(90); $h=$null; $last='no response'
@@ -309,8 +379,8 @@ print(json.dumps({'state':s.get('state'),'samples':samples}))
     catch { $last=$_.Exception.Message }
     Start-Sleep -Seconds 4
   }
-  if ($null -eq $h -or $h.state -ne 'running' -or $h.samples.'San Diego' -lt 1 -or $h.samples.Austin -lt 1) { throw "Cubi API did not become healthy within 90 seconds. Last check: $last" }
-  Write-Host "API verified; event samples San Diego/Austin: $($h.samples.'San Diego')/$($h.samples.Austin)"
+  if ($null -eq $h -or $h.state -ne 'running' -or $null -eq $h.samples.'San Diego' -or $null -eq $h.samples.Austin) { throw "Cubi API did not become healthy within 90 seconds. Last check: $last" }
+  Write-Host "API verified; valid event page lengths San Diego/Austin: $($h.samples.'San Diego')/$($h.samples.Austin)"
 }
 function Install-Ha {
   $old=$env:HA_TOKEN; $env:HA_TOKEN=$script:Token
@@ -356,8 +426,8 @@ function Test-HaWebSocket {
       if ($m.id -in @(1,3)) { if (-not $m.success) { throw "HA event command failed: $($m.error.code)" }; $pages[[int]$m.id]=$m.result }
     }
     $page=$pages[1]; $austin=$pages[3]
-    if ($null -eq $page -or @($page.events).Count -eq 0 -or -not $page.events[0].id -or -not $page.events[0].title) { throw 'HA San Diego event page was empty or lacked expected event fields.' }
-    if ($null -eq $austin -or @($austin.events).Count -eq 0 -or -not $austin.events[0].id -or -not $austin.events[0].title) { throw 'HA Austin event page was empty or lacked expected event fields.' }
+    Assert-AreaEventsFeedResponse -Response $page -Area 'San Diego' | Out-Null
+    Assert-AreaEventsFeedResponse -Response $austin -Area 'Austin' | Out-Null
     Send-HaMessage @{id=2;type='area_events/subscribe';area='San Diego'}
     $subscribed=$false; $view=$null
     for ($i=0;$i -lt 8;$i++) {
@@ -365,27 +435,27 @@ function Test-HaWebSocket {
       if ($m.id -eq 2 -and $m.type -eq 'result') { if (-not $m.success) { throw "HA subscription failed: $($m.error.code)" }; $subscribed=$true }
       if ($m.id -eq 2 -and $m.type -eq 'event') { $view=$m.event; if ($subscribed) { break } }
     }
-    if (-not $subscribed -or $null -eq $view -or @($view.events).Count -eq 0 -or -not $view.events[0].id -or -not $view.events[0].title) { throw 'HA subscription did not deliver its initial view with expected event fields.' }
+    if (-not $subscribed -or $null -eq $view) { throw 'HA subscription did not deliver its initial view.' }
+    Assert-AreaEventsFeedResponse -Response $view -Area 'San Diego subscription' | Out-Null
     Send-HaMessage @{type='unsubscribe_events';subscription=2}
     $script:WsEventCount=@($page.events).Count; $script:WsAustinCount=@($austin.events).Count; $script:WsViewCount=@($view.events).Count
   } finally { $cancel.Cancel(); $socket.Dispose(); $cancel.Dispose() }
 }
 function Test-HaAssets {
   $front=Join-Path $script:Repo 'custom_components\area_events\frontend'
-  $modules=@(Get-ChildItem (Join-Path $front 'presentation') -Filter '*.js' -File | ForEach-Object FullName)
-  if ($modules.Count -ne 6) { throw "Expected six presentation modules; found $($modules.Count)." }
-  $assets=@((Join-Path $front 'area-events-card.js'))+$modules
+  $assets=@(Get-AreaEventsRequiredFrontendAssets $front)
   $servedDir=Join-Path ([IO.Path]::GetTempPath()) ('area-events-served-'+[guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $servedDir | Out-Null
-  foreach ($f in $assets) {
-    $rel=$f.Substring($front.Length+1).Replace('\','/')
-    $served=Join-Path $servedDir ([IO.Path]::GetFileName($f))
-    $status=Invoke-Bounded 'curl.exe' @('--silent','--show-error','--max-time','12','--output',$served,'--write-out','%{http_code}',"$script:BaseUrl/area_events/$rel") 20
-    if ($status -ne '200') { throw "HA did not serve $rel (HTTP $status)." }
-    $hash=(Get-FileHash -Algorithm SHA256 $served).Hash
-    if ($hash -ne (Get-FileHash $f).Hash) { throw "Served asset differs from source: $rel" }
-  }
-  Remove-Item -LiteralPath $servedDir -Recurse -Force
+  try {
+    foreach ($f in $assets) {
+      $rel=$f.Substring($front.Length+1).Replace('\','/')
+      $served=Join-Path $servedDir ([guid]::NewGuid().ToString('N')+'.asset')
+      $status=Invoke-Bounded 'curl.exe' @('--silent','--show-error','--max-time','12','--output',$served,'--write-out','%{http_code}',"$script:BaseUrl/area_events/$rel") 20
+      if ($status -ne '200') { throw "HA did not serve $rel (HTTP $status)." }
+      $hash=(Get-FileHash -Algorithm SHA256 $served).Hash
+      if ($hash -ne (Get-FileHash $f).Hash) { throw "Served asset differs from source: $rel" }
+    }
+  } finally { Remove-Item -LiteralPath $servedDir -Recurse -Force -ErrorAction SilentlyContinue }
   $cfg=Invoke-RestMethod -Method Get -Uri "$script:BaseUrl/api/config" -Headers @{Authorization="Bearer $script:Token"} -TimeoutSec 15
   if ($cfg.state -ne 'RUNNING' -or $cfg.components -notcontains 'area_events') { throw 'HA or Area Events integration is not loaded.' }
   Test-HaWebSocket
@@ -486,8 +556,9 @@ function Invoke-Main {
   $script:OriginalHaToken=$env:HA_TOKEN
   Import-Module (Join-Path $PSScriptRoot 'area-events-deploy-engine.psm1') -Force
   $ops=@{
-    Preflight={ $p=Invoke-Preflight; $script:DeploymentState=$p.State; [pscustomobject]@{NoChanges=$p.NoChanges;CubiNeeded=$p.State.CubiNeeded;HANeeded=$p.State.HANeeded} }
+    Preflight={ $p=Invoke-Preflight; $script:DeploymentState=$p.State; $p.State }
     Build={ Invoke-Build }
+    Plan={ param($p) $plan=Invoke-DeploymentPlan $p; $script:DeploymentState=$plan.State; $plan.State | Add-Member -NotePropertyName NoChanges -NotePropertyValue $plan.NoChanges; $plan.State }
     Backup={ param($s) Invoke-Backups $script:DeploymentState }
     Rehearse={ param($s) Invoke-Rehearsal $script:DeploymentState }
     DeployCubi={ param($s,$r) Invoke-CubiDeploy $script:DeploymentState }

@@ -15,7 +15,9 @@ Run:
 .\scripts\deploy-area-events.ps1
 ```
 
-The deployment checks the branch and source state, validates SSH and authenticated HA access, inspects the intended systemd service, database, and event API, then builds the frontend. Component fingerprints let it skip Cubi or HA work independently; when both components and the schema are current, it skips the build and deployment.
+The deployment checks the branch and source state, validates SSH and authenticated HA access, checks Cubi code/backup write prerequisites and required remote commands, inspects the intended systemd service, database, and event API, and checks the mapped Samba share with a temporary write/rename/remove probe in `custom_components` (and the existing integration directory when present). It confirms the HA token's current user is an administrator through the read-only WebSocket `auth/current_user` command. That proves the user's role; the deployer does not send a restart request during preflight, so acceptance of a future restart request cannot be proven without a mutation.
+
+The frontend is built before final fingerprints and component decisions. The HA fingerprint uses the generated working-tree assets that are copied to the share; unexpected build changes to tracked files stop planning. Cubi and HA updates are planned independently, and a no-change result is based on the built artifacts. Required frontend files are derived from the presentation manifest's imports, so registering another renderer does not require changing deployment code. Empty but schema-valid event pages pass health checks; malformed API responses still fail.
 
 Before changing either installation, it makes a SQLite API backup and a private Cubi archive of the accepted code, media, and service configuration. It also saves the HA integration, configuration, and Lovelace storage locally. If migrations are pending, it applies them to an isolated copy and checks the schema, integrity, event keys, and candidate associations. The Cubi cutover stops only `area-events-discovery.service`; port 8765 is not addressed. HA files are copied through the existing Samba share and restarted through the authenticated HA deployment helper.
 
@@ -26,7 +28,7 @@ Before changing either installation, it makes a SQLite API backup and a private 
 .\scripts\test-deploy-area-events.ps1
 ```
 
-Dry run may build local frontend files and performs read-only production preflight. It stops before creating backups or writing to Cubi or HA. The test script uses mocked operations and isolated state; it does not contact either host.
+Dry run may build local frontend files and performs preflight, including a temporary file capability check on the configured HA share. It stops before creating backups or making persistent writes to Cubi or HA. The test script uses mocked operations and isolated state; it does not contact either host.
 
 ## Backups and recovery
 
