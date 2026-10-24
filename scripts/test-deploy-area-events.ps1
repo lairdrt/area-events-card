@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 $module = Join-Path $PSScriptRoot 'area-events-deploy-engine.psm1'
 Import-Module $module -Force
 Import-Module (Join-Path $PSScriptRoot 'area-events-deploy-hardening.psm1') -Force
+. (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
 $script:failures = 0
 function Check([string]$Name, [scriptblock]$Test) {
   try { & $Test; Write-Host "ok   $Name" }
@@ -45,6 +46,12 @@ Check 'script parses and production engine is explicit operations only' {
   [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'deploy-area-events.ps1'), [ref]$null, [ref]$errors) | Out-Null
   if ($errors.Count) { throw $errors[0].Message }
   if ((Get-Content -Raw $module) -notmatch 'Rehearse|DryRun|Recover') { throw 'required engine gates are missing' }
+}
+Check 'bounded build runner uses the repository working directory' {
+  $repoRoot=Split-Path -Parent $PSScriptRoot
+  $npm=(Get-Command npm.cmd -ErrorAction Stop).Source
+  $output=Invoke-Bounded $npm @('run','build','--silent') 90 $repoRoot
+  if ($output -notmatch 'AREA-EVENTS [0-9]+(\.[0-9]+)*-[0-9a-f]{8}') { throw 'bounded npm build did not complete from the repository directory' }
 }
 Check 'only the intended Cubi systemd unit and HA share are deployment targets' {
   $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')

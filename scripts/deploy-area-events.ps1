@@ -51,9 +51,10 @@ function Get-HaToken {
   try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
   finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr); $secure.Dispose() }
 }
-function Invoke-Bounded([string]$File,[string[]]$Arguments,[int]$TimeoutSeconds=60) {
-  $job=Start-Job -ArgumentList $File,(,$Arguments) -ScriptBlock {
-    param($exe,$argv)
+function Invoke-Bounded([string]$File,[string[]]$Arguments,[int]$TimeoutSeconds=60,[string]$WorkingDirectory=(Get-Location).Path) {
+  $job=Start-Job -ArgumentList $File,(,$Arguments),$WorkingDirectory -ScriptBlock {
+    param($exe,$argv,$cwd)
+    Set-Location -LiteralPath $cwd
     $output=@(& $exe @argv 2>&1 | ForEach-Object { "$_" }) -join [Environment]::NewLine
     [pscustomobject]@{Code=$LASTEXITCODE;Output=$output}
   }
@@ -81,7 +82,7 @@ function Invoke-CubiPython([string]$Code,[hashtable]$Variables=@{},[int]$Timeout
 }
 function Invoke-Build {
   $npm=(Get-Command npm.cmd -ErrorAction Stop).Source
-  $null=Invoke-Bounded $npm @('run','build','--silent') 240
+  $null=Invoke-Bounded $npm @('run','build','--silent') 240 $script:Repo
   $card=Join-Path $script:Repo 'custom_components\area_events\frontend\area-events-card.js'
   if ((Get-Content -Raw $card) -match '__AREA_EVENTS_CARD_BUILD__') { throw 'Frontend build left an unresolved build placeholder.' }
   $script:Archive=Join-Path ([IO.Path]::GetTempPath()) ('area-events-'+[guid]::NewGuid().ToString('N')+'.tar')
