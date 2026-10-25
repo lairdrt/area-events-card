@@ -71,7 +71,8 @@ const openFilters = (root) => click(byClass(root, "filter-toggle")[0]);
 /** What the integration's area_events/subscribe command sends for a feed (the first view, and again whenever the area changes). */
 const answer = (feed, extra = {}) => ({
   state: "ready", connected: true, refreshing: false, message: null,
-  generated_at: feed.generated_at, location: feed.location || { display_name: "San Diego, CA" }, sources: feed.sources, events: feed.events, ...extra,
+  generated_at: feed.generated_at, location: feed.location || { display_name: "San Diego, CA" }, sources: feed.sources, events: feed.events,
+  area: feed.area || { area_key: "san-diego", name: "San Diego", sources: ["calendar-one", "calendar-two"] }, ...extra,
 });
 
 /** A Home Assistant stand-in: area_events/subscribe through the websocket connection, and the user-data commands the filters use. */
@@ -140,6 +141,30 @@ test("events render upcoming events with honest verification labels and source l
   assert.deepEqual(labels, ["Verified", "Source corroborated", "Unverified"]);
   assert.doesNotMatch(text(root), /DEMONSTRATION/);
   assert.ok(byClass(root, "source").every((a) => a.href.startsWith("https://www.kpbs.org/")));
+});
+
+test("producer filters are optional, match all event source associations, and report unknown or unattached IDs", async () => {
+  const events = [
+    event("One", 1, { source: { name: "Calendar One", key: "calendar-one" }, source_keys: ["calendar-one"] }),
+    event("Shared", 2, { source: { name: "Calendar One", key: "calendar-one" }, source_keys: ["calendar-one", "calendar-two"] }),
+    event("Two", 3, { source: { name: "Calendar Two", key: "calendar-two" }, source_keys: ["calendar-two"] }),
+  ];
+  const feed = makeFeed({ events, area: { area_key: "san-diego", name: "San Diego", sources: ["calendar-one", "calendar-two"] } });
+  const all = await make({}, { feed });
+  const one = await make({ producers: ["calendar-one"] }, { feed });
+  const two = await make({ producers: ["calendar-two"] }, { feed });
+  assert.deepEqual(visibleTitles(all.shadowRoot).sort(), ["One", "Shared", "Two"]);
+  assert.deepEqual(visibleTitles(one.shadowRoot).sort(), ["One", "Shared"]);
+  assert.deepEqual(visibleTitles(two.shadowRoot).sort(), ["Shared", "Two"], "the shared event matches its second source association too");
+  assert.match(text((await make({ producers: ["not-attached"] }, { feed })).shadowRoot), /Unknown or unattached producer instance: not-attached/);
+});
+
+test("producer filter syntax is validated and remains YAML-only in the visual editor", () => {
+  for (const producers of ["calendar-one", [], ["Bad ID"], ["same", "same"]]) {
+    assert.throws(() => readSettings({ producers }), /producers/);
+  }
+  assert.throws(() => assertEditable({ producers: ["calendar-one"] }), /only be edited in YAML/);
+  assert.deepEqual(readSettings({}).producers, undefined);
 });
 
 test("presentation registry accepts an independent renderer, maps typed events, and falls back safely", () => {

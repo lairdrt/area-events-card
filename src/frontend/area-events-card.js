@@ -273,6 +273,7 @@ function normalizePrefs(raw, extraIds = []) {
  *   title, id                  header text; `id` keeps saved filters apart for identical cards on one dashboard
  *   area                       the name (or key) of a discovery area configured in the Discovery Service; required
  *   radius_miles               retained for older card configurations
+ *   producers                  optional configured producer instance ids; YAML only
  *   categories                 limit events to these built-in categories (ids or names); omit for all
  *   interests                  extra topics: "Name: keyword, keyword" (or {name, keywords})
  *   exclude                    topics to hide (any event mentioning one is dropped)
@@ -341,6 +342,14 @@ function readSettings(config) {
   if (config.area !== undefined && (typeof config.area !== "string" || !config.area.trim())) {
     throw new Error("'area' must be text such as 'San Diego, CA' (a city, a ZIP code or 'latitude, longitude').");
   }
+  let producers;
+  if (config.producers !== undefined) {
+    if (!Array.isArray(config.producers) || !config.producers.length || config.producers.some((id) => typeof id !== "string" || !/^[a-z][a-z0-9_-]{0,79}$/.test(id))) {
+      throw new Error("'producers' must be a non-empty list of configured producer instance ids (lowercase letters, numbers, '_' or '-').");
+    }
+    if (new Set(config.producers).size !== config.producers.length) throw new Error("'producers' must not contain duplicate instance ids.");
+    producers = [...config.producers];
+  }
   const interests = parseInterests(config.interests);
   const wanted = listOf(config.categories, "categories");
   const known = DEFAULT_CATEGORIES.filter((c) => c.id !== OTHER_ID);
@@ -357,6 +366,7 @@ function readSettings(config) {
   return {
     area: config.area === undefined ? undefined : config.area.trim(),
     radius: numberIn(config, "radius_miles", 1, 250) ?? 25,
+    producers,
     categories: categories.size ? categories : undefined,
     interests,
     exclude,
@@ -718,6 +728,10 @@ class AreaEventsCard extends HTMLElement {
         return Number.isNaN(start) || start <= limit;
       });
     }
+    if (settings.producers) {
+      const selected = new Set(settings.producers);
+      list = list.filter((event) => event.sourceKeys.some((key) => selected.has(key)));
+    }
     if (settings.exclude.length) {
       list = list.filter((event) => {
         const haystack = normalizeText([event.title, event.description, ...event.categories].join(" . "));
@@ -763,6 +777,8 @@ class AreaEventsCard extends HTMLElement {
       media: safeMedia(event.media, event),
       url: event.url,
       sourceName: event.source && event.source.name,
+      sourceKeys: Array.isArray(event.source_keys) ? event.source_keys.filter((key) => typeof key === "string") :
+        (event.source && typeof event.source.key === "string" ? [event.source.key] : []),
       locationStatus: event.location_status,
       verified: event.verified === true,
       status: verification.status,
@@ -835,6 +851,11 @@ class AreaEventsCard extends HTMLElement {
       notes.push("No upcoming events match.");
     }
     if (status.notice && !this._feedError) notes.push(status.notice);
+    if (this._settings.producers && this._feed && this._feed.area && Array.isArray(this._feed.area.sources)) {
+      const attached = new Set(this._feed.area.sources);
+      const unmatched = this._settings.producers.filter((id) => !attached.has(id));
+      if (unmatched.length) notes.push(`Unknown or unattached producer instance${unmatched.length === 1 ? "" : "s"}: ${unmatched.join(", ")}. Attach the instance to this area in the Area Events options.`);
+    }
     return notes.join(" ") || undefined;
   }
 
@@ -1294,6 +1315,7 @@ const EDITOR_HELP = {
 /** Throws (which makes Home Assistant show the YAML editor instead) when the visual editor cannot represent the configuration. */
 function assertEditable(config) {
   readSettings(config);
+  if (config.producers !== undefined) throw new Error("Producer instance filters can only be edited in YAML.");
   if (Array.isArray(config.interests) && config.interests.some((item) => typeof item !== "string")) {
     throw new Error("Interests written as objects can only be edited in YAML.");
   }

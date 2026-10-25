@@ -9,7 +9,7 @@ card ...         ─┘   (custom_components/area_events)   (read / control)   �
 ```
 
 - The **card** shows one discovery *area* (`area: San Diego`) and owns everything about how it is shown: categories, interests, exclusions, date range, sorting and layout. It talks only to Home Assistant, over your signed-in session, and holds no secret.
-- The **integration** keeps one shared view of the Discovery Service for all cards: one check of the service's change feed per interval, one read per followed area, and a message to only those cards whose area really changed. Tokens stay in Home Assistant's backend. Administrators can change shared discovery settings through WebSocket commands.
+- The **integration** keeps one shared view of the Discovery Service for all cards: one check of the service's change feed per interval, one read per followed area, and a message to only those cards whose area really changed. Tokens stay in Home Assistant's backend. Administrators can manage configured producer instances and attach them to areas through the integration Options flow.
 - The **Discovery Service** (`src/area_events`, installed from the repository with `python -m pip install .`, then run with `area-events serve`) owns the database, discovers independently of Home Assistant and exposes an authenticated API. Cards never cause a crawl.
 
 Details: [docs/ha-integration-2d.md](docs/ha-integration-2d.md) (this integration), [docs/presentation-architecture.md](docs/presentation-architecture.md) (replaceable event renderers), [docs/producer-contract.md](docs/producer-contract.md) (discovery input), and [docs/deduplication-and-persistence.md](docs/deduplication-and-persistence.md) (event storage).
@@ -36,6 +36,7 @@ sort: date                            # date | title | verified
 columns: 3                            # at most this many columns
 show_images: true
 show_filters: true
+# producers: [calendar-one, calendar-two]  # optional configured instance IDs; omit to show all area events
 ```
 
 | Option | Meaning |
@@ -43,6 +44,7 @@ show_filters: true
 | `title` | Header text. |
 | `id` | Optional short name (letters, digits, `-`, `_`) that keeps saved filters separate for identical cards on one dashboard. |
 | `area` | The discovery area this card follows. Events are matched to an area by its configured sources, **not** by a verified distance; events whose place is only a description are marked unverified. Area and source configuration belong to the Discovery Service. |
+| `producers` | Optional configured producer instance IDs to display. Omit to show all events for the area. IDs must already exist in Cubi and be attached to the selected area; unknown or unattached IDs show a notice. Manage instances and area attachments in the Home Assistant integration Options flow. This card setting is read-only and does not create or change shared discovery configuration. |
 | `categories` | Built-in category ids or names to keep: music, festivals, food-drink, arts, sports, science, technology, family, community, outdoors, education, theater, comedy, markets, other. |
 | `interests` | Extra topics as `Name: keyword, keyword` (or `{name, keywords}`), up to 20. |
 | `exclude` | Topics to hide, matched as whole words in title, description and categories. |

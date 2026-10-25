@@ -86,6 +86,9 @@ class FakeOptionsFlow:
     def async_create_entry(self, **kwargs):
         return {"type": "create_entry", **kwargs}
 
+    def async_abort(self, **kwargs):
+        return {"type": "abort", **kwargs}
+
 
 class FakeCoordinator(Subscriptable):
     def __init__(self, hass, logger, *, config_entry=None, name=None, update_interval=None):
@@ -779,8 +782,16 @@ class Feed(unittest.TestCase):
         self.assertEqual((event["categories"], event["verified"], event["location_verified"]), ([], False, False))
         self.assertNotIn("latitude", event)
         self.assertEqual(event["source"], {"name": "City of San Diego", "key": "sandiego_gov"})
+        self.assertEqual(event["source_keys"], ["sandiego_gov"])
         bad_zone = feed_module.to_feed_event({**record, "timezone": "Not/AZone"})
         self.assertTrue(bad_zone["start"].endswith("+00:00"))
+
+    def test_the_adapter_preserves_every_source_association(self):
+        record = {"event_key": "shared-event", "title": "Shared", "starts_at": 1_800_000_000, "timezone": "UTC",
+                  "sources": ["calendar-one", "calendar-two"]}
+        event = feed_module.to_feed_event(record)
+        self.assertEqual(event["source_keys"], ["calendar-one", "calendar-two"])
+        self.assertEqual(event["source"]["key"], "calendar-one")
 
 
 # --- the Home Assistant glue against stand-ins ----------------------------------------------------------------------
@@ -875,6 +886,118 @@ class Flow(unittest.TestCase):
         self.assertEqual(run(options.async_step_init())["step_id"], "init")
         self.assertEqual(run(options.async_step_init({"scan_interval": 20}))["data"], {"scan_interval": 20})
         self.assertEqual((const.MIN_SCAN_INTERVAL, const.MAX_SCAN_INTERVAL), (5, 300))
+
+
+class ProducerOptions(Service):
+    """OptionsFlow administration exercised against the real authenticated SQLite-backed API."""
+
+    def options_flow(self, control=True):
+        data = {"url": self.url, "read_token": READ_TOKEN}
+        if control:
+            data["control_token"] = CONTROL_TOKEN
+        flow = flow_module.AreaEventsOptionsFlow()
+        flow.config_entry = Entry(data, options={"scan_interval": 30})
+        flow.hass = types.SimpleNamespace()
+        return flow
+
+    def api_client(self, control=True):
+        return client_module.DiscoveryControlClient(UrllibSession(), self.url, CONTROL_TOKEN if control else READ_TOKEN)
+
+    def with_client_session(self, action):
+        with mock.patch.object(flow_module, "async_get_clientsession", lambda hass: UrllibSession()):
+            return run(action)
+
+    def test_options_create_edit_enable_disable_and_persist_in_cubi(self):
+        flow = self.options_flow()
+        created = self.with_client_session(flow.async_step_source_create({
+            "id": "calendar-one", "type": "localist", "name": "Calendar One", "enabled": False,
+            "interval_minutes": 45, "options": '{"url":"https://calendar.example"}',
+        }))
+        self.assertEqual((created["type"], created["data"]), ("create_entry", {"scan_interval": 30}))
+        source = self.with_client_session(self.api_client().source("calendar-one"))
+        self.assertEqual((source["type"], source["name"], source["enabled"], source["interval_minutes"]),
+                         ("localist", "Calendar One", False, 45))
+
+        flow = self.options_flow()
+        flow._source_action = "edit"
+        self.with_client_session(flow.async_step_source_select({"source_id": "calendar-one"}))
+        edited = self.with_client_session(flow.async_step_source_edit({
+            "name": "Calendar One Updated", "interval_minutes": 90,
+            "options": '{"url":"https://calendar.example","days":30}',
+        }))
+        self.assertEqual(edited["data"], {"scan_interval": 30})
+        source = self.with_client_session(self.api_client().source("calendar-one"))
+        self.assertEqual((source["name"], source["interval_minutes"], source["options"]["days"]),
+                         ("Calendar One Updated", 90, 30))
+
+        for enabled in (True, False):
+            flow = self.options_flow()
+            flow._source_action = "enable" if enabled else "disable"
+            self.with_client_session(flow.async_step_source_select({"source_id": "calendar-one"}))
+            self.with_client_session(flow.async_step_source_toggle({"enabled": enabled}))
+            source = self.with_client_session(self.api_client().source("calendar-one"))
+            self.assertEqual(source["enabled"], enabled)
+
+        # Known-source registration during service startup does not replace user-owned instance configuration.
+        self.built.register_known_sources()
+        persisted = self.with_client_session(self.api_client().source("calendar-one"))
+        self.assertEqual((persisted["name"], persisted["interval_minutes"], persisted["enabled"]),
+                         ("Calendar One Updated", 90, False))
+        restarted = app_module.build(self.db, clock=self.clock, fetch_client=self.client)
+        try:
+            restarted.register_known_sources()
+            persisted = restarted.control.get_source("calendar-one")
+            self.assertEqual((persisted.name, persisted.interval_minutes, persisted.enabled), ("Calendar One Updated", 90, False))
+        finally:
+            restarted.close()
+
+    def test_area_attachment_preserves_other_sources_and_rejects_stale_revision(self):
+        control = self.api_client()
+        self.with_client_session(control.create_source("calendar-one", "localist", "Calendar One", True, 60,
+                                                       {"url": "https://calendar.example"}))
+        area_key = self.sd.area_key
+        flow = self.options_flow()
+        self.with_client_session(flow.async_step_area_select({"area_key": area_key}))
+        self.with_client_session(flow.async_step_area_sources({"source_id": "calendar-one", "action": "attach"}))
+        area = self.with_client_session(self.api_client(False).area(area_key))
+        self.assertEqual(set(area["sources"]), {"sandiego_gov", "calendar-one"})
+
+        flow = self.options_flow()
+        self.with_client_session(flow.async_step_area_select({"area_key": area_key}))
+        current = self.with_client_session(control.area(area_key))
+        self.with_client_session(control.update_area(area_key, current["revision"], intensity="high"))
+        conflict = self.with_client_session(flow.async_step_area_sources({"source_id": "calendar-one", "action": "detach"}))
+        self.assertEqual((conflict["type"], conflict["reason"]), ("abort", "revision_conflict"))
+        area = self.with_client_session(self.api_client(False).area(area_key))
+        self.assertEqual(set(area["sources"]), {"sandiego_gov", "calendar-one"})
+        self.assertEqual(area["intensity"], "high", "the concurrent area update remains intact")
+
+        flow = self.options_flow()
+        self.with_client_session(flow.async_step_area_select({"area_key": area_key}))
+        detached = self.with_client_session(flow.async_step_area_sources({"source_id": "calendar-one", "action": "detach"}))
+        self.assertEqual(detached["type"], "create_entry")
+        area = self.with_client_session(self.api_client(False).area(area_key))
+        self.assertEqual(area["sources"], ["sandiego_gov"])
+
+    def test_read_only_flow_lists_but_cannot_mutate_and_api_errors_are_shown(self):
+        flow = self.options_flow(control=False)
+        listing = self.with_client_session(flow.async_step_sources())
+        self.assertEqual(listing["step_id"], "sources")
+        self.assertIn("sandiego_gov", listing["description_placeholders"]["instances"])
+        denied = self.with_client_session(flow.async_step_source_create({
+            "id": "calendar-one", "type": "localist", "name": "Calendar One", "enabled": True,
+            "interval_minutes": 60, "options": '{"url":"https://calendar.example"}',
+        }))
+        self.assertEqual(denied["errors"], {"base": "control_token_required"})
+        self.assertNotIn("calendar-one", [source["id"] for source in self.with_client_session(self.api_client(False).sources())])
+
+        flow = self.options_flow()
+        rejected = self.with_client_session(flow.async_step_source_create({
+            "id": "calendar-one", "type": "not-installed", "name": "Calendar One", "enabled": True,
+            "interval_minutes": 60, "options": "{}",
+        }))
+        self.assertEqual(rejected["errors"], {"base": "invalid_request"})
+        self.assertNotIn("calendar-one", [source["id"] for source in self.with_client_session(self.api_client(False).sources())])
 
 
 class Lifecycle(Service):

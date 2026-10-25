@@ -98,6 +98,25 @@ class DiscoveryControlClient:
     async def area(self, area_key):
         return (await self._request("GET", f"/v1/areas/{quote(area_key, safe='')}"))["area"]
 
+    async def sources(self):
+        """Configured producer instances from the authoritative Discovery database."""
+        return (await self._request("GET", "/v1/sources"))["sources"]
+
+    async def source(self, source_key):
+        return (await self._request("GET", f"/v1/sources/{quote(source_key, safe='')}"))["source"]
+
+    async def create_source(self, source_key, producer_type, name, enabled, interval_minutes, options):
+        body = {"id": source_key, "type": producer_type, "name": name, "enabled": enabled,
+                "interval_minutes": interval_minutes, "options": options}
+        return await self._request("POST", "/v1/sources", body)
+
+    async def update_source(self, source_key, expected_revision, **changes):
+        return await self._request("PATCH", f"/v1/sources/{quote(source_key, safe='')}", {"expected_revision": expected_revision, **changes})
+
+    async def set_source_enabled(self, source_key, expected_revision, enabled):
+        action = "enable" if enabled else "disable"
+        return await self._request("POST", f"/v1/sources/{quote(source_key, safe='')}/{action}", {"expected_revision": expected_revision})
+
     async def create_area(self, name, latitude, longitude, radius, unit="mi", intensity="normal", sources=(), enabled=True, request_id=None):
         body = {"name": name, "latitude": latitude, "longitude": longitude, "radius": radius, "unit": unit, "intensity": intensity,
                 "enabled": enabled, "sources": list(sources)}

@@ -43,12 +43,83 @@
       "init": {
         "title": "Area Events",
         "data": {
+          "action": "What would you like to configure?"
+        }
+      },
+      "scan_interval": {
+        "title": "Refresh interval",
+        "data": {
           "scan_interval": "Seconds between checks for new events"
         },
         "data_description": {
           "scan_interval": "One check serves every card. Between 5 and 300 seconds."
         }
+      },
+      "sources": {
+        "title": "Producer instances",
+        "description": "Configured instances from Cubi:\\n{instances}",
+        "data": {
+          "action": "Choose an action"
+        }
+      },
+      "source_create": {
+        "title": "Create producer instance",
+        "description": "The Discovery Service validates the producer type and options. Enter options as a JSON object.",
+        "data": {
+          "id": "Instance ID",
+          "type": "Installed producer type",
+          "name": "Display name",
+          "enabled": "Enabled",
+          "interval_minutes": "Refresh interval in minutes",
+          "options": "Producer options (JSON)"
+        }
+      },
+      "source_select": {
+        "title": "Select producer instance",
+        "data": {
+          "source_id": "Producer instance"
+        }
+      },
+      "source_edit": {
+        "title": "Edit producer instance",
+        "description": "Producer type is fixed. The Discovery Service validates the updated options.",
+        "data": {
+          "name": "Display name",
+          "interval_minutes": "Refresh interval in minutes",
+          "options": "Producer options (JSON)"
+        }
+      },
+      "source_toggle": {
+        "title": "Change producer status",
+        "description": "Instance {source_id} is currently enabled: {enabled}.",
+        "data": {
+          "enabled": "Enabled"
+        }
+      },
+      "area_select": {
+        "title": "Select discovery area",
+        "data": {
+          "area_key": "Area"
+        }
+      },
+      "area_sources": {
+        "title": "Attach producer instance",
+        "description": "Area {area_name} currently has these producer instances attached: {attached}. Changes preserve all other associations.",
+        "data": {
+          "source_id": "Producer instance",
+          "action": "Attach or detach"
+        }
       }
+    },
+    "error": {
+      "control_token_required": "A valid control token is required for changes. This integration is currently read-only.",
+      "revision_conflict": "The configuration changed in the Discovery Service. Reopen Options and review the latest value before retrying.",
+      "invalid_auth": "The Discovery Service rejected the configured token.",
+      "cannot_connect": "The Discovery Service could not be reached.",
+      "invalid_request": "The Discovery Service rejected this configuration. Check the producer options and try again.",
+      "invalid_json": "Enter producer options as a valid JSON object.",
+      "invalid_scan_interval": "Enter a whole number from 5 to 300 seconds.",
+      "unknown": "The configuration could not be saved."
     }
   }
 }

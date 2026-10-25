@@ -48,6 +48,7 @@ def to_feed_event(event):
         "url": event.get("source_url"),
         "categories": [],
         "source": {"name": source_name(sources[0]) if sources else None, "key": sources[0] if sources else None},
+        "source_keys": list(sources),
         "verified": False,
         "verification": {"status": "unverified", "evidence": [], "missing": list(event.get("missing") or []),
                          "note": "Read from the source's own listing; not independently confirmed."},

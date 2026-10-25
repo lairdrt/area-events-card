@@ -245,7 +245,7 @@ class DiscoveryHub:
         sources = {}
         for key in area.get("sources", ()):
             known = self._sources.get(key) or {}
-            count = sum(1 for e in feed.events if (e.get("source") or {}).get("key") == key)
+            count = sum(1 for e in feed.events if key in (e.get("source_keys") or [(e.get("source") or {}).get("key")]))
             sources[key] = {"name": source_name(key), "ok": not known.get("last_error"), "events": count, "last_success_at": known.get("last_success_at"),
                             "error": known.get("last_error")}
         service = self._service_view()
