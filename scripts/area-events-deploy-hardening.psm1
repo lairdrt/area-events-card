@@ -85,4 +85,26 @@ function Assert-AreaEventsFeedResponse {
   return $true
 }
 
-Export-ModuleMember -Function Import-AreaEventsDpapiCredential, New-AreaEventsRemotePythonCommand, Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsRequiredFrontendAssets, Assert-AreaEventsFeedResponse
+function Test-AreaEventsCodeBackupMembers {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][ValidateSet('legacy','modern')][string]$Layout,
+    [Parameter(Mandatory)][string[]]$Required,
+    [Parameter(Mandatory)][string[]]$Archived
+  )
+  $requiredNames = @($Required | ForEach-Object { $_.Replace('\','/') } | Where-Object { $_ })
+  $archivedNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  foreach ($name in $Archived) { [void]$archivedNames.Add($name.Replace('\','/')) }
+  if ($Layout -eq 'legacy') {
+    $packageCode = @($requiredNames | Where-Object { $_ -like 'area_events/*' })
+    if ($requiredNames -notcontains 'scripts/discovery.py' -or $packageCode.Count -eq 0) { return $false }
+  } else {
+    $packageCode = @($requiredNames | Where-Object { $_ -like 'src/area_events/*' })
+    if ($requiredNames -notcontains 'pyproject.toml' -or $packageCode.Count -eq 0) { return $false }
+  }
+  if (-not $requiredNames.Count) { return $false }
+  foreach ($name in $requiredNames) { if (-not $archivedNames.Contains($name)) { return $false } }
+  return $true
+}
+
+Export-ModuleMember -Function Import-AreaEventsDpapiCredential, New-AreaEventsRemotePythonCommand, Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsRequiredFrontendAssets, Assert-AreaEventsFeedResponse, Test-AreaEventsCodeBackupMembers

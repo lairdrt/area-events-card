@@ -272,8 +272,44 @@ function Invoke-Backups($state) {
   $script:LocalBackup=Join-Path $script:LocalBackupRoot $stamp
   New-Item -ItemType Directory -Force $script:LocalBackup | Out-Null
   $py=@'
-import hashlib,json,os,sqlite3,tarfile
+import hashlib,json,os,re,sqlite3,subprocess,tarfile
 root='/home/robohobo/area-events-discovery'; out=os.environ['AE_BACKUP']; os.makedirs(out,mode=0o700,exist_ok=False)
+unit=subprocess.run(['systemctl','--user','show','area-events-discovery.service','--property=ExecStart'],capture_output=True,text=True,timeout=12,check=True).stdout
+if root+'/scripts/discovery.py' in unit:
+ code_layout='legacy'
+ code_required=['scripts/discovery.py']
+ code_root='area_events'
+elif re.search(r'(?<!\S)-m\s+area_events(?:\s|$)',unit):
+ code_layout='modern'
+ code_required=['pyproject.toml']
+ code_root='src/area_events'
+else: raise RuntimeError('could not identify the active Discovery Service code layout')
+package=os.path.join(root,code_root)
+if os.path.islink(package): raise RuntimeError('active Discovery Service package is a symlink and cannot be safely archived')
+if code_layout=='legacy' and os.path.islink(root+'/scripts/discovery.py'): raise RuntimeError('legacy Discovery Service entry point is a symlink')
+if code_layout=='modern' and os.path.islink(root+'/pyproject.toml'): raise RuntimeError('modern package metadata is a symlink')
+for current,dirs,files in os.walk(package):
+ dirs[:]=[name for name in dirs if name!='__pycache__']
+ if any(os.path.islink(os.path.join(current,name)) for name in dirs): raise RuntimeError('active Discovery Service package contains a symlink directory')
+ for name in files:
+  path=os.path.join(current,name)
+  if os.path.islink(path): raise RuntimeError('active Discovery Service package contains a symlink file')
+  if name.endswith('.pyc'): continue
+  code_required.append(os.path.relpath(path,root).replace(os.sep,'/'))
+if not os.path.isdir(package) or not any(name.startswith(code_root+'/') for name in code_required):
+ raise RuntimeError('active Discovery Service package contents are missing')
+if code_layout=='legacy' and 'scripts/discovery.py' not in code_required: raise RuntimeError('legacy Discovery Service entry point is missing')
+if code_layout=='modern' and ('pyproject.toml' not in code_required or 'src/area_events/__init__.py' not in code_required):
+ raise RuntimeError('modern Discovery Service package metadata or entry package is missing')
+if code_layout=='legacy' and os.path.isfile(root+'/scripts/workbench.py'):
+ if os.path.islink(root+'/scripts/workbench.py'): raise RuntimeError('legacy Discovery Service workbench helper is a symlink')
+ code_required.append('scripts/workbench.py')
+code_hashes={}
+for rel in code_required:
+ h=hashlib.sha256()
+ with open(root+'/'+rel,'rb') as f:
+  for block in iter(lambda:f.read(1024*1024),b''): h.update(block)
+ code_hashes[rel]=h.hexdigest()
 s=sqlite3.connect('file:'+root+'/data/discovery/discovery.db?mode=ro',uri=True,timeout=10); d=sqlite3.connect(out+'/discovery.db')
 try:
  s.backup(d); d.commit()
@@ -292,15 +328,23 @@ with tarfile.open(out+'/accepted-files.tar.gz','w:gz') as t:
 r['archive_sha256']=hashlib.sha256(open(out+'/accepted-files.tar.gz','rb').read()).hexdigest()
 with tarfile.open(out+'/accepted-files.tar.gz','r:gz') as t:
  members=t.getmembers(); names={m.name for m in members}
- if 'pyproject.toml' not in names or 'src/area_events' not in names: raise RuntimeError('code backup contents are incomplete')
+ code_archived=sorted(name for name in names if name in code_required or name.startswith(code_root+'/'))
+ if not set(code_required)<=names: raise RuntimeError('code backup contents are incomplete for the active '+code_layout+' layout')
  for m in members:
   if m.isfile():
    f=t.extractfile(m)
-   if f is None or len(f.read())!=m.size: raise RuntimeError('code/media/config backup member failed verification')
-r['archive_members']=len(members); r['backup']=out
-open(out+'/verification.json','w').write(json.dumps(r,sort_keys=True)); print(json.dumps(r))
+   if f is None: raise RuntimeError('code/media/config backup member failed verification')
+   data=f.read()
+   if len(data)!=m.size: raise RuntimeError('code/media/config backup member failed verification')
+   if m.name in code_hashes and hashlib.sha256(data).hexdigest()!=code_hashes[m.name]:
+    raise RuntimeError('code backup member contents failed hash verification: '+m.name)
+r['code_layout']=code_layout; r['code_files']=len(code_required); r['archive_members']=len(members); r['backup']=out
+open(out+'/verification.json','w').write(json.dumps(r,sort_keys=True)); print(json.dumps(dict(r,code_required=code_required,code_archived=code_archived)))
 '@
   $result=Invoke-CubiPython $py @{AE_BACKUP=$script:RemoteBackup} 180 | ConvertFrom-Json
+  if (-not (Test-AreaEventsCodeBackupMembers -Layout $result.code_layout -Required @($result.code_required) -Archived @($result.code_archived))) {
+    throw "Code backup contents are incomplete for the detected $($result.code_layout) installation."
+  }
   if ($result.schema -ne $state.Remote.schema -or $result.events -ne $state.Remote.events -or $result.associations -ne $state.Remote.associations) { throw 'Cubi backup did not match preflight counts.' }
   $null=Invoke-BoundedBlock {
     param($source,$backup,$share)

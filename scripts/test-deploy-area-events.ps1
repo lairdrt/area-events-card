@@ -88,6 +88,24 @@ Check 'backup uses SQLite backup API and migration checks preserve stable keys a
   foreach($needle in @('.backup(d)','quick_check','foreign_key_check','event_key','candidate_key')) { if ($text -notmatch [regex]::Escape($needle)) { throw "missing backup or invariant check: $needle" } }
   if ($text -match 'copy.*discovery\.db.*production|restore.*discovery\.db') { throw 'automatic database snapshot restore is forbidden' }
 }
+Check 'code backup verification accepts complete legacy or modern layouts and rejects incomplete contents' {
+  $legacy=@('scripts/discovery.py','scripts/workbench.py','area_events/__init__.py','area_events/discovery.py')
+  if (-not (Test-AreaEventsCodeBackupMembers -Layout legacy -Required $legacy -Archived $legacy)) { throw 'complete legacy runtime backup was rejected' }
+  $modern=@('pyproject.toml','src/area_events/__init__.py','src/area_events/app.py')
+  if (-not (Test-AreaEventsCodeBackupMembers -Layout modern -Required $modern -Archived $modern)) { throw 'complete modern package backup was rejected' }
+  foreach ($case in @(
+    @{Layout='legacy';Required=$legacy;Archived=@('scripts/discovery.py','area_events/__init__.py','area_events/discovery.py')},
+    @{Layout='modern';Required=$modern;Archived=@('pyproject.toml','src/area_events/__init__.py')},
+    @{Layout='modern';Required=@('pyproject.toml','src/area_events/app.py');Archived=@('pyproject.toml','src/area_events/__init__.py')}
+  )) {
+    if (Test-AreaEventsCodeBackupMembers -Layout $case.Layout -Required $case.Required -Archived $case.Archived) {
+      throw "incomplete $($case.Layout) code backup was accepted"
+    }
+  }
+  $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
+  if ($text -match "if 'pyproject.toml' not in names or 'src/area_events' not in names") { throw 'backup verifier still requires the modern layout unconditionally' }
+  if ($text -notmatch 'active Discovery Service code layout' -or $text -notmatch 'code_archived=') { throw 'backup does not verify the active layout against archived members' }
+}
 Check 'HA restart and module verification are authenticated and bounded' {
   $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
   if ($text -notmatch 'CoreRecoveryTimeoutSeconds' -or $text -notmatch 'Test-HaWebSocket' -or $text -notmatch 'Get-AreaEventsRequiredFrontendAssets') { throw 'HA restart, websocket or manifest-driven module checks are missing' }
