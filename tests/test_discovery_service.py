@@ -13,16 +13,16 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from discovery import safe
+from area_events.discovery import safe
 from tests.db import database
-from discovery.safe import FetchError
-from discovery.safe import BlockedError, HostPolicy, Response, SafeFetcher
-from discovery.service import app as app_module
-from discovery.service.persistence import store as store_module
-from discovery.service.contracts import CandidateQuery
-from discovery.service.producer import EventCandidate, ProducerResult
-from discovery.service.persistence.events import EventRepository
-from discovery.service.persistence.repositories import (
+from area_events.discovery.safe import FetchError
+from area_events.discovery.safe import BlockedError, HostPolicy, Response, SafeFetcher
+from area_events import app as app_module
+from area_events.persistence import store as store_module
+from area_events.contracts.models import CandidateQuery
+from area_events.discovery.producer import EventCandidate, ProducerResult
+from area_events.persistence.events import EventRepository
+from area_events.persistence.repositories import (
     CandidateRepository,
     ChangeLog,
     JobRepository,
@@ -32,10 +32,10 @@ from discovery.service.persistence.repositories import (
     SourceRepository,
     SourceSpec,
 )
-from discovery.service.persistence.schema import LATEST
-from discovery.service.service import DiscoveryConfig, job_key_for
-from discovery.service.persistence.store import DiscoveryStore, StorageUnavailable
-from discovery.service.urls import canonical_url, url_key
+from area_events.persistence.schema import LATEST
+from area_events.discovery.service import DiscoveryConfig, job_key_for
+from area_events.persistence.store import DiscoveryStore, StorageUnavailable
+from area_events.discovery.urls import canonical_url, url_key
 
 from tests.test_site_discovery import CITY_URL, city_detail, city_listing
 
@@ -388,9 +388,9 @@ class Recovery(Fixture):
         self.assertEqual(second.service.recover(), 1)
         self.assertEqual(second.service.run_once().outcome, "completed")
         second.close()
-        code = ("import sys, json; sys.path.insert(0, sys.argv[1]); from discovery.service.app import build; app = build(sys.argv[2]); "
+        code = ("import sys, json; from area_events.app import build; app = build(sys.argv[1]); "
                 "s = app.reader.status(); print(json.dumps([s.candidates, s.pages, s.jobs.done, s.schema_version])); app.close()")
-        out = subprocess.run([sys.executable, "-c", code, os.path.join(ROOT, "area_events"), self.db], capture_output=True, text=True, timeout=60)
+        out = subprocess.run([sys.executable, "-c", code, self.db], capture_output=True, text=True, timeout=60)
         self.assertEqual(json.loads(out.stdout), [4, 5, 1, LATEST], out.stderr)
 
     def test_a_locked_or_failing_database_pauses_discovery_for_a_bounded_time_and_then_it_resumes(self):

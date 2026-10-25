@@ -5,7 +5,7 @@ Proof that Area Events can find event sources it was not told about and turn the
 **What it is.** One new source, `sd_craft_fairs` (adapter `craft_fairs`), registered like the City and Austin sources. Its options name three **seed pages**: two public vendor listings of the craft fairs the vendor sells at
 (sweetandquirky.com, my2dragonflies.com) and one organizer page (Holy Family parish). Everything else is found by following links.
 
-**How a run works** (`service/producers/craft_fairs.py`, reading rules in `service/producers/craft_fairs/`; no browser, no JavaScript, depth one, at most 10 followed pages, all through the shared SafeFetcher: public addresses, robots.txt, per-host spacing):
+**How a run works** (`src/area_events/discovery/producers/craft_fairs/`; no browser, no JavaScript, depth one, at most 10 followed pages, all through the shared SafeFetcher: public addresses, robots.txt, per-host spacing):
 
 1. Each seed is read. A listing page yields its dated cards (title, date, clock time, the place the card writes, the card's links).
 2. A card becomes a candidate only if it names a **craft fair** (craft fair/show/sale, handmade or artisan fair or marketplace, makers market; a farmers or flea market, a job or science fair, a street festival is not) and a **San Diego County place** (a county place name or a 919xx-921xx ZIP; a card under a San Diego heading that names a place is accepted; an address in another state is not).

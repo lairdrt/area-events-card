@@ -1,10 +1,7 @@
-"""Event Analysis Workbench: python scripts/workbench.py url <address> | fixture <file> (see docs/producer-contract.md)."""
-import os
-import sys
+"""Event Analysis Workbench entry point for an installed Area Events package."""
+"""Compatibility command for the independent discovery workbench."""
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "area_events"))
-
-from discovery.workbench import main  # noqa: E402
+from area_events.discovery.workbench import main
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

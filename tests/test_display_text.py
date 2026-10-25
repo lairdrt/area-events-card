@@ -3,7 +3,7 @@ import json
 import sqlite3
 import unittest
 
-from discovery.service.text import decode_entities, place_label
+from area_events.extraction.text import decode_entities, place_label
 from tests.test_extraction import Fixture, candidate_payload
 
 SENTENCE = "The Little Italy Mercato operates on West Date Street from the cul de sac at Kettner to India Street, every Saturday morning."

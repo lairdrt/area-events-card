@@ -4,7 +4,7 @@ import tempfile
 import time
 import unittest
 
-from discovery import media
+from area_events.enrichment import media
 from tests.test_media import SD, FakeFetcher
 
 

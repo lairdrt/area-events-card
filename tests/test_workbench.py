@@ -8,10 +8,12 @@ import unittest
 from datetime import datetime, timezone
 from unittest import mock
 
-from discovery import classifiers, classify, evidence, refresh, workbench
-from discovery.core import FetchError
-from discovery.safe import SafeFetcher
-from discovery.sources import web
+from area_events.classification import classifiers, classify
+from area_events.contracts import evidence
+from area_events.discovery import refresh, workbench
+from area_events.discovery.core import FetchError
+from area_events.discovery.safe import SafeFetcher
+from area_events.discovery.sources import web
 from tests.test_modules import ConstantClassifier
 from tests.test_site_discovery import Client, day, written
 from tests.test_web import SITE, event, html, ld

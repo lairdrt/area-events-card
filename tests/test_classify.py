@@ -8,10 +8,11 @@ import time
 import unittest
 from unittest import mock
 
-from discovery import classify, images
-from discovery import refresh as refresh_module
-from discovery import sources as sources_module
-from discovery.core import FetchError, finish_event, make_event
+from area_events.classification import classify
+from area_events.enrichment import images
+from area_events.discovery import refresh as refresh_module
+from area_events.discovery import sources as sources_module
+from area_events.discovery.core import FetchError, finish_event, make_event
 from datetime import datetime, timedelta, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -200,7 +201,7 @@ class Annotation(unittest.TestCase):
 
 class Packaging(unittest.TestCase):
     def test_the_engine_only_names_illustrations_the_card_has(self):
-        with open(os.path.join(ROOT, "src", "presentation", "community.js"), encoding="utf-8") as handle:
+        with open(os.path.join(ROOT, "src", "frontend", "presentation", "community.js"), encoding="utf-8") as handle:
             source = handle.read()
         art = source[source.index("export const ART = {"):source.index("export const ART_LABELS")]
         card_keys = set(re.findall(r"^  ([a-z_]+): SVG_HEAD", art, re.M))

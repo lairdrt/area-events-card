@@ -2,13 +2,13 @@
 
     SOURCE PRODUCERS -> STANDARD RECORDS -> EVENT PROCESSING -> DEDUPLICATION <-> PERSISTENCE (one database) -> PRESENTATION
 
-* A producer (`service/producers/<name>/`) owns everything about one source and depends only on the contract, the fetch client it is given, URL identity and the neutral text and
+* A producer (`producers/<name>/`) owns everything about one source and depends only on the contract, the fetch client it is given, URL identity and the neutral text and
   time utilities. Producers do not depend on each other, on persistence, or on any earlier-engine code.
-* The new application (`service/`) and the neutral modules it relies on never import, directly or through any chain of imports, the earlier engine (`core`, `engine`, `registry`,
+* The new application (``) and the neutral modules it relies on never import, directly or through any chain of imports, the earlier engine (`core`, `engine`, `registry`,
   `server`, `workbench`, ...) or its source readers (`sources/`). The earlier engine may import the new code; not the other way round.
-* Persistence (`service/persistence/`) exclusively owns the database: only it imports sqlite3, runs SQL or holds a transaction, and the rest of the service reaches it only through
+* Persistence (`persistence/`) exclusively owns the database: only it imports sqlite3, runs SQL or holds a transaction, and the rest of the service reaches it only through
   `persistence/ports.py`. Only the composition root builds it.
-* Deduplication (`service/deduplication/`) owns the matching rules: it imports no database and no persistence, and Persistence knows its interface only, never a concrete strategy.
+* Deduplication (`deduplication/`) owns the matching rules: it imports no database and no persistence, and Persistence knows its interface only, never a concrete strategy.
 * Event processing, deduplication and persistence name no source.
 
 The rules are functions of a source tree, `violations(root)`. The real tree must have none; the meta tests inject each kind of violation into a copy of the tree and require the rule
@@ -22,20 +22,20 @@ import shutil
 import tempfile
 import unittest
 
-from discovery.service import producer
+from area_events.discovery import producer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DISCOVERY = os.path.join(ROOT, "area_events", "discovery")
+DISCOVERY = os.path.join(ROOT, "src", "area_events")
 
 # Neutral modules: generic utilities and libraries that belong to no engine and no source. They may import only each other and the standard library.
-NEUTRAL = frozenset(("safe", "timeutil", "textutil", "textloc", "evidence", "media", "maps", "images", "classify", "classifiers"))
-PRODUCER_MAY_USE = frozenset(("safe", "timeutil", "textutil", "textloc"))
-PRODUCER_MAY_USE_SERVICE = frozenset(("producer", "fetching", "urls"))
-COMPOSITION_ROOT = "service.app"
-PERSISTENCE = "service.persistence"
-PORTS = "service.persistence.ports"
-BUILD = "service.persistence.build"
-DEDUPLICATION = "service.deduplication"
+NEUTRAL = frozenset(("discovery.safe", "common.timeutil", "common.textutil", "geolocation.textloc", "contracts.evidence", "enrichment.media", "enrichment.maps", "enrichment.images", "classification.classify", "classification.classifiers"))
+PRODUCER_MAY_USE = frozenset(("discovery.safe", "common.timeutil", "common.textutil", "geolocation.textloc"))
+PRODUCER_MAY_USE_SERVICE = frozenset(("discovery.producer", "discovery.fetching", "discovery.urls"))
+COMPOSITION_ROOT = "app"
+PERSISTENCE = "persistence"
+PORTS = "persistence.ports"
+BUILD = "persistence.build"
+DEDUPLICATION = "deduplication"
 DEDUP_STDLIB = frozenset(("dataclasses", "typing", "hashlib", "re", "__future__"))
 PERSISTENCE_CALLS = frozenset(("execute", "executemany", "executescript", "cursor", "commit", "rollback"))
 SQL_TEXT = re.compile(r"\b(SELECT\s.+\sFROM|INSERT\s+(OR\s+\w+\s+)?INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|CREATE\s+(TABLE|INDEX)|ALTER\s+TABLE|PRAGMA\s+\w+)\b", re.I | re.S)
@@ -44,21 +44,31 @@ STORAGE_CLASS = re.compile(r"^(Sqlite\w+|\w+Repository|DiscoveryStore|LocalMedia
 LEGACY_EVENT_BUILDERS = frozenset(("make_event", "finish_event"))
 SOURCE_WORDS = ("sandiego_gov", "ut_austin", "localist", "craft_fairs", "sd_craft_fairs", "sandiego.gov", "eventbrite", "sweetandquirky")
 # The reviewed layering of the service itself: each module may import only these service modules (new edges must be added here on purpose).
+LEGACY_PREFIXES = ("discovery.core", "discovery.engine", "discovery.merge", "discovery.profiles", "discovery.publish", "discovery.refresh", "discovery.registry", "discovery.server", "discovery.supervisor", "discovery.workbench", "discovery.sources")
 ALLOWED = {
-    "service": set(), "service.api": {"service.control", "service.events"},
-    "service.cli": {"service.app", "service.contracts", "service.control", "service.events", "service.extraction", "service.service"},
-    "service.contracts": set(), "service.control": {"service.contracts", PORTS}, "service.enrichment": {"service.contracts", PORTS, "service.text"},
-    "service.events": {"service.contracts", PORTS}, "service.extraction": {"service.contracts", "service.text"}, "service.fetching": set(), "service.host": set(),
-    "service.processing": {"service.contracts", PORTS}, "service.producer": set(), "service.scheduler": {PORTS},
-    "service.service": {"service.contracts", "service.fetching", "service.producer", PORTS}, "service.text": set(), "service.urls": set(),
-    DEDUPLICATION: {"service.contracts"}, f"{DEDUPLICATION}.exact": {DEDUPLICATION}, f"{DEDUPLICATION}.tolerant": {DEDUPLICATION},
-    PERSISTENCE: set(), PORTS: set(), f"{PERSISTENCE}.areas": {"service.contracts"}, f"{PERSISTENCE}.control": {"service.contracts"},
-    f"{PERSISTENCE}.crawl": {"service.contracts", PORTS, f"{PERSISTENCE}.repositories", "service.urls"},
-    f"{PERSISTENCE}.events": {"service.contracts", DEDUPLICATION, "service.events"}, f"{PERSISTENCE}.media": {"service.contracts"},
-    f"{PERSISTENCE}.processing": {"service.contracts", f"{PERSISTENCE}.events"}, f"{PERSISTENCE}.reading": {"service.contracts"},
-    f"{PERSISTENCE}.repositories": {"service.contracts", "service.producer", "service.urls"}, f"{PERSISTENCE}.scheduling": {"service.contracts"}, f"{PERSISTENCE}.schema": set(),
-    f"{PERSISTENCE}.store": {"service.contracts", f"{PERSISTENCE}.schema"},
-    BUILD: {f"{PERSISTENCE}.{n}" for n in ("areas", "control", "crawl", "events", "media", "processing", "reading", "repositories", "scheduling", "store")} | {PORTS},
+    COMPOSITION_ROOT: set(), "__main__": {"cli"}, "cli": {"app", "contracts.models", "control.service", "api.events", "extraction.service", "discovery.service"},
+    "api": set(), "api.events": {"contracts.models", PORTS}, "api.http_api": {"control.service", "api.events"},
+    "classification": set(), "classification.classifiers": {"classification.classify"}, "classification.classify": set(), "classification.photo_subject": set(),
+    "common": set(), "common.textutil": set(), "common.timeutil": set(),
+    "control": set(), "control.service": {"contracts.models", PORTS}, "contracts": set(), "contracts.evidence": set(), "contracts.models": set(),
+    DEDUPLICATION: {"contracts.models"}, f"{DEDUPLICATION}.exact": {DEDUPLICATION}, f"{DEDUPLICATION}.tolerant": {DEDUPLICATION},
+    "discovery": set(), "discovery.fetching": {"discovery.safe"}, "discovery.host": set(), "discovery.producer": set(), "discovery.producers": set(),
+    "discovery.producers.city_of_san_diego": {"discovery.producer", "discovery.safe", "common.textutil", "common.timeutil", "geolocation.textloc"},
+    "discovery.producers.localist": {"discovery.producer", "discovery.safe"},
+    "discovery.producers.craft_fairs": set(), "discovery.producers.craft_fairs.acquisition": {"discovery.safe", "discovery.fetching", "discovery.producer", "discovery.urls", "common.timeutil"},
+    "discovery.producers.craft_fairs.pages": {"common.textutil", "common.timeutil"}, "discovery.producers.craft_fairs.reading": {"geolocation.textloc", "common.textutil", "common.timeutil"},
+    "discovery.safe": set(), "discovery.scheduler": {PORTS}, "discovery.service": {"contracts.evidence", "discovery.safe", "discovery.producer", "contracts.models", "discovery.fetching", PORTS}, "discovery.urls": set(),
+    "enrichment": set(), "enrichment.images": set(), "enrichment.maps": set(), "enrichment.media": {"enrichment.maps", "geolocation.textloc", "discovery.safe"},
+    "enrichment.service": {"classification.classifiers", "enrichment.images", "discovery.safe", "enrichment.media", "contracts.models", PORTS, "extraction.text"},
+    "extraction": set(), "extraction.text": {"geolocation.textloc"}, "extraction.service": {"contracts.evidence", "geolocation.textloc", "contracts.models", "extraction.text"},
+    "geolocation": set(), "geolocation.location": {"discovery.safe"}, "geolocation.place": {"geolocation.location"}, "geolocation.textloc": set(),
+    PERSISTENCE: set(), PORTS: set(), f"{PERSISTENCE}.areas": {"contracts.models"}, f"{PERSISTENCE}.control": {"contracts.models"},
+    f"{PERSISTENCE}.crawl": {"contracts.models", PORTS, f"{PERSISTENCE}.repositories", "discovery.urls"},
+    f"{PERSISTENCE}.events": {"contracts.models", DEDUPLICATION, "api.events"}, f"{PERSISTENCE}.media": {"contracts.models"},
+    f"{PERSISTENCE}.processing": {"contracts.evidence", "contracts.models", f"{PERSISTENCE}.events"}, f"{PERSISTENCE}.reading": {"contracts.models"},
+    f"{PERSISTENCE}.repositories": {"contracts.models", "discovery.producer", "discovery.urls"}, f"{PERSISTENCE}.scheduling": {"contracts.models"}, f"{PERSISTENCE}.schema": set(),
+    f"{PERSISTENCE}.store": {"contracts.models", f"{PERSISTENCE}.schema"}, BUILD: {f"{PERSISTENCE}.{n}" for n in ("areas", "control", "crawl", "events", "media", "processing", "reading", "repositories", "scheduling", "store")} | {PORTS},
+    "validation": set(), "validation.processing": {"contracts.models", PORTS},
 }
 
 
@@ -72,7 +82,7 @@ def modules(root):
             if name.endswith(".py"):
                 path = os.path.join(folder, name)
                 rel = os.path.relpath(path, root)[:-3].replace(os.sep, ".")
-                found[rel[:-9] if rel.endswith(".__init__") else rel] = path
+                found[rel[:-9] if rel.endswith(".__init__") else ("" if rel == "__init__" else rel)] = path
     found.pop("", None)
     return found
 
@@ -162,7 +172,7 @@ def graph(root):
                 if level - 1 > len(base):
                     continue
                 parts = base[:len(base) - (level - 1)] + (module.split(".") if module else [])
-            elif module.split(".")[0] == "discovery":
+            elif module.startswith("area_events."):
                 parts = module.split(".")[1:]
             else:
                 outside.add(module.split(".")[0])
@@ -172,7 +182,7 @@ def graph(root):
                 child = f"{dotted}.{alias}" if dotted else alias
                 add(child if child in mods else dotted, [alias])
         for dotted_name in plain:
-            if dotted_name.split(".")[0] == "discovery":
+            if dotted_name.startswith("area_events."):
                 add(".".join(dotted_name.split(".")[1:]))
             else:
                 outside.add(dotted_name.split(".")[0])
@@ -181,11 +191,11 @@ def graph(root):
 
 
 def is_new(name):
-    return name == "service" or name.startswith("service.")
+    return not is_legacy(name) and not is_neutral(name)
 
 
 def is_producer(name):
-    return name.startswith("service.producers.")
+    return name.startswith("discovery.producers.")
 
 
 def producer_of(name):
@@ -197,7 +207,7 @@ def is_neutral(name):
 
 
 def is_legacy(name):
-    return not is_new(name) and not is_neutral(name)
+    return any(name == prefix or name.startswith(prefix + ".") for prefix in LEGACY_PREFIXES)
 
 
 def is_persistence(name):
@@ -224,7 +234,7 @@ def violations(root):
                 found.append(f"new-to-legacy: {name} imports the earlier engine's {target}")
             if is_neutral(name) and not is_neutral(target):
                 found.append(f"neutral-purity: {name} imports {target}")
-            if is_new(name) and not is_producer(name) and name != COMPOSITION_ROOT and (target == "service.producers" or is_producer(target)):
+            if is_new(name) and not is_producer(name) and name != COMPOSITION_ROOT and (target == "discovery.producers" or is_producer(target)):
                 found.append(f"producers-wired-in-the-root-only: {name} imports a producer ({target})")
             if is_new(name) and not is_producer(name) and name != COMPOSITION_ROOT and is_new(target) and not is_producer(target):
                 if name in ALLOWED and target not in ALLOWED[name]:
@@ -239,7 +249,7 @@ def violations(root):
                 concrete = sorted(n for n in info["names"].get(target, ()) if STORAGE_CLASS.match(n))
                 if concrete:
                     found.append(f"concrete-storage: {name} imports the storage class(es) {concrete} from {target}")
-        if is_new(name) and not is_producer(name) and name != "service.producers" and name != COMPOSITION_ROOT and name not in ALLOWED:
+        if is_new(name) and not is_producer(name) and name != "discovery.producers" and name != COMPOSITION_ROOT and name not in ALLOWED:
             found.append(f"layering: {name} is not in the reviewed layering")
 
     for name in outside_persistence:   # exclusive ownership of the database
@@ -266,7 +276,7 @@ def violations(root):
         if bad:
             found.append(f"dedup-purity: {name} imports {sorted(bad)}")
         for target in info["inside"]:
-            if not (is_dedup(target) or target == "service.contracts"):
+            if not (is_dedup(target) or target == "contracts.models"):
                 found.append(f"dedup-purity: {name} imports {target}")
 
     if PORTS in mods:   # a port speaks the language of the caller, never SQL
@@ -281,7 +291,7 @@ def violations(root):
         for target in info["inside"]:
             if is_producer(target) and producer_of(target) != producer_of(name):
                 found.append(f"producer-independence: {name} imports another producer ({target})")
-            elif is_new(target) and not is_producer(target) and target not in {f"service.{n}" for n in PRODUCER_MAY_USE_SERVICE} | {"service"}:
+            elif is_new(target) and not is_producer(target) and target not in {f"{n}" for n in PRODUCER_MAY_USE_SERVICE} | {""}:
                 found.append(f"persistence-and-pipeline: producer {name} imports {target}")
             elif not is_new(target) and target not in PRODUCER_MAY_USE:
                 found.append(f"producer-inputs: {name} imports {target}")
@@ -331,11 +341,11 @@ def violations(root):
             if LEGACY_EVENT_BUILDERS & set(imported):
                 found.append(f"legacy-event-builders: {name} imports {sorted(LEGACY_EVENT_BUILDERS & set(imported))} from {target}")
 
-    for name in sorted(n for n in mods if (is_new(n) and not is_producer(n) and n not in ("service.producers", COMPOSITION_ROOT)) or is_neutral(n)):   # no source named downstream
+    for name in sorted(n for n in mods if (is_new(n) and not is_producer(n) and n not in ("discovery.producers", COMPOSITION_ROOT)) or is_neutral(n)):   # no source named downstream
         for word, line in facts(read(mods[name]))["words"]:
             found.append(f"source-knowledge: {name} mentions '{word}' (line {line})")
 
-    for name in sorted({n for n in mods if is_new(n) and not is_producer(n) and not is_persistence(n)} - {COMPOSITION_ROOT, "service.cli", "service.producer", "service.producers"}):
+    for name in sorted({n for n in mods if is_new(n) and not is_producer(n) and not is_persistence(n)} - {COMPOSITION_ROOT, "cli", "discovery.producer", "discovery.producers"}):
         for what, line in facts(read(mods[name]))["state"]:   # a producer's working state belongs to its producer
             found.append(f"producer-state: {name} reads {what} (line {line})")
     return found
@@ -348,12 +358,12 @@ class Real(unittest.TestCase):
     def test_the_graph_is_what_was_reviewed(self):
         g = graph(DISCOVERY)
         producers = {n for n in g if is_producer(n)}
-        self.assertTrue({"service.producers.city_of_san_diego", "service.producers.localist"} <= producers)
-        self.assertTrue(any(n.startswith("service.producers.craft_fairs") for n in producers))
-        self.assertTrue({"service.producer", "service.service", "service.extraction", "service.enrichment", "service.processing", PORTS, BUILD, DEDUPLICATION} <= set(g))
-        self.assertTrue(set(ALLOWED) - {"service"} <= set(g), "the reviewed layering names real modules only")
+        self.assertTrue({"discovery.producers.city_of_san_diego", "discovery.producers.localist"} <= producers)
+        self.assertTrue(any(n.startswith("discovery.producers.craft_fairs") for n in producers))
+        self.assertTrue({"discovery.producer", "discovery.service", "extraction.service", "enrichment.service", "validation.processing", PORTS, BUILD, DEDUPLICATION} <= set(g))
+        self.assertTrue(set(ALLOWED) - {""} <= set(g), "the reviewed layering names real modules only")
         for name in g:
-            if is_new(name) and not is_producer(name) and name not in ("service.producers", COMPOSITION_ROOT):
+            if is_new(name) and not is_producer(name) and name not in ("discovery.producers", COMPOSITION_ROOT):
                 self.assertIn(name, ALLOWED, f"{name} is not in the reviewed layering")
 
     def test_what_the_new_application_reaches_is_only_new_or_neutral(self):
@@ -380,18 +390,18 @@ class Real(unittest.TestCase):
         g = graph(DISCOVERY)
         self.assertEqual(sorted(n for n, info in g.items() if BUILD in info["inside"]), [COMPOSITION_ROOT])
         self.assertEqual(sorted(n for n, info in g.items() if any(is_strategy(t) for t in info["inside"]) and not is_dedup(n)), [COMPOSITION_ROOT])
-        self.assertEqual(g[DEDUPLICATION]["inside"], {"service.contracts"})
+        self.assertEqual(g[DEDUPLICATION]["inside"], {"contracts.models"})
 
     def test_a_new_producer_needs_only_its_own_package_and_the_root_wiring(self):
         g = graph(DISCOVERY)
-        importers = {n for n, info in g.items() if any(is_producer(t) or t == "service.producers" for t in info["inside"]) and not is_producer(n)}
+        importers = {n for n, info in g.items() if any(is_producer(t) or t == "discovery.producers" for t in info["inside"]) and not is_producer(n)}
         self.assertEqual(importers - {n for n in g if not is_new(n)}, {COMPOSITION_ROOT})
-        self.assertEqual(g["service.producer"]["inside"], set())
+        self.assertEqual(g["discovery.producer"]["inside"], set())
 
     def test_deduplication_uses_event_facts_and_stable_keys_without_generated_match_identity(self):
-        strategy_text = "\n".join(read(os.path.join(DISCOVERY, "service", "deduplication", name)) for name in ("__init__.py", "exact.py", "tolerant.py"))
-        persistence_events = read(os.path.join(DISCOVERY, "service", "persistence", "events.py"))
-        schema = read(os.path.join(DISCOVERY, "service", "persistence", "schema.py"))
+        strategy_text = "\n".join(read(os.path.join(DISCOVERY, "deduplication", name)) for name in ("__init__.py", "exact.py", "tolerant.py"))
+        persistence_events = read(os.path.join(DISCOVERY, "persistence", "events.py"))
+        schema = read(os.path.join(DISCOVERY, "persistence", "schema.py"))
         for source in (strategy_text, persistence_events):
             self.assertNotIn("match_key", source)
             self.assertNotIn("by_identity", source)
@@ -400,9 +410,9 @@ class Real(unittest.TestCase):
         self.assertIn("DROP COLUMN match_key", schema, "removal is an explicit migration, not an edited historical schema")
 
     def test_imagery_enrichment_receives_only_the_media_cache_port(self):
-        app = read(os.path.join(DISCOVERY, "service", "app.py"))
-        enrichment = read(os.path.join(DISCOVERY, "service", "enrichment.py"))
-        ports = read(os.path.join(DISCOVERY, "service", "persistence", "ports.py"))
+        app = read(os.path.join(DISCOVERY, "app.py"))
+        enrichment = read(os.path.join(DISCOVERY, "enrichment", "service.py"))
+        ports = read(os.path.join(DISCOVERY, "persistence", "ports.py"))
         self.assertIn("persistence.media_cache", app)
         self.assertNotIn("persistence.media_store", app)
         self.assertIn("store: MediaCache", enrichment)
@@ -428,7 +438,7 @@ class Records(unittest.TestCase):
     def test_no_trace_of_the_earlier_stored_form_or_adapter_result(self):
         banned = ("AdapterResult", "from_event_dict", "to_payload", "from_events", "discovery.service.adapters", "from .adapters", "payloads(connection")
         here = os.path.abspath(__file__)
-        for top in ("area_events", "tests", "scripts"):
+        for top in ("src/area_events", "tests", "scripts"):
             for folder, _, files in os.walk(os.path.join(ROOT, top)):
                 if "__pycache__" in folder:
                     continue
@@ -450,7 +460,17 @@ class Detection(unittest.TestCase):
             root = os.path.join(folder, "discovery")
             shutil.copytree(DISCOVERY, root, ignore=shutil.ignore_patterns("__pycache__", "*.json"))
             for relative, text in edits.items():
-                with open(os.path.join(root, *relative.split("/")), "a", encoding="utf-8") as handle:
+                aliases = {
+                    "events.py": "api/events.py", "extraction.py": "extraction/service.py",
+                    "processing.py": "validation/processing.py", "enrichment.py": "enrichment/service.py",
+                    "control.py": "control/service.py", "py": "app.py", "textutil.py": "common/textutil.py",
+                }
+                relative = aliases.get(relative, relative)
+                if relative.startswith("producers/"):
+                    relative = "discovery/" + relative
+                target = os.path.join(root, *relative.split("/"))
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with open(target, "a", encoding="utf-8") as handle:
                     handle.write("\n" + text + "\n")
             return violations(root)
 
@@ -463,83 +483,83 @@ class Detection(unittest.TestCase):
         self.assertEqual(self.inject({}), [])
 
     def test_a_producer_importing_a_legacy_source_reader(self):
-        self.assertCaught({"service/producers/localist.py": "from ...sources import web"}, "new-to-legacy", "transitive-legacy", "producer-inputs")
+        self.assertCaught({"producers/localist.py": "from area_events.discovery.sources import web"}, "new-to-legacy", "transitive-legacy", "producer-inputs")
 
     def test_a_producer_importing_the_legacy_engine_or_core(self):
-        self.assertCaught({"service/producers/localist.py": "from ... import engine"}, "new-to-legacy", "transitive-legacy")
-        self.assertCaught({"service/producers/city_of_san_diego.py": "from ...core import make_event"}, "new-to-legacy", "legacy-event-builders")
+        self.assertCaught({"producers/localist.py": "from area_events.discovery import engine"}, "new-to-legacy", "transitive-legacy")
+        self.assertCaught({"producers/city_of_san_diego.py": "from area_events.discovery.core import make_event"}, "new-to-legacy", "legacy-event-builders")
 
     def test_a_transitive_dependency_on_a_legacy_pipeline(self):
-        self.assertCaught({"textloc.py": "from . import registry"}, "neutral-purity", "transitive-legacy")
-        self.assertCaught({"media.py": "from . import workbench"}, "transitive-legacy")
+        self.assertCaught({"geolocation/textloc.py": "from area_events.discovery import registry"}, "neutral-purity", "transitive-legacy")
+        self.assertCaught({"enrichment/media.py": "from area_events.discovery import workbench"}, "transitive-legacy")
 
     def test_a_producer_reaching_persistence(self):
-        self.assertCaught({"service/producers/city_of_san_diego.py": "from ..persistence import crawl"}, "persistence-and-pipeline")
-        self.assertCaught({"service/producers/city_of_san_diego.py": "from ..persistence.ports import CrawlStorage"}, "persistence-and-pipeline")
-        self.assertCaught({"service/producers/localist.py": "import sqlite3\nconnection = sqlite3.connect('x')\nconnection.execute('DELETE FROM candidates')"},
+        self.assertCaught({"producers/city_of_san_diego.py": "from area_events.persistence import crawl"}, "persistence-and-pipeline")
+        self.assertCaught({"producers/city_of_san_diego.py": "from area_events.persistence.ports import CrawlStorage"}, "persistence-and-pipeline")
+        self.assertCaught({"producers/localist.py": "import sqlite3\nconnection = sqlite3.connect('x')\nconnection.execute('DELETE FROM candidates')"},
                           "persistence: producer", "sqlite-outside-persistence", "sql-outside-persistence")
 
     def test_dependencies_between_unrelated_producers(self):
-        self.assertCaught({"service/producers/city_of_san_diego.py": "from .localist import LocalistProducer"}, "producer-independence")
-        self.assertCaught({"service/producers/localist.py": "from .craft_fairs import reading"}, "producer-independence")
+        self.assertCaught({"producers/city_of_san_diego.py": "from area_events.discovery.producers.localist import LocalistProducer"}, "producer-independence")
+        self.assertCaught({"producers/localist.py": "from area_events.discovery.producers.craft_fairs import reading"}, "producer-independence")
 
     def test_a_downstream_module_depending_on_a_producer(self):
-        self.assertCaught({"service/events.py": "from .producers import localist"}, "producers-wired-in-the-root-only")
-        self.assertCaught({"service/extraction.py": "from .producers.city_of_san_diego import parse_listing"}, "producers-wired-in-the-root-only")
+        self.assertCaught({"events.py": "from area_events.discovery.producers import localist"}, "producers-wired-in-the-root-only")
+        self.assertCaught({"extraction.py": "from area_events.discovery.producers.city_of_san_diego import parse_listing"}, "producers-wired-in-the-root-only")
 
     def test_source_specific_code_in_generic_processing(self):
-        self.assertCaught({"service/extraction.py": "WHICH = 'sandiego_gov'"}, "source-knowledge")
-        self.assertCaught({"service/processing.py": "def handle_localist(record):\n    return record"}, "source-knowledge")
-        self.assertCaught({"service/persistence/events.py": "KIND = 'craft_fairs'"}, "source-knowledge")
-        self.assertCaught({"service/deduplication/exact.py": "if source == 'ut_austin':\n    pass"}, "source-knowledge")
+        self.assertCaught({"extraction.py": "WHICH = 'sandiego_gov'"}, "source-knowledge")
+        self.assertCaught({"processing.py": "def handle_localist(record):\n    return record"}, "source-knowledge")
+        self.assertCaught({"persistence/events.py": "KIND = 'craft_fairs'"}, "source-knowledge")
+        self.assertCaught({"deduplication/exact.py": "if source == 'ut_austin':\n    pass"}, "source-knowledge")
         self.assertCaught({"textutil.py": "x = 'eventbrite'"}, "source-knowledge")
 
     def test_an_unreviewed_cross_layer_import(self):
-        self.assertCaught({"service/events.py": "from . import enrichment"}, "layering")
-        self.assertCaught({"service/processing.py": "from . import extraction"}, "layering")
-        self.assertCaught({"service/persistence/repositories.py": "from .. import extraction"}, "layering")
+        self.assertCaught({"events.py": "from area_events.enrichment import service"}, "layering")
+        self.assertCaught({"processing.py": "from area_events.extraction import service"}, "layering")
+        self.assertCaught({"persistence/repositories.py": "from area_events.extraction import service"}, "layering")
 
     def test_an_import_by_name_at_run_time(self):
-        self.assertCaught({"service/producers/localist.py": "import importlib\nlegacy = importlib.import_module('discovery.core')"}, "dynamic-import")
+        self.assertCaught({"producers/localist.py": "import importlib\nlegacy = importlib.import_module('area_events.discovery.core')"}, "dynamic-import")
 
     def test_a_cycle(self):
-        self.assertCaught({"service/persistence/store.py": "from . import crawl", "service/persistence/crawl.py": "from . import store"}, "cycle")
+        self.assertCaught({"persistence/store.py": "from . import crawl", "persistence/crawl.py": "from . import store"}, "cycle")
 
     def test_processing_reading_a_producers_working_state(self):
-        self.assertCaught({"service/extraction.py": "def peek(record):\n    return record.state"}, "producer-state")
-        self.assertCaught({"service/enrichment.py": "Q = 'SELECT state_json FROM candidates'"}, "producer-state", "sql-outside-persistence")
+        self.assertCaught({"extraction.py": "def peek(record):\n    return record.state"}, "producer-state")
+        self.assertCaught({"enrichment.py": "Q = 'SELECT state_json FROM candidates'"}, "producer-state", "sql-outside-persistence")
 
     def test_sqlite_or_sql_outside_persistence(self):
-        self.assertCaught({"service/processing.py": "import sqlite3"}, "sqlite-outside-persistence")
-        self.assertCaught({"service/events.py": "def rows(connection):\n    return connection.execute('x')"}, "sql-outside-persistence")
-        self.assertCaught({"service/control.py": "Q = 'UPDATE areas SET name = 1 WHERE area_id = 2'"}, "sql-outside-persistence")
-        self.assertCaught({"service/service.py": "def commit(tx):\n    tx.commit()"}, "sql-outside-persistence")
-        self.assertCaught({"textloc.py": "import sqlite3"}, "sqlite-outside-persistence")
+        self.assertCaught({"processing.py": "import sqlite3"}, "sqlite-outside-persistence")
+        self.assertCaught({"events.py": "def rows(connection):\n    return connection.execute('x')"}, "sql-outside-persistence")
+        self.assertCaught({"control.py": "Q = 'UPDATE areas SET name = 1 WHERE area_id = 2'"}, "sql-outside-persistence")
+        self.assertCaught({"py": "def commit(tx):\n    tx.commit()"}, "sql-outside-persistence")
+        self.assertCaught({"geolocation/textloc.py": "import sqlite3"}, "sqlite-outside-persistence")
 
     def test_processing_importing_a_concrete_storage_class(self):
-        self.assertCaught({"service/processing.py": "from .persistence.processing import SqliteProcessingStorage"}, "persistence-ports-only", "concrete-storage")
-        self.assertCaught({"service/extraction.py": "from .persistence.repositories import CandidateRepository"}, "persistence-ports-only", "concrete-storage")
-        self.assertCaught({"service/events.py": "from .persistence import store"}, "persistence-ports-only")
+        self.assertCaught({"processing.py": "from area_events.persistence.processing import SqliteProcessingStorage"}, "persistence-ports-only", "concrete-storage")
+        self.assertCaught({"extraction.py": "from area_events.persistence.repositories import CandidateRepository"}, "persistence-ports-only", "concrete-storage")
+        self.assertCaught({"events.py": "from area_events.persistence import store"}, "persistence-ports-only")
 
     def test_persistence_importing_a_concrete_matcher(self):
-        self.assertCaught({"service/persistence/events.py": "from ..deduplication.exact import ExactMatch"}, "persistence-concrete-matcher", "layering")
-        self.assertCaught({"service/persistence/processing.py": "from ..deduplication import tolerant"}, "persistence-concrete-matcher")
-        self.assertCaught({"service/processing.py": "from .deduplication.exact import ExactMatch"}, "strategies-wired-in-the-root-only", "layering")
+        self.assertCaught({"persistence/events.py": "from area_events.deduplication.exact import ExactMatch"}, "persistence-concrete-matcher", "layering")
+        self.assertCaught({"persistence/processing.py": "from area_events.deduplication import tolerant"}, "persistence-concrete-matcher")
+        self.assertCaught({"processing.py": "from area_events.deduplication.exact import ExactMatch"}, "strategies-wired-in-the-root-only", "layering")
 
     def test_deduplication_decisions_inside_persistence(self):
-        self.assertCaught({"service/persistence/repositories.py": "def find_twin(title, starts_at):\n    return None"}, "matching-in-persistence")
-        self.assertCaught({"service/persistence/events.py": "def same_event(a, b):\n    return a == b"}, "matching-in-persistence")
+        self.assertCaught({"persistence/repositories.py": "def find_twin(title, starts_at):\n    return None"}, "matching-in-persistence")
+        self.assertCaught({"persistence/events.py": "def same_event(a, b):\n    return a == b"}, "matching-in-persistence")
 
     def test_deduplication_reaching_for_the_database(self):
-        self.assertCaught({"service/deduplication/exact.py": "import sqlite3"}, "dedup-purity")
-        self.assertCaught({"service/deduplication/tolerant.py": "from ..persistence import events"}, "dedup-purity", "layering")
-        self.assertCaught({"service/deduplication/__init__.py": "import os"}, "dedup-purity")
+        self.assertCaught({"deduplication/exact.py": "import sqlite3"}, "dedup-purity")
+        self.assertCaught({"deduplication/tolerant.py": "from area_events.persistence import events"}, "dedup-purity", "layering")
+        self.assertCaught({"deduplication/__init__.py": "import os"}, "dedup-purity")
 
     def test_a_port_that_lets_a_transaction_through(self):
-        self.assertCaught({"service/persistence/ports.py": "def leak(tx):\n    return tx"}, "port-signature")
+        self.assertCaught({"persistence/ports.py": "def leak(tx):\n    return tx"}, "port-signature")
 
     def test_the_root_is_the_only_builder_of_persistence(self):
-        self.assertCaught({"service/service.py": "from .persistence.build import open_persistence"}, "persistence-ports-only", "layering")
+        self.assertCaught({"cli.py": "from area_events.persistence.build import open_persistence"}, "persistence-ports-only", "layering")
 
 
 if __name__ == "__main__":

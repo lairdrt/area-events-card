@@ -12,20 +12,20 @@ import types
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 
-from discovery import classify
+from area_events.classification import classify
 from tests.db import database
-from discovery.safe import FetchError
-from discovery.safe import BlockedError
-from discovery.service import app as app_module
-from discovery.service.api import ApiTokens
-from discovery.service.control import CreateAreaRequest
-from discovery.service.enrichment import EnrichmentConfig
-from discovery.service.events import EventQuery
-from discovery.service.enrichment import inside_area
-from discovery.service.persistence.media import SqliteMediaStore, content_type_of
-from discovery.service.persistence.schema import LATEST
+from area_events.discovery.safe import FetchError
+from area_events.discovery.safe import BlockedError
+from area_events import app as app_module
+from area_events.api.http_api import ApiTokens
+from area_events.control.service import CreateAreaRequest
+from area_events.enrichment.service import EnrichmentConfig
+from area_events.api.events import EventQuery
+from area_events.enrichment.service import inside_area
+from area_events.persistence.media import SqliteMediaStore, content_type_of
+from area_events.persistence.schema import LATEST
 
-from discovery.service.persistence.repositories import CandidateRepository, SourceRepository
+from area_events.persistence.repositories import CandidateRepository, SourceRepository
 from tests.records import record
 from tests.test_austin import API, JsonClient, sample_pages
 from tests.test_discovery_control import CONTROL_TOKEN, READ_TOKEN, request

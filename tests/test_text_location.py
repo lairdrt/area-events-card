@@ -5,7 +5,8 @@ import tempfile
 import time
 import unittest
 
-from discovery import media, textloc
+from area_events.enrichment import media
+from area_events.geolocation import textloc
 from tests.test_media import SD, FakeFetcher, Wikimedia, nominatim
 
 CARNIVAL = {"title": 'South Clairemont Rec Ctr & Park "Winter" Carnival', "address": None,

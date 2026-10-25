@@ -7,8 +7,10 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from discovery import classifiers, classify, media, refresh, registry
-from discovery.core import finish_event, make_event
+from area_events.classification import classifiers, classify
+from area_events.enrichment import media
+from area_events.discovery import refresh, registry
+from area_events.discovery.core import finish_event, make_event
 from tests.test_media import SD, FakeFetcher, nominatim
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

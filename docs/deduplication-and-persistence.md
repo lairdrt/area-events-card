@@ -6,10 +6,10 @@ INDEPENDENT SOURCE PRODUCERS -> STANDARD RECORDS -> EVENT PROCESSING (extract / 
 
 Three capabilities, three modules, each replaceable without touching the others.
 
-## Event processing (`service/processing.py`, `service/extraction.py`)
+## Event processing (`src/area_events/validation/processing.py`, `src/area_events/extraction/`)
 Owns extraction, normalization and validation. A worker extracts an event from a stored candidate; `ProcessingService.validate` turns its result into a `CleanEvent` (title, start, end, place text, derived location status, missing facts, completeness). It holds no SQL and imports no storage: it asks the `ProcessingStorage` port to lease work and to accept a validated result.
 
-## Deduplication (`service/deduplication/`, interface `discovery.dedup.v1`)
+## Deduplication (`src/area_events/deduplication/`, interface `discovery.dedup.v1`)
 Owns every matching rule and nothing else. `Deduplicator.decide(Incoming, EventLookup) -> Decision`:
 
 | | |
@@ -20,7 +20,7 @@ Owns every matching rule and nothing else. `Deduplicator.decide(Incoming, EventL
 
 Strategies: `exact` (same normalized title and start instant, plus matching stated address or location text) and `tolerant` (same title, start within a window, with matching address, venue or location evidence and no contradictory stated place facts). Exact matching requires comparable address/location context; tolerant matching can use the same stated venue when addresses are missing. When both records give an end time, exact requires equality and tolerant rejects differences larger than its time window. Missing or conflicting place facts do not trigger a merge. Both strategies page through the full indexed time window; there is no result cap. They import neither SQLite nor Persistence nor any producer. Choosing one is the composition root's argument: `build(..., deduplication="exact" | "tolerant" | <any Deduplicator>)`, or `--deduplication` on the command line. Matching reads event facts directly; `event_key` remains stable and strategy changes do not require rebuilding identities.
 
-## Persistence (`service/persistence/`)
+## Persistence (`src/area_events/persistence/`)
 Exclusively owns the database: connections, transactions, SQL, schema, event/candidate links, revision history, evidence and work records. The rest of the service sees only `persistence/ports.py`:
 
 | port | used by | what one call does |
@@ -34,7 +34,7 @@ Exclusively owns the database: connections, transactions, SQL, schema, event/can
 | `MediaWork` | enrichment | pending candidates in, finished media out |
 | `MediaCache` | imagery resolver and source-photo enrichment | copy-in/copy-out record operations, cached files, pruning and persistence; no mutable cache index escapes |
 
-No connection, cursor or transaction crosses a port, and no port takes one. Only `service/app.py` builds Persistence (`persistence.build.open_persistence`) and hands it the deduplication strategy.
+No connection, cursor or transaction crosses a port, and no port takes one. Only `src/area_events/app.py` builds Persistence (`persistence.build.open_persistence`) and hands it the deduplication strategy.
 
 ### How atomic operations are guaranteed
 `ProcessingStorage.submit_result` is ONE write transaction on the single write connection (`BEGIN IMMEDIATE`, serialized across threads by a lock and across processes by SQLite): it checks the lease and that the candidate still has the leased payload hash (an older revision's result is refused and releases the work), stores the extraction, builds a **lookup bound to that same transaction**, calls the strategy, **validates the decision** against the candidate's state (`create` and `link` need a candidate with no event; `update` only for the primary of the named event; `keep` only for its secondary; `link` needs an existing event; anything else is `DecisionRejected`), applies exactly that decision, marks the work done and appends the change record. The strategy gets the lookup and the incoming facts; it never sees the transaction. A second submission cannot start its lookup until the first has committed, so two twins can never both be new. Any failure (strategy error, rejected decision, storage error) rolls everything back, the work stays leased and can be retried; an identical retried result is acknowledged again (`replayed`) without a second link.
@@ -50,7 +50,7 @@ sqlite3, SQL text and database calls only inside Persistence; no module outside 
 ## Remaining violations
 1. The earlier engine and its tests remain in the repository (not part of the new application).
 2. Producers and known sources are wired by hand in `app.py` / `cli.py`.
-3. Persistence imports `service/events.py` for the event record types (records only); they belong in `contracts.py`.
+3. Persistence imports `api/events.py` for the event query record type (records only); shared records belong in `contracts/models.py`.
 4. Deduplication is invoked once per submission; there is no batch interface.
 5. Some tests reach into private attributes (`_store`, `_store_plan`, `_candidates`) to inject storage faults, and inspect the database file directly with sqlite3; production code never does.
 6. The Home Assistant feed adapter still has a per-source display-name table and drops categories; the card classifies by keywords.

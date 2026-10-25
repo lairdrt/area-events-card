@@ -63,7 +63,7 @@ def measure(css, browser):
 class GridInABrowser(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        with open(os.path.join(ROOT, "src", "area-events-card.js"), encoding="utf-8") as handle:
+        with open(os.path.join(ROOT, "src", "frontend", "area-events-card.js"), encoding="utf-8") as handle:
             css = re.search(r"const STYLES = `(.*?)`;", handle.read(), re.S).group(1)
         cls.rows = measure(css, find_browser())
 

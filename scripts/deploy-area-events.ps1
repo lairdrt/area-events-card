@@ -23,7 +23,7 @@ $script:RemoteBackup = $null
 $script:CredentialPath = Join-Path $env:LOCALAPPDATA 'AreaEvents\ha-token.dpapi'
 $script:LockPath = Join-Path ([IO.Path]::GetTempPath()) 'area-events-deploy.lock'
 $script:LocalBackupRoot = Join-Path $env:LOCALAPPDATA 'AreaEventsBackups'
-$schemaText = Get-Content -Raw (Join-Path $script:Repo 'area_events\discovery\service\persistence\schema.py')
+$schemaText = Get-Content -Raw (Join-Path $script:Repo 'src\area_events\persistence\schema.py')
 $schemaVersions=[regex]::Matches($schemaText,'(?m)^\s*\((\d+),\s*"')
 if (-not $schemaVersions.Count) { throw 'Could not read the migration versions from schema.py.' }
 $script:TargetSchema = [int]$schemaVersions[$schemaVersions.Count-1].Groups[1].Value
@@ -116,7 +116,7 @@ function Invoke-Build {
   $card=Join-Path $script:Repo 'custom_components\area_events\frontend\area-events-card.js'
   if ((Get-Content -Raw $card) -match '__AREA_EVENTS_CARD_BUILD__') { throw 'Frontend build left an unresolved build placeholder.' }
   $script:Archive=Join-Path ([IO.Path]::GetTempPath()) ('area-events-'+[guid]::NewGuid().ToString('N')+'.tar')
-  $null=Invoke-Bounded 'git.exe' @('-C',$script:Repo,'archive','--format=tar',"--output=$script:Archive",'HEAD','area_events','scripts/discovery.py') 45
+  $null=Invoke-Bounded 'git.exe' @('-C',$script:Repo,'archive','--format=tar',"--output=$script:Archive",'HEAD','pyproject.toml','src/area_events','scripts/discovery.py','scripts/workbench.py') 45
 }
 function Test-FolderMatches([string]$Source,[string]$Destination) {
   return [bool](Invoke-BoundedBlock {
@@ -138,9 +138,10 @@ function Get-FolderFingerprint([string]$Root) {
   try { [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','').ToLowerInvariant() } finally { $sha.Dispose() }
 }
 function Get-CubiFingerprint {
-  $area=(Invoke-Bounded 'git.exe' @('-C',$script:Repo,'rev-parse','HEAD:area_events') 10).Trim()
+  $source=(Invoke-Bounded 'git.exe' @('-C',$script:Repo,'rev-parse','HEAD:src/area_events') 10).Trim()
+  $package=(Invoke-Bounded 'git.exe' @('-C',$script:Repo,'rev-parse','HEAD:pyproject.toml') 10).Trim()
   $entry=(Invoke-Bounded 'git.exe' @('-C',$script:Repo,'rev-parse','HEAD:scripts/discovery.py') 10).Trim()
-  $bytes=[Text.Encoding]::UTF8.GetBytes($area+':'+$entry); $sha=[Security.Cryptography.SHA256]::Create()
+  $bytes=[Text.Encoding]::UTF8.GetBytes($source+':'+$package+':'+$entry); $sha=[Security.Cryptography.SHA256]::Create()
   try { [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','').ToLowerInvariant() } finally { $sha.Dispose() }
 }
 function Get-HaCurrentUser {
@@ -282,6 +283,9 @@ try:
 finally: s.close(); d.close()
 with tarfile.open(out+'/accepted-files.tar.gz','w:gz') as t:
  t.add(root+'/area_events',arcname='area_events'); t.add(root+'/scripts/discovery.py',arcname='scripts/discovery.py')
+ for rel in ('pyproject.toml','src','scripts/workbench.py'):
+  path=root+'/'+rel
+  if os.path.exists(path): t.add(path,arcname=rel)
  unit=os.path.expanduser('~/.config/systemd/user/area-events-discovery.service')
  if os.path.isfile(unit): t.add(unit,arcname='systemd/area-events-discovery.service')
  for name in os.listdir(root+'/data/discovery'):
@@ -334,7 +338,9 @@ with tarfile.open(os.environ['AE_ARCHIVE']) as t:
  members=t.getmembers()
  if any(os.path.isabs(m.name) or '..' in m.name.split('/') or m.issym() or m.islnk() for m in members): raise RuntimeError('unsafe deployment archive')
  t.extractall(stage,filter='data')
-r=subprocess.run(['python3',stage+'/scripts/discovery.py','status','--db',stage+'/rehearsal.db'],cwd=stage,timeout=90,capture_output=True,text=True)
+venv=stage+'/.venv'; subprocess.run(['python3','-m','venv',venv],timeout=90,check=True,capture_output=True,text=True)
+python=venv+'/bin/python'; subprocess.run([python,'-m','pip','install','--no-deps',stage],timeout=150,check=True,capture_output=True,text=True)
+r=subprocess.run([python,stage+'/scripts/discovery.py','status','--db',stage+'/rehearsal.db'],cwd=stage,timeout=90,capture_output=True,text=True)
 if r.returncode: raise RuntimeError('migration command failed: '+r.stderr[-1000:])
 a=sqlite3.connect('file:'+stage+'/rehearsal.db?mode=ro',uri=True); b=sqlite3.connect('file:'+snap+'?mode=ro',uri=True)
 try:
@@ -361,6 +367,11 @@ with tarfile.open(os.environ['AE_ARCHIVE']) as t:
  t.extractall(stage,filter='data')
 run=os.path.basename(os.environ['AE_ARCHIVE']).replace('.tar',''); old=root+'/.area-events-old-'+run
 os.rename(root+'/area_events',old); os.rename(stage+'/area_events',root+'/area_events')
+for rel in ('src','pyproject.toml'):
+ target=root+'/'+rel; incoming=stage+'/'+rel; previous=root+'/.area-events-package-old-'+run+'-'+rel.replace('/','-')
+ if os.path.exists(target): os.rename(target,previous)
+ os.rename(incoming,target)
+subprocess.run(['python3','-m','pip','install','--user','--no-deps',root],timeout=120,check=True,capture_output=True,text=True)
 scriptold=root+'/scripts/discovery.py.old-'+run; os.rename(root+'/scripts/discovery.py',scriptold); shutil.copy2(stage+'/scripts/discovery.py',root+'/scripts/discovery.py')
 try:
  r=subprocess.run(['python3',root+'/scripts/discovery.py','status','--db',root+'/data/discovery/discovery.db'],cwd=root,timeout=120,capture_output=True,text=True)
@@ -376,6 +387,10 @@ try:
  finally: a.close(); b.close()
  subprocess.run(['systemctl','--user','start','area-events-discovery.service'],timeout=45,check=True)
  shutil.rmtree(old,ignore_errors=True); os.remove(scriptold)
+ for rel in ('src','pyproject.toml'):
+  previous=root+'/.area-events-package-old-'+run+'-'+rel.replace('/','-')
+  if os.path.isdir(previous): shutil.rmtree(previous,ignore_errors=True)
+  elif os.path.exists(previous): os.remove(previous)
  print(json.dumps({'changed':True,'schema_changed':changed,'schema':max(versions),'events':len(keys)}))
 finally: shutil.rmtree(stage,ignore_errors=True)
 '@
@@ -631,6 +646,14 @@ with tarfile.open(os.environ['AE_BACKUP']+'/accepted-files.tar.gz') as z:
 failed=root+'/.area-events-failed'
 if os.path.exists(root+'/area_events'): os.rename(root+'/area_events',failed)
 os.rename(t+'/area_events',root+'/area_events'); shutil.copy2(t+'/scripts/discovery.py',root+'/scripts/discovery.py')
+for rel in ('src','pyproject.toml'):
+ current=root+'/'+rel
+ if os.path.isdir(current): shutil.rmtree(current)
+ elif os.path.exists(current): os.remove(current)
+ archived=t+'/'+rel
+ if os.path.exists(archived): shutil.move(archived,current)
+if os.path.isdir(root+'/src'):
+ subprocess.run(['python3','-m','pip','install','--user','--no-deps',root],timeout=120,check=True,capture_output=True,text=True)
 shutil.rmtree(t,ignore_errors=True); shutil.rmtree(failed,ignore_errors=True)
 subprocess.run(['systemctl','--user','start','area-events-discovery.service'],timeout=45,check=True)
 subprocess.run(['systemctl','--user','is-active','--quiet','area-events-discovery.service'],timeout=12,check=True)

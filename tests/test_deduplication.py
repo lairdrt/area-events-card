@@ -15,13 +15,13 @@ import threading
 import time
 import unittest
 
-from discovery.service.contracts import CleanEvent, DecisionRejected, LeaseLost
-from discovery.service.deduplication import Association, Decision, ExistingEvent, Incoming
-from discovery.service.deduplication.exact import ExactMatch
-from discovery.service.deduplication.tolerant import TolerantMatch
-from discovery.service.extraction import VERSION, ExtractionService, LocalProcessingClient, StoredCandidateExtractor
-from discovery.service.events import EventQuery
-from discovery.service.processing import ProcessingService
+from area_events.contracts.models import CleanEvent, DecisionRejected, LeaseLost
+from area_events.deduplication import Association, Decision, ExistingEvent, Incoming
+from area_events.deduplication.exact import ExactMatch
+from area_events.deduplication.tolerant import TolerantMatch
+from area_events.extraction.service import VERSION, ExtractionService, LocalProcessingClient, StoredCandidateExtractor
+from area_events.api.events import EventQuery
+from area_events.validation.processing import ProcessingService
 from tests.db import database
 from tests.inmemory import InMemoryProcessing
 from tests.records import document, epoch
@@ -179,19 +179,17 @@ class ProcessingOnAnotherPersistence(unittest.TestCase):
 
     def test_processing_and_the_in_memory_persistence_import_no_database(self):
         code = ("import sys, json\n"
-                "sys.path[:0] = [%r, %r]\n"
-                "from discovery.service.processing import ProcessingService\n"
-                "from discovery.service.extraction import ExtractionService, LocalProcessingClient, StoredCandidateExtractor\n"
-                "from discovery.service.deduplication.exact import ExactMatch\n"
+                "from area_events.validation.processing import ProcessingService\n"
+                "from area_events.extraction.service import ExtractionService, LocalProcessingClient, StoredCandidateExtractor\n"
+                "from area_events.deduplication.exact import ExactMatch\n"
                 "from tests.inmemory import InMemoryProcessing\n"
                 "from tests.records import document\n"
                 "storage = InMemoryProcessing(ExactMatch(), [{'key': 'a:1', 'source_key': 'a', 'payload': document()}])\n"
                 "clock = lambda: 1.0\n"
                 "worker = ExtractionService(LocalProcessingClient(ProcessingService(storage, clock)), StoredCandidateExtractor(), clock)\n"
                 "worker.run_once()\n"
-                "print(json.dumps({'events': len(storage.events), 'sqlite3': 'sqlite3' in sys.modules, 'persistence': [m for m in sys.modules if 'service.persistence' in m and m != 'discovery.service.persistence.ports' and m != 'discovery.service.persistence']}))\n"
-                % (os.path.join(ROOT, "area_events"), ROOT))
-        done = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=60)
+                "print(json.dumps({'events': len(storage.events), 'sqlite3': 'sqlite3' in sys.modules, 'persistence': [m for m in sys.modules if m.startswith('area_events.persistence.') and not m.endswith('.ports')]}))\n")
+        done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr[-400:])
         self.assertEqual(json.loads(done.stdout), {"events": 1, "sqlite3": False, "persistence": []})
 

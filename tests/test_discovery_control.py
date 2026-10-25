@@ -15,17 +15,17 @@ import unittest
 from unittest import mock
 
 from tests.db import database
-from discovery.core import FetchError
-from discovery.service import app as app_module
-from discovery.service.api import ApiTokens, DiscoveryApi, DiscoveryApiServer, MAX_BODY
-from discovery.service.persistence.areas import AreaRepository, SettingsRepository
-from discovery.service.contracts import CandidateQuery
-from discovery.service.control import (CONTROL_SCHEMA, CreateAreaRequest, NotFound, RevisionConflict, SettingsRequest, UpdateAreaRequest, ValidationFailed)
-from discovery.service.host import HostConfig
-from discovery.service.contracts import SourceSpec
-from discovery.service.scheduler import AreaPacing, SchedulerConfig
-from discovery.service.persistence.schema import LATEST, MIGRATIONS
-from discovery.service.persistence.store import DiscoveryStore
+from area_events.discovery.core import FetchError
+from area_events import app as app_module
+from area_events.api.http_api import ApiTokens, DiscoveryApi, DiscoveryApiServer, MAX_BODY
+from area_events.persistence.areas import AreaRepository, SettingsRepository
+from area_events.contracts.models import CandidateQuery
+from area_events.control.service import (CONTROL_SCHEMA, CreateAreaRequest, NotFound, RevisionConflict, SettingsRequest, UpdateAreaRequest, ValidationFailed)
+from area_events.discovery.host import HostConfig
+from area_events.contracts.models import SourceSpec
+from area_events.discovery.scheduler import AreaPacing, SchedulerConfig
+from area_events.persistence.schema import LATEST, MIGRATIONS
+from area_events.persistence.store import DiscoveryStore
 from tests.test_discovery_service import Clock, FakeClient, SPEC, city_pages
 from tests.test_site_discovery import CITY_URL
 

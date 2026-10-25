@@ -5,9 +5,9 @@ import unittest
 from datetime import datetime, timedelta
 from unittest import mock
 
-from discovery import refresh as refresh_module
-from discovery import registry
-from discovery.core import FetchError
+from area_events.discovery import refresh as refresh_module
+from area_events.discovery import registry
+from area_events.discovery.core import FetchError
 
 AUSTIN = {"display_name": "Austin, TX", "latitude": 30.2649, "longitude": -97.7474, "radius_miles": 25.0, "timezone": "America/Chicago",
           "country": "US", "region": "TX"}

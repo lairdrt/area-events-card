@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "area-events"
+version = "0.2.0"
+description = "Local event discovery service and Home Assistant integration"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+area-events = "area_events.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["area_events*"]
+
+[tool.setuptools.package-data]
+area_events = ["discovery/sources.json"]

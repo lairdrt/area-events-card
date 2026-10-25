@@ -2,7 +2,7 @@
 
 **Source:** the University of Texas at Austin public events calendar, https://calendar.utexas.edu, read through its public, key-less Localist JSON API (`/api/2/events?days=14&pp=100&page=N`, hourly, up to 5 pages).
 
-**Why this one:** it is an official, structured, public calendar with real upcoming events (about 340 in two weeks), exact start and end times with the UTC offset, venue names, addresses for about 40% of them and venue coordinates for many. The existing `sources/localist.py` adapter already reads it, so the work was one small wrapper (`LocalistAdapter` in `service/adapters.py`) and one registered source (`ut-austin` in `KNOWN_SOURCES`). Reads go through SafeFetcher (robots.txt, per-host spacing) like every other source. Times use the calendar's own offsets; `America/Chicago` is only recorded as the calendar's zone.
+**Why this one:** it is an official, structured, public calendar with real upcoming events (about 340 in two weeks), exact start and end times with the UTC offset, venue names, addresses for about 40% of them and venue coordinates for many. `src/area_events/discovery/producers/localist.py` implements the standard producer contract, and `src/area_events/app.py` registers the producer for `ut-austin`. Reads go through SafeFetcher (robots.txt, per-host spacing) like every other source. Times use the calendar's own offsets; `America/Chicago` is only recorded as the calendar's zone.
 
 **What it is not:** Austin's city, community or commercial listings. It is a university calendar, so most events are campus events open to the public or to students. The Austin card therefore says "matched by source", not "everything in Austin", and no distance is verified.
 

@@ -2,8 +2,8 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from discovery import refresh, registry
-from discovery.core import clean_text, finish_event, make_event, normalize_event_text
+from area_events.discovery import refresh, registry
+from area_events.discovery.core import clean_text, finish_event, make_event, normalize_event_text
 
 
 class CleanText(unittest.TestCase):

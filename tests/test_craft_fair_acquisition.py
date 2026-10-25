@@ -9,17 +9,17 @@ import sqlite3
 import unittest
 from datetime import date
 
-from discovery.safe import FetchError
-from discovery.service.control import CreateAreaRequest
-from discovery.service.fetching import RecordingFetcher
-from discovery.service.producers.craft_fairs import (
+from area_events.discovery.safe import FetchError
+from area_events.control.service import CreateAreaRequest
+from area_events.discovery.fetching import RecordingFetcher
+from area_events.discovery.producers.craft_fairs import (
     AcquisitionConfig,
     CraftFairProducer,
     SourceAcquirer,
 )
-from discovery.service.contracts import SourceSpec
-from discovery.service.persistence.schema import LATEST
-from discovery.service.producers.craft_fairs import reading as craftfairs
+from area_events.contracts.models import SourceSpec
+from area_events.persistence.schema import LATEST
+from area_events.discovery.producers.craft_fairs import reading as craftfairs
 
 from tests.test_discovery_service import Clock, FakeClient
 from tests.test_extraction import Fixture

@@ -2,8 +2,8 @@
 import json
 from datetime import datetime
 
-from discovery.service import producer
-from discovery.service.producer import EventCandidate
+from area_events.discovery import producer
+from area_events.discovery.producer import EventCandidate
 
 START = "2030-05-01T18:00:00-07:00"
 

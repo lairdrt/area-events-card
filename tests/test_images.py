@@ -2,9 +2,9 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from discovery import images
-from discovery.core import finish_event, make_event
-from discovery.merge import merge_events
+from area_events.enrichment import images
+from area_events.discovery.core import finish_event, make_event
+from area_events.discovery.merge import merge_events
 
 PDT = timezone(timedelta(hours=-7))
 START = datetime(2030, 1, 25, 19, 0, tzinfo=PDT)

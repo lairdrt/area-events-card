@@ -83,7 +83,7 @@ days: 30
 
 ## Tokens and transport
 
-`python scripts/discovery.py serve` creates three tokens, each in a private file next to the database: `api-token` (control), `api-read-token` (read) and `api-process-token` (extraction workers only). A read token cannot change anything; a process token can only use the processing routes; neither of the others can submit extraction results. Enter the read token (and, only if administrators should change settings from Home Assistant, the control token) in the integration's setup form. They are stored in the config entry on the Home Assistant backend and are never sent to a dashboard.
+`area-events serve` creates three tokens, each in a private file next to the database: `api-token` (control), `api-read-token` (read) and `api-process-token` (extraction workers only). A read token cannot change anything; a process token can only use the processing routes; neither of the others can submit extraction results. Enter the read token (and, only if administrators should change settings from Home Assistant, the control token) in the integration's setup form. They are stored in the config entry on the Home Assistant backend and are never sent to a dashboard. Install the package first with `python -m pip install .`.
 
 Tokens are sent in every request, so they must never cross a network in plain text. The service therefore **refuses to bind beyond loopback without TLS** (`--allow-plain-remote` is the explicit, informed exception). The simplest secure setup needs no extra software: the service serves https itself with a certificate you make once on the Cubi, and Home Assistant trusts that one certificate file.
 
@@ -92,7 +92,7 @@ On the Cubi, once (use the Cubi's real address in `subjectAltName`):
 ```
 mkdir -p certs && openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.pem -days 825     -subj "/CN=area-events-discovery" -addext "subjectAltName=IP:192.168.1.88"
 chmod 600 certs/key.pem
-python3 scripts/discovery.py serve --bind 192.168.1.88 --allow-remote --tls-cert certs/cert.pem --tls-key certs/key.pem
+area-events serve --bind 192.168.1.88 --allow-remote --tls-cert certs/cert.pem --tls-key certs/key.pem
 ```
 
 Copy only the public `cert.pem` to Home Assistant (for example `/config/area_events_cert.pem`) and enter that path in the integration's **Certificate file** field with the address `https://192.168.1.88:8780`. The private key never leaves the Cubi. (A reverse proxy with a certificate Home Assistant already trusts, such as Caddy with a real domain, works too: leave the certificate field empty.) Never share `discovery.db` over SMB or NFS: Home Assistant reaches it only through the API.

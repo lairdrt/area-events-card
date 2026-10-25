@@ -6,12 +6,12 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from discovery import refresh as refresh_module
-from discovery import sources as sources_module
-from discovery.core import FetchError, finish_event, make_event, save_events
-from discovery.engine import Engine
+from area_events.discovery import refresh as refresh_module
+from area_events.discovery import sources as sources_module
+from area_events.discovery.core import FetchError, finish_event, make_event, save_events
+from area_events.discovery.engine import Engine
 from tests.test_engine import fake_geocode
-from discovery.publish import FeedError, validate_feed
+from area_events.discovery.publish import FeedError, validate_feed
 
 PDT = timezone(timedelta(hours=-7))
 START = (datetime.now(PDT) + timedelta(days=1)).replace(minute=0, second=0, microsecond=0)
@@ -123,7 +123,7 @@ class Refresh(unittest.TestCase):
                 raise OSError("disk full")
             return real_replace(source, target)
 
-        with mock.patch("discovery.core.os.replace", side_effect=flaky):
+        with mock.patch("area_events.discovery.core.os.replace", side_effect=flaky):
             with self.assertRaises(OSError):
                 self.run_refresh()
         validate_feed(json.loads(open(self.paths["output"], encoding="utf-8").read()))

@@ -3,8 +3,8 @@ against it to show that none of them depends on SQLite or on the real storage; i
 import hashlib
 import itertools
 
-from discovery.service.contracts import (PROCESSING_SCHEMA, LeaseLost, ProcessingStatus, SubmitAck, WorkItem)
-from discovery.service.deduplication import Association, Decision, ExistingEvent, Incoming
+from area_events.contracts.models import (PROCESSING_SCHEMA, LeaseLost, ProcessingStatus, SubmitAck, WorkItem)
+from area_events.deduplication import Association, Decision, ExistingEvent, Incoming
 
 
 class _Lookup:

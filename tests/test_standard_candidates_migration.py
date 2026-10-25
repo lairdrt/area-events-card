@@ -4,9 +4,9 @@ import os
 import tempfile
 import unittest
 
-from discovery.service import producer
-from discovery.service.persistence.schema import LATEST, MIGRATIONS
-from discovery.service.persistence.store import DiscoveryStore
+from area_events.discovery import producer
+from area_events.persistence.schema import LATEST, MIGRATIONS
+from area_events.persistence.store import DiscoveryStore
 
 LEGACY = {"id": "sandiego_gov:fest@2030-05-01", "title": "Harbor Fest", "start": "2030-05-01T18:00:00-07:00", "end": "2030-05-01T20:00:00-07:00", "timezone": "America/Los_Angeles",
           "venue": "Harbor Hall", "address": "500 Harbor Drive, San Diego, CA", "description": "An evening.", "image_url": None, "image_source": None, "url": "https://www.sandiego.gov/event/fest",

@@ -6,11 +6,11 @@ import unittest
 import zlib
 from datetime import date, datetime, timedelta, timezone
 
-from discovery import textloc
-from discovery.core import FetchError, now_pacific
-from discovery.safe import BlockedError
-from discovery.sources import dosd, sandiego_gov, sandiegoreader, web, webdiscover, webtext
-from discovery.sources.detailwork import RETRY_BASE, RETRY_MAX, DetailWork
+from area_events.geolocation import textloc
+from area_events.discovery.core import FetchError, now_pacific
+from area_events.discovery.safe import BlockedError
+from area_events.discovery.sources import dosd, sandiego_gov, sandiegoreader, web, webdiscover, webtext
+from area_events.discovery.sources.detailwork import RETRY_BASE, RETRY_MAX, DetailWork
 from tests.test_web import AUSTIN, SITE, Reply, event, html, ics_stamp, ld
 
 

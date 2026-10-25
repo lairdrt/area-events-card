@@ -1,7 +1,7 @@
 """Evidence-based deduplication: regression for the Ocean Beach Restaurant Walk plus positive/negative cases."""
 import unittest
 
-from discovery.merge import merge_events
+from area_events.discovery.merge import merge_events
 
 PUBLISHERS = {"kpbs": "kpbs.org", "sandiegoreader": "sandiegoreader.com", "dosd": "dosd.com", "city": "sandiego.gov"}
 
@@ -201,7 +201,7 @@ class PositiveCases(unittest.TestCase):
 
 class Scale(unittest.TestCase):
     def test_candidate_selection_is_bounded(self):
-        import discovery.merge as merge_module
+        import area_events.discovery.merge as merge_module
         calls = []
         original = merge_module.evaluate_pair
         merge_module.evaluate_pair = lambda a, b, *args, **kw: (calls.append(1), original(a, b, *args, **kw))[1]

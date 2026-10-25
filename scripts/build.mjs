@@ -9,15 +9,15 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const sourceDir = join(root, "src");
+const sourceDir = join(root, "src", "frontend");
 const source = readFileSync(join(sourceDir, "area-events-card.js"), "utf8");
 if (!source.includes("__AREA_EVENTS_CARD_BUILD__")) {
-  throw new Error("src/area-events-card.js is missing the __AREA_EVENTS_CARD_BUILD__ placeholder");
+  throw new Error("src/frontend/area-events-card.js is missing the __AREA_EVENTS_CARD_BUILD__ placeholder");
 }
 const { version } = JSON.parse(readFileSync(join(root, "custom_components", "area_events", "manifest.json"), "utf8"));
 const presentationDir = join(sourceDir, "presentation");
 const presentationFiles = readdirSync(presentationDir).filter((name) => name.endsWith(".js")).sort();
-if (!presentationFiles.length) throw new Error("src/presentation has no renderer modules");
+if (!presentationFiles.length) throw new Error("src/frontend/presentation has no renderer modules");
 const moduleSource = presentationFiles.map((name) => `${name}\n${readFileSync(join(presentationDir, name), "utf8")}`).join("\n");
 const identifier = `AREA-EVENTS ${version}-${createHash("sha1").update(source).update(moduleSource).digest("hex").slice(0, 8)}`;
 const built = source.replaceAll("__AREA_EVENTS_CARD_BUILD__", identifier);

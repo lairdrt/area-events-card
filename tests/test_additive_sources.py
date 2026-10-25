@@ -5,9 +5,9 @@ import sys
 import tempfile
 import unittest
 
-from discovery.core import save_events
-from discovery.engine import Engine
-from discovery.profiles import normalize_profile, profile_id
+from area_events.discovery.core import save_events
+from area_events.discovery.engine import Engine
+from area_events.discovery.profiles import normalize_profile, profile_id
 from tests.test_engine import Clock, fake_geocode
 
 GOOD = "https://www.example-events.org/calendar"
@@ -24,7 +24,7 @@ def event(source, title):
 
 
 class SourceRefresh:
-    """Behaves like discovery.refresh for what matters here: a cache per profile folder, `only`/`offline`, per-source failure that keeps cached
+    """Behaves like area_events.discovery.refresh for what matters here: a cache per profile folder, `only`/`offline`, per-source failure that keeps cached
     events, and no change to the feed when no source succeeded. `results` maps a source id to its titles, or to an exception."""
 
     def __init__(self, results):

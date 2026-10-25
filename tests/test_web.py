@@ -9,14 +9,14 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from discovery import engine as engine_module
-from discovery import refresh as refresh_module
-from discovery import registry, safe
-from discovery.core import FetchError
-from discovery.profiles import normalize_url
-from discovery.publish import validate_feed
-from discovery.sources import web, webfeeds, webparse
-from discovery.sources.webtime import parse_when, zone
+from area_events.discovery import engine as engine_module
+from area_events.discovery import refresh as refresh_module
+from area_events.discovery import registry, safe
+from area_events.discovery.core import FetchError
+from area_events.discovery.profiles import normalize_url
+from area_events.discovery.publish import validate_feed
+from area_events.discovery.sources import web, webfeeds, webparse
+from area_events.discovery.sources.webtime import parse_when, zone
 from tests.test_engine import Clock, FakeRefresh, fake_geocode
 
 AUSTIN = {"latitude": 30.2649, "longitude": -97.7474, "radius_miles": 25, "name": "Austin, TX", "timezone": "America/Chicago"}
@@ -93,7 +93,7 @@ class Times(unittest.TestCase):
         self.assertEqual(parse_when("2026-13-45T10:00:00Z")[1], "invalid_date")
 
     def test_us_zones_work_without_system_tzdata(self):
-        with mock.patch("discovery.sources.webtime.ZoneInfo", None):
+        with mock.patch("area_events.discovery.sources.webtime.ZoneInfo", None):
             self.assertEqual(parse_when("2026-07-01T09:00:00", "America/Los_Angeles")[0].utcoffset(), timedelta(hours=-7))
             self.assertEqual(parse_when("2026-01-01T09:00:00", "America/Phoenix")[0].utcoffset(), timedelta(hours=-7))
             self.assertIsNone(zone("Europe/Berlin"))

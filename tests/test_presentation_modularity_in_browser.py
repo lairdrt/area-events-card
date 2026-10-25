@@ -81,12 +81,12 @@ class PresentationModularityInBrowser(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        (self.root / "src" / "presentation").mkdir(parents=True)
+        (self.root / "src" / "frontend" / "presentation").mkdir(parents=True)
         (self.root / "scripts").mkdir()
         (self.root / "custom_components" / "area_events").mkdir(parents=True)
-        shutil.copy2(ROOT / "src" / "area-events-card.js", self.root / "src" / "area-events-card.js")
-        for source in (ROOT / "src" / "presentation").glob("*.js"):
-            shutil.copy2(source, self.root / "src" / "presentation" / source.name)
+        shutil.copy2(ROOT / "src" / "frontend" / "area-events-card.js", self.root / "src" / "frontend" / "area-events-card.js")
+        for source in (ROOT / "src" / "frontend" / "presentation").glob("*.js"):
+            shutil.copy2(source, self.root / "src" / "frontend" / "presentation" / source.name)
         shutil.copy2(ROOT / "scripts" / "build.mjs", self.root / "scripts" / "build.mjs")
         shutil.copy2(ROOT / "custom_components" / "area_events" / "manifest.json",
                      self.root / "custom_components" / "area_events" / "manifest.json")
@@ -120,16 +120,16 @@ class PresentationModularityInBrowser(unittest.TestCase):
         return json.loads(html.unescape(match.group(1)))
 
     def test_replacing_only_community_module_changes_the_rendered_layout_and_restoring_recovers_it(self):
-        original = (self.root / "src" / "presentation" / "community.js").read_bytes()
-        other_sources = [self.root / "src" / "area-events-card.js", *(
-            path for path in (self.root / "src" / "presentation").glob("*.js") if path.name != "community.js")]
+        original = (self.root / "src" / "frontend" / "presentation" / "community.js").read_bytes()
+        other_sources = [self.root / "src" / "frontend" / "area-events-card.js", *(
+            path for path in (self.root / "src" / "frontend" / "presentation").glob("*.js") if path.name != "community.js")]
         unchanged = {path: path.read_bytes() for path in other_sources}
         self.build()
         before = self.browser_result()
         self.assertTrue(before["community"]["original"])
         self.assertFalse(before["community"]["replacement"])
 
-        (self.root / "src" / "presentation" / "community.js").write_text(REPLACEMENT, encoding="utf-8")
+        (self.root / "src" / "frontend" / "presentation" / "community.js").write_text(REPLACEMENT, encoding="utf-8")
         self.build()
         replaced = self.browser_result()
         self.assertFalse(replaced["community"]["original"])
@@ -138,7 +138,7 @@ class PresentationModularityInBrowser(unittest.TestCase):
         self.assertEqual(replaced["community"]["layout"]["display"], "grid")
         self.assertEqual({path: path.read_bytes() for path in other_sources}, unchanged)
 
-        (self.root / "src" / "presentation" / "community.js").write_bytes(original)
+        (self.root / "src" / "frontend" / "presentation" / "community.js").write_bytes(original)
         self.build()
         restored = self.browser_result()
         self.assertTrue(restored["community"]["original"])

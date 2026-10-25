@@ -2,9 +2,9 @@ import os
 import tempfile
 import unittest
 
-from discovery.location import distance_miles
-from discovery.merge import merge_events
-from discovery.place import CONFLICT_MILES, CityResolver, combine_places, locate_event, locate_events, parse_address
+from area_events.geolocation.location import distance_miles
+from area_events.discovery.merge import merge_events
+from area_events.geolocation.place import CONFLICT_MILES, CityResolver, combine_places, locate_event, locate_events, parse_address
 from tests.test_merge_evidence import PUBLISHERS, rec
 
 LOCATION = {"display_name": "Austin, TX", "latitude": 30.2672, "longitude": -97.7431, "radius_miles": 25.0, "country": "US", "region": "TX"}

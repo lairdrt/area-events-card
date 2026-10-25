@@ -2,7 +2,7 @@
 in the title or description, before the broad categories, and do not capture unrelated events."""
 import unittest
 
-from discovery import classify
+from area_events.classification import classify
 
 NEW = ("farmers_market", "carnival", "car_show", "halloween", "christmas", "street_festival")
 

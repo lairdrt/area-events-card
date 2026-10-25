@@ -12,15 +12,15 @@ import unittest
 from datetime import date, datetime, timedelta, timezone
 
 from tests.db import database
-from discovery.safe import FetchError
-from discovery.safe import Response
-from discovery.service import app as app_module
-from discovery.service.control import CreateAreaRequest
-from discovery.service.events import EventQuery
-from discovery.service.producers.localist import LocalistProducer
-from discovery.service.service import DiscoveryService
-from discovery.service.persistence.store import DiscoveryStore
-from discovery.service.urls import canonical_url
+from area_events.discovery.safe import FetchError
+from area_events.discovery.safe import Response
+from area_events import app as app_module
+from area_events.control.service import CreateAreaRequest
+from area_events.api.events import EventQuery
+from area_events.discovery.producers.localist import LocalistProducer
+from area_events.discovery.service import DiscoveryService
+from area_events.persistence.store import DiscoveryStore
+from area_events.discovery.urls import canonical_url
 
 from tests.test_discovery_service import SPEC, Clock, city_pages
 

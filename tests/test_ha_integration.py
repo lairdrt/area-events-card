@@ -20,9 +20,9 @@ from functools import wraps
 from unittest import mock
 
 from tests.db import database
-from discovery.service import app as app_module
-from discovery.service.api import ApiTokens
-from discovery.service.host import HostConfig
+from area_events import app as app_module
+from area_events.api.http_api import ApiTokens
+from area_events.discovery.host import HostConfig
 from tests.test_discovery_control import CONTROL_TOKEN, READ_TOKEN, UrllibSession
 from tests.test_extraction import PROCESS_TOKEN, Fixture
 from tests.test_site_discovery import CITY_URL
@@ -747,7 +747,7 @@ class Transport(Service):
                 run(init.async_setup_entry(hass, broken))
 
     def test_a_remote_extraction_worker_trusts_the_same_certificate(self):
-        from discovery.service.extraction import HttpProcessingClient
+        from area_events.extraction.service import HttpProcessingClient
         worker = HttpProcessingClient(self.url, PROCESS_TOKEN, cafile=self.pair[0])
         self.assertIn("pending", worker.status("stored-candidate", 1))
 

@@ -5,12 +5,12 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from discovery import refresh as refresh_module
-from discovery import registry
-from discovery import sources as sources_module
-from discovery.core import FetchError, finish_event, make_event
-from discovery.location import LocationError, NominatimProvider, ZippopotamProvider, parse_spec, resolve_location
-from discovery.refresh import load_config
+from area_events.discovery import refresh as refresh_module
+from area_events.discovery import registry
+from area_events.discovery import sources as sources_module
+from area_events.discovery.core import FetchError, finish_event, make_event
+from area_events.geolocation.location import LocationError, NominatimProvider, ZippopotamProvider, parse_spec, resolve_location
+from area_events.discovery.refresh import load_config
 
 PDT = timezone(timedelta(hours=-7))
 SHIPPED = load_config()
@@ -297,7 +297,7 @@ class Registry(unittest.TestCase):
             self.assertEqual(reasons["off"], "disabled")
 
     def test_coverage_boundary_is_the_sum_of_both_radii(self):
-        from discovery.location import distance_miles
+        from area_events.geolocation.location import distance_miles
         gap = distance_miles(32.7157, -117.1611, 33.12, -117.09)
         near = {"latitude": 33.12, "longitude": -117.09}
         area = registry._coverage({**AREA, "radius_miles": 20}, "test")

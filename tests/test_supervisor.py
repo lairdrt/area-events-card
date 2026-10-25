@@ -7,8 +7,8 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from discovery import server as server_module
-from discovery import supervisor
+from area_events.discovery import server as server_module
+from area_events.discovery import supervisor
 
 SUPERVISOR_TOKEN = "supervisor-secret"
 

@@ -15,11 +15,11 @@ import unittest
 from unittest import mock
 
 from tests.db import database
-from discovery.service import app as app_module
-from discovery.service.api import ApiTokens
-from discovery.service.control import CreateAreaRequest, NotFound, ValidationFailed
-from discovery.service.events import EventQuery
-from discovery.service.extraction import (
+from area_events import app as app_module
+from area_events.api.http_api import ApiTokens
+from area_events.control.service import CreateAreaRequest, NotFound, ValidationFailed
+from area_events.api.events import EventQuery
+from area_events.extraction.service import (
     VERSION,
     ExtractionConfig,
     ExtractionService,
@@ -28,20 +28,20 @@ from discovery.service.extraction import (
     ProcessingUnavailable,
     StoredCandidateExtractor,
 )
-from discovery.service.host import HostConfig
-from discovery.service.contracts import LeaseLost, StaleResult
-from discovery.service.contracts import SourceSpec
-from discovery.service.persistence.schema import LATEST, MIGRATIONS
-from discovery.service.persistence.store import DiscoveryStore
+from area_events.discovery.host import HostConfig
+from area_events.contracts.models import LeaseLost, StaleResult
+from area_events.contracts.models import SourceSpec
+from area_events.persistence.schema import LATEST, MIGRATIONS
+from area_events.persistence.store import DiscoveryStore
 
-from discovery.service.persistence.repositories import ChangeLog, PageRepository, SourceRepository
+from area_events.persistence.repositories import ChangeLog, PageRepository, SourceRepository
 from tests.records import document, put_document
 from tests.test_discovery_control import CONTROL_TOKEN, READ_TOKEN, request
 from tests.test_discovery_service import SPEC, Clock, FakeClient, city_pages
 from tests.test_site_discovery import CITY_URL, city_detail, city_listing
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SERVICE_DIR = os.path.join(ROOT, "area_events", "discovery", "service")
+SERVICE_DIR = os.path.join(ROOT, "src", "area_events")
 PROCESS_TOKEN = "p" * 40
 AUSTIN_URL = "https://austin.example/events"
 AUSTIN = SourceSpec("austin_fixture", "sandiego_gov", "Austin (fixture)", AUSTIN_URL, options=(("pages", 1),), interval_s=3600)
@@ -711,6 +711,12 @@ class Boundaries(unittest.TestCase):
     """Components reach the database only through the database-owning service's contracts."""
 
     def imports_of(self, name):
+        paths = {
+            "service.py": "discovery/service.py", "scheduler.py": "discovery/scheduler.py",
+            "host.py": "discovery/host.py", "control.py": "control/service.py",
+            "extraction.py": "extraction/service.py", "events.py": "api/events.py",
+        }
+        name = paths.get(name, name)
         with open(os.path.join(SERVICE_DIR, name), encoding="utf-8") as handle:
             tree = ast.parse(handle.read())
         found = set()
@@ -724,12 +730,12 @@ class Boundaries(unittest.TestCase):
     def test_the_extraction_worker_has_no_database_access(self):
         imports = self.imports_of("extraction.py")
         self.assertFalse(imports & {"sqlite3", ".persistence", ".persistence.store", ".store", ".repositories", ".events", ".schema", ".app"}, imports)
-        with open(os.path.join(SERVICE_DIR, "extraction.py"), encoding="utf-8") as handle:
+        with open(os.path.join(SERVICE_DIR, "extraction", "service.py"), encoding="utf-8") as handle:
             source = handle.read()
         self.assertNotIn("sqlite", source.lower())
 
     def test_the_event_query_service_only_reads(self):
-        with open(os.path.join(SERVICE_DIR, "events.py"), encoding="utf-8") as handle:
+        with open(os.path.join(SERVICE_DIR, "api", "events.py"), encoding="utf-8") as handle:
             tree = ast.parse(handle.read())
         service = [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "EventQueryService"][0]
         calls = {n.func.attr for n in ast.walk(service) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}

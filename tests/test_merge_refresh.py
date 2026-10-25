@@ -4,11 +4,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-from discovery import refresh as refresh_module
-from discovery import sources as sources_module
-from discovery.core import FetchError, make_event, finish_event
-from discovery.merge import merge_events, title_relation, venues_match
-from discovery.publish import FeedError, validate_feed, write_atomic
+from area_events.discovery import refresh as refresh_module
+from area_events.discovery import sources as sources_module
+from area_events.discovery.core import FetchError, make_event, finish_event
+from area_events.discovery.merge import merge_events, title_relation, venues_match
+from area_events.discovery.publish import FeedError, validate_feed, write_atomic
 
 from datetime import datetime, timedelta, timezone
 
@@ -175,7 +175,7 @@ class FeedSafety(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             destination = os.path.join(folder, "events.json")
             write_atomic(destination, "good")
-            with mock.patch("discovery.publish.os.replace", side_effect=OSError("disk full")):
+            with mock.patch("area_events.discovery.publish.os.replace", side_effect=OSError("disk full")):
                 with self.assertRaises(OSError):
                     write_atomic(destination, "bad")
             self.assertEqual(open(destination, encoding="utf-8").read(), "good")

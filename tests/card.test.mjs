@@ -30,14 +30,14 @@ globalThis.document = {
 // <home-assistant> counts as defined: the card registers itself only after the frontend has started (see "Registration" in the card)
 globalThis.customElements = { get: (name) => (name === "home-assistant" ? class {} : undefined), define: (name, c) => { if (name === "area-events-card") CardClass = c; }, whenDefined: () => new Promise(() => {}) };
 globalThis.window = { location: { pathname: "/lovelace/events" }, localStorage: new Storage() };
-await import("../src/area-events-card.js");
+await import("../src/frontend/area-events-card.js");
 const { categoriesFor, DEFAULT_CATEGORIES, normalizePrefs, prefsKey, readSettings, assertEditable, EDITOR_SCHEMA } = CardClass._internals;
-const { ART, ART_LABELS, artFor } = await import("../src/presentation/community.js");
-const { PRESENTATION_CONTRACT } = await import("../src/presentation/contract.js");
-const { genericRenderer } = await import("../src/presentation/generic.js");
-const { nasaMissionRenderer } = await import("../src/presentation/nasa-mission.js");
-const { PresentationRegistry } = await import("../src/presentation/registry.js");
-const { PRESENTATIONS } = await import("../src/presentation/manifest.js");
+const { ART, ART_LABELS, artFor } = await import("../src/frontend/presentation/community.js");
+const { PRESENTATION_CONTRACT } = await import("../src/frontend/presentation/contract.js");
+const { genericRenderer } = await import("../src/frontend/presentation/generic.js");
+const { nasaMissionRenderer } = await import("../src/frontend/presentation/nasa-mission.js");
+const { PresentationRegistry } = await import("../src/frontend/presentation/registry.js");
+const { PRESENTATIONS } = await import("../src/frontend/presentation/manifest.js");
 
 const day = 24 * 3600 * 1000;
 const iso = (offsetMs) => new Date(Date.now() + offsetMs).toISOString();
@@ -215,16 +215,16 @@ test("tile cleanup belongs to the renderer that produced the element", async () 
 });
 
 test("the host delegates presentation and renderer modules stay outside service and persistence layers", async () => {
-  const host = fs.readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  const host = fs.readFileSync(new URL("../src/frontend/area-events-card.js", import.meta.url), "utf8");
   assert.doesNotMatch(host, /_renderEvent|community\.event|nasa\.mission/);
   assert.doesNotMatch(host, /\.mission-|\.community-event/);
   assert.match(host, /PRESENTATIONS\.render\(event, this\._presentation, context\)/);
   for (const name of ["community.js", "generic.js", "manifest.js", "nasa-mission.js", "registry.js", "contract.js"]) {
-    const source = fs.readFileSync(new URL(`../src/presentation/${name}`, import.meta.url), "utf8");
+    const source = fs.readFileSync(new URL(`../src/frontend/presentation/${name}`, import.meta.url), "utf8");
     assert.doesNotMatch(source, /(?:sqlite|persistence|producer|discovery\.service|homeassistant|hass\.connection|\bfetch\s*\()/i, name);
   }
-  const community = fs.readFileSync(new URL("../src/presentation/community.js", import.meta.url), "utf8");
-  const mission = fs.readFileSync(new URL("../src/presentation/nasa-mission.js", import.meta.url), "utf8");
+  const community = fs.readFileSync(new URL("../src/frontend/presentation/community.js", import.meta.url), "utf8");
+  const mission = fs.readFileSync(new URL("../src/frontend/presentation/nasa-mission.js", import.meta.url), "utf8");
   assert.match(community, /export const styles/);
   assert.match(mission, /styles:/);
 });
@@ -355,8 +355,8 @@ test("a configuration error is retried slowly, not hammered", async () => {
 });
 
 test("few results never stretch the tiles: the grid keeps its empty columns (auto-fill, not auto-fit)", () => {
-  const source = fs.readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
-  const renderer = fs.readFileSync(new URL("../src/presentation/community.js", import.meta.url), "utf8");
+  const source = fs.readFileSync(new URL("../src/frontend/area-events-card.js", import.meta.url), "utf8");
+  const renderer = fs.readFileSync(new URL("../src/frontend/presentation/community.js", import.meta.url), "utf8");
   const rules = source.match(/grid-template-columns:[^;]*;/g) || [];
   assert.ok(rules.length >= 2, "the default grid rule and the 'columns' override");
   for (const rule of rules) {
@@ -1024,7 +1024,7 @@ test("the six added illustrations render through the existing illustration path,
   assert.equal(artFor({ illustration: { category: "music" } }), "music");
   assert.equal(artFor({ illustration: { category: "festival" } }), "festival");
   assert.equal(artFor({ illustration: { category: "street_festival" } }), "street_festival");
-  const source = fs.readFileSync(new URL("../src/presentation/community.js", import.meta.url), "utf8");
+  const source = fs.readFileSync(new URL("../src/frontend/presentation/community.js", import.meta.url), "utf8");
   for (const kind of added) assert.ok(source.includes(`.art.${kind} { --ae-accent: hsl(`), `${kind} has a theme accent`);
 });
 
@@ -1117,16 +1117,16 @@ test("changing images does not disturb unchanged tiles, and the illustration is 
 test("the card the integration serves is the current source, stamped", async () => {
   const { readFileSync } = await import("node:fs");
   const { createHash } = await import("node:crypto");
-  const source = readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../src/frontend/area-events-card.js", import.meta.url), "utf8");
   const modules = ["community.js", "contract.js", "generic.js", "manifest.js", "nasa-mission.js", "registry.js"]
-    .map((name) => `${name}\n${readFileSync(new URL(`../src/presentation/${name}`, import.meta.url), "utf8")}`).join("\n");
+    .map((name) => `${name}\n${readFileSync(new URL(`../src/frontend/presentation/${name}`, import.meta.url), "utf8")}`).join("\n");
   const { version } = JSON.parse(readFileSync(new URL("../custom_components/area_events/manifest.json", import.meta.url), "utf8"));
   const identifier = `AREA-EVENTS ${version}-${createHash("sha1").update(source).update(modules).digest("hex").slice(0, 8)}`;
   const served = readFileSync(new URL("../custom_components/area_events/frontend/area-events-card.js", import.meta.url), "utf8");
   assert.equal(served, source.replaceAll("__AREA_EVENTS_CARD_BUILD__", identifier), "run npm run build and commit the result");
   for (const name of ["community.js", "contract.js", "generic.js", "manifest.js", "nasa-mission.js", "registry.js"]) {
     assert.equal(readFileSync(new URL(`../custom_components/area_events/frontend/presentation/${name}`, import.meta.url), "utf8"),
-      readFileSync(new URL(`../src/presentation/${name}`, import.meta.url), "utf8"), `${name} is packaged from source`);
+      readFileSync(new URL(`../src/frontend/presentation/${name}`, import.meta.url), "utf8"), `${name} is packaged from source`);
   }
 });
 
@@ -1157,14 +1157,14 @@ test("a card registered first by an older Area Events resource is reported, with
   try {
     class LegacyCard {} // no getConfigForm: the pre-integration card
     customElements.get = () => LegacyCard;
-    await import("../src/area-events-card.js?legacy-first");
+    await import("../src/frontend/area-events-card.js?legacy-first");
     assert.equal(defined, 0, "the tag stays with the older card; it can not be replaced");
     assert.match(errors.join("\n"), /an older Area Events card is already registered.*Remove the dashboard resource \/local\/area-events-card\/loader\.js/);
 
     errors.length = 0;
     class OtherCopy { static getConfigForm() { return {}; } } // a second load of a current card is not a problem
     customElements.get = () => OtherCopy;
-    await import("../src/area-events-card.js?second-copy");
+    await import("../src/frontend/area-events-card.js?second-copy");
     assert.deepEqual(errors, []);
     assert.equal(window.customCards.filter((card) => card.type === "custom:area-events-card").length, 1, "the picker lists the card once");
   } finally {
@@ -1203,7 +1203,7 @@ async function withFreshModule(registry, run) {
 
 test("the card module imports only its presentation manifest and records its load", async () => {
   const { readFileSync } = await import("node:fs");
-  const source = readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../src/frontend/area-events-card.js", import.meta.url), "utf8");
   assert.deepEqual([...source.matchAll(/^import .* from ["'](.*)["'];$/gm)].map((match) => match[1]), ["./presentation/manifest.js"]);
   assert.doesNotMatch(source, /import\s*\(|^\s*await\s/m, "no dynamic import or top-level await");
   assert.equal((source.match(/customElements\.define\(/g) || []).length, 0, "no direct define on the registry captured at load; registration goes through defineCard()");
@@ -1215,7 +1215,7 @@ test("the card is defined in the registry that is current once Home Assistant ha
   const native = fakeRegistry("CustomElementRegistry");
   const polyfill = fakeRegistry("CustomElementRegistryPolyfill");
   await withFreshModule(native, async () => {
-    await import("../src/area-events-card.js?before-the-swap");
+    await import("../src/frontend/area-events-card.js?before-the-swap");
     await settle();
     assert.deepEqual(native.defines, [], "nothing is defined in the original registry while the frontend has not started");
     assert.equal(globalThis.__AREA_EVENTS_CARD_LOAD__.defined, false);
@@ -1244,11 +1244,11 @@ test("when the frontend has already started, the card is defined immediately and
   const registry = fakeRegistry("CustomElementRegistryPolyfill");
   registry.define("home-assistant", class {});
   await withFreshModule(registry, async () => {
-    await import("../src/area-events-card.js?after-the-frontend");
+    await import("../src/frontend/area-events-card.js?after-the-frontend");
     assert.deepEqual(registry.defines, ["home-assistant", "area-events-card"]);
     assert.equal(globalThis.__AREA_EVENTS_CARD_LOAD__.afterHomeAssistant, true);
     assert.equal(globalThis.__AREA_EVENTS_CARD_LOAD__.defined, true);
-    await import("../src/area-events-card.js?loaded-twice"); // a second evaluation does not define it again
+    await import("../src/frontend/area-events-card.js?loaded-twice"); // a second evaluation does not define it again
     assert.deepEqual(registry.defines.filter((tag) => tag === "area-events-card"), ["area-events-card"]);
   });
 });
@@ -1263,7 +1263,7 @@ test("an element that is not ours, or an older card, in the registry is never re
   console.error = (...args) => errors.push(args.join(" "));
   try {
     await withFreshModule(registry, async () => {
-      await import("../src/area-events-card.js?legacy-after-frontend");
+      await import("../src/frontend/area-events-card.js?legacy-after-frontend");
       assert.equal(registry.get("area-events-card"), Legacy);
       assert.equal(globalThis.__AREA_EVENTS_CARD_LOAD__.defined, false);
       assert.match(errors.join(" "), /older Area Events card is already registered/);
@@ -1575,7 +1575,7 @@ test("1, 2, 3, 4 and 20 events: every event is one tile in the same grid, which 
     assert.equal(byClass(card.shadowRoot, "event").length, count);
     assert.equal(grid[0].attrs.style, undefined, "no inline sizing: the stylesheet's equal columns decide the widths");
   }
-  const styles = fs.readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
+  const styles = fs.readFileSync(new URL("../src/frontend/area-events-card.js", import.meta.url), "utf8");
   assert.doesNotMatch(styles, /\.event \{[^}]*(flex-grow|grid-column|width: 100%)/, "a tile never claims more than its column");
 });
 
@@ -1767,7 +1767,7 @@ test("each tile's credit panel has its own id", async () => {
 });
 
 test("the card's styles keep the credit compact: a small round button, a panel only on request, no theme colours as hex", () => {
-  const source = fs.readFileSync(new URL("../src/presentation/community.js", import.meta.url), "utf8");
+  const source = fs.readFileSync(new URL("../src/frontend/presentation/community.js", import.meta.url), "utf8");
   const start = source.indexOf("export const styles = `");
   const styles = source.slice(start, source.indexOf("`;", start));
   assert.match(styles, /\.credit-button \{[^}]*width: 22px; height: 22px;[^}]*border-radius: 50%/);
@@ -1803,8 +1803,8 @@ test("every metadata row is an icon box and a text span, so wrapped text keeps t
 });
 
 test("the shared row styles centre each icon on the first line of its text at one size and spacing", () => {
-  const source = fs.readFileSync(new URL("../src/area-events-card.js", import.meta.url), "utf8");
-  const community = fs.readFileSync(new URL("../src/presentation/community.js", import.meta.url), "utf8");
+  const source = fs.readFileSync(new URL("../src/frontend/area-events-card.js", import.meta.url), "utf8");
+  const community = fs.readFileSync(new URL("../src/frontend/presentation/community.js", import.meta.url), "utf8");
   const start = community.indexOf("export const styles = `");
   const styles = source + community.slice(start, community.indexOf("`;", start));
   assert.match(styles, /\.meta \{[^}]*display: flex; align-items: flex-start; gap: 6px;[^}]*line-height: 1\.4;/);

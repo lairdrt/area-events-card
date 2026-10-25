@@ -1,8 +1,8 @@
 import unittest
 from datetime import datetime, timezone
 
-from discovery.core import clock_range, localize_pacific, to_pacific
-from discovery.sources import kpbs
+from area_events.discovery.core import clock_range, localize_pacific, to_pacific
+from area_events.discovery.sources import kpbs
 
 
 def utc(*args):

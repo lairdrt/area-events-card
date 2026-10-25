@@ -8,12 +8,12 @@ import unittest
 import urllib.error
 import urllib.request
 
-from discovery import server as server_module
-from discovery.core import FetchError, save_events
-from discovery.location import LocationError
-from discovery.engine import Engine, EngineError
-from discovery.profiles import ProfileError, location_spec, normalize_profile, profile_id, public_host
-from discovery.server import Api, make_server
+from area_events.discovery import server as server_module
+from area_events.discovery.core import FetchError, save_events
+from area_events.geolocation.location import LocationError
+from area_events.discovery.engine import Engine, EngineError
+from area_events.discovery.profiles import ProfileError, location_spec, normalize_profile, profile_id, public_host
+from area_events.discovery.server import Api, make_server
 
 TOKEN = "t" * 40
 AUSTIN = {"area": "Austin, TX", "radius_miles": 25}
@@ -44,7 +44,7 @@ def feed(label, n=2, generated="2030-01-01T00:00:00+00:00"):
 
 
 class FakeRefresh:
-    """Stands in for discovery.refresh.refresh: writes a feed named after the requested place, or fails."""
+    """Stands in for area_events.discovery.refresh.refresh: writes a feed named after the requested place, or fails."""
 
     def __init__(self):
         self.calls, self.fail, self.running_now, self.max_parallel = [], None, 0, 0

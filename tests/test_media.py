@@ -10,11 +10,11 @@ import types
 import unittest
 from unittest import mock
 
-from discovery import engine as engine_module
-from discovery import maps, media
-from discovery.core import FetchError
-from discovery.safe import SafeFetcher, State
-from discovery.server import Api, Raw
+from area_events.discovery import engine as engine_module
+from area_events.enrichment import maps, media
+from area_events.discovery.core import FetchError
+from area_events.discovery.safe import SafeFetcher, State
+from area_events.discovery.server import Api, Raw
 
 SD = {"latitude": 32.7157, "longitude": -117.1611, "radius_miles": 25, "display_name": "San Diego, California, United States"}
 VIEJAS = (32.7738109, -117.0745404)
@@ -702,7 +702,7 @@ class Switch(unittest.TestCase):
     """The app option location_imagery turns every lookup off."""
 
     def test_settings(self):
-        from discovery import server
+        from area_events.discovery import server
         self.assertTrue(server.load_settings({}, "missing")["location_imagery"])
         for value in ("false", "0", "No", "off"):
             self.assertFalse(server.load_settings({"AREA_EVENTS_LOCATION_IMAGERY": value}, "missing")["location_imagery"], value)

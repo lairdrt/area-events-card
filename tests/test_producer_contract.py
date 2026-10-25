@@ -13,18 +13,18 @@ import unittest
 from datetime import datetime, timezone
 
 from tests.db import database
-from discovery.service import app as app_module
-from discovery.service import producer
-from discovery.service.api import ApiTokens
-from discovery.service.control import CreateAreaRequest
-from discovery.service.fetching import RecordingFetcher
-from discovery.service.producer import EventCandidate, ProducerResult, Provenance, SourceLead, Verification
-from discovery.service.producers.city_of_san_diego import CityOfSanDiegoProducer
-from discovery.service.producers.craft_fairs import CraftFairProducer
-from discovery.service.producers.localist import LocalistProducer
-from discovery.service.contracts import SourceSpec
-from discovery.sources import localist, sandiego_gov
-from discovery.service.persistence.repositories import CandidateRepository, SourceRepository
+from area_events import app as app_module
+from area_events.discovery import producer
+from area_events.api.http_api import ApiTokens
+from area_events.control.service import CreateAreaRequest
+from area_events.discovery.fetching import RecordingFetcher
+from area_events.discovery.producer import EventCandidate, ProducerResult, Provenance, SourceLead, Verification
+from area_events.discovery.producers.city_of_san_diego import CityOfSanDiegoProducer
+from area_events.discovery.producers.craft_fairs import CraftFairProducer
+from area_events.discovery.producers.localist import LocalistProducer
+from area_events.contracts.models import SourceSpec
+from area_events.discovery.sources import localist, sandiego_gov
+from area_events.persistence.repositories import CandidateRepository, SourceRepository
 from tests.records import record
 from tests.test_austin import API, Recorder, sample_pages
 from tests.test_austin import options as localist_options

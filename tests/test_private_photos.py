@@ -11,11 +11,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from discovery import classify, photo_subject
+from area_events.classification import classify, photo_subject
 
 REPO = Path(__file__).resolve().parent.parent
 INTEGRATION = REPO / "custom_components" / "area_events"
-sys.path.insert(0, str(REPO))
 
 
 def food(title, description="", categories=()):
@@ -62,8 +61,8 @@ class Subjects(unittest.TestCase):
 class Pipeline(unittest.TestCase):
     def test_the_feed_carries_the_subject_of_food_events(self):
         from datetime import datetime, timedelta, timezone
-        from discovery import refresh, registry
-        from discovery.core import make_event, finish_event
+        from area_events.discovery import refresh, registry
+        from area_events.discovery.core import make_event, finish_event
         start = datetime.now(timezone.utc) + timedelta(days=2)
         event = finish_event(make_event("web_t", "T", "https://t.example", "https://t.example/e", "Hillcrest Farmers Market", start, local_id="1"), "2030-01-01T00:00:00+00:00", ["x"], False)
         config = {"sources": [{"id": "web_t", "name": "T", "adapter": "web", "url": "https://t.example", "coverage": {"type": "global"}}]}
