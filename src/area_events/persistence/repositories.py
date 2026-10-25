@@ -11,7 +11,7 @@ import zlib
 from datetime import datetime
 
 from ..discovery import producer
-from ..contracts.models import CandidateRecord, Change, EvidenceRecord, JobCounts, PageRecord, RetentionPolicy, SourceRecord, SourceSpec  # noqa: F401
+from ..contracts.models import (CandidateRecord, Change, ConfiguredSource, EvidenceRecord, JobCounts, PageRecord, RetentionPolicy, SourceRecord, SourceSpec)  # noqa: F401
 from ..discovery.urls import canonical_url, url_key
 
 log = logging.getLogger("area_events.discovery.repositories")
@@ -24,12 +24,21 @@ def content_hash(body):
 
 class SourceRepository:
     def upsert(self, tx, spec, now):
-        tx.execute("""INSERT INTO sources (source_key, adapter, name, base_url, options_json, interval_s, created_at, updated_at)
-                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                      ON CONFLICT(source_key) DO UPDATE SET adapter=excluded.adapter, name=excluded.name, base_url=excluded.base_url,
-                        options_json=excluded.options_json, interval_s=excluded.interval_s, updated_at=excluded.updated_at""",
+        """Install a built-in instance once; later service starts must preserve persisted configuration."""
+        tx.execute("""INSERT OR IGNORE INTO sources (source_key, adapter, name, base_url, options_json, interval_s, created_at, updated_at)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                    (spec.source_key, spec.adapter, spec.name, spec.base_url, json.dumps(spec.options_dict(), sort_keys=True), int(spec.interval_s), now, now))
         return tx.execute("SELECT source_id FROM sources WHERE source_key=?", (spec.source_key,)).fetchone()[0]
+
+    def create_configured(self, tx, spec, enabled, now):
+        return tx.execute("""INSERT INTO sources (source_key, adapter, name, base_url, options_json, enabled, interval_s, revision, created_at, updated_at)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?) RETURNING source_id""",
+                          (spec.source_key, spec.adapter, spec.name, spec.base_url, json.dumps(spec.options_dict(), sort_keys=True), int(enabled), int(spec.interval_s), now, now)).fetchone()[0]
+
+    def update_configured(self, tx, source_id, spec, enabled, now):
+        tx.execute("""UPDATE sources SET name=?, base_url=?, options_json=?, enabled=?, interval_s=?, revision=revision+1, updated_at=?
+                      WHERE source_id=?""",
+                   (spec.name, spec.base_url, json.dumps(spec.options_dict(), sort_keys=True), int(enabled), int(spec.interval_s), now, source_id))
 
     def by_id(self, connection, source_id):
         return connection.execute("SELECT * FROM sources WHERE source_id=?", (source_id,)).fetchone()
@@ -39,6 +48,9 @@ class SourceRepository:
 
     def all(self, connection):
         return [self.record(row) for row in connection.execute("SELECT * FROM sources ORDER BY source_key")]
+
+    def all_configured(self, connection):
+        return connection.execute("SELECT * FROM sources ORDER BY source_key").fetchall()
 
     def save_leads(self, tx, source_id, leads, now):
         """Record the `SourceLead`s a producer returned (one row per page, updated each run). Returns how many rows were written."""
@@ -62,6 +74,13 @@ class SourceRepository:
     def record(row):
         return SourceRecord(row["source_key"], row["adapter"], row["name"], row["base_url"], bool(row["enabled"]), row["interval_s"],
                             row["last_success_at"], row["last_attempt_at"])
+
+    @staticmethod
+    def configuration(row):
+        options = json.loads(row["options_json"])
+        options["url"] = row["base_url"]
+        return ConfiguredSource(row["source_key"], row["adapter"], row["name"], bool(row["enabled"]), row["interval_s"] // 60,
+                                tuple(sorted(options.items())), row["revision"])
 
 
 class PageRepository:

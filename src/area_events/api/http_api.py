@@ -4,6 +4,10 @@
     GET   /v1/areas                      read      GET /v1/areas/{id} reads one
     POST  /v1/areas                      control   create (idempotent with request_id)
     PATCH /v1/areas/{id}                 control   body must carry expected_revision
+    GET   /v1/sources[/<id>]              read      configured producer instances
+    POST  /v1/sources                    control   create a configured instance
+    PATCH /v1/sources/<id>               control   update; body must carry expected_revision
+    POST  /v1/sources/<id>/enable|disable control   enable or disable; body must carry expected_revision
     PUT   /v1/discovery/settings         control   mode and intensity; body must carry expected_revision
     POST  /v1/discovery/pause|resume     control   idempotent
     GET   /v1/changes?after=N&limit=K    read      the durable change feed (hints are not needed; this is authoritative)
@@ -33,7 +37,8 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from ..control.service import (CONTROL_SCHEMA, ControlError, CreateAreaRequest, RevisionConflict, SettingsRequest, UpdateAreaRequest, ValidationFailed)
+from ..control.service import (CONTROL_SCHEMA, ControlError, CreateAreaRequest, RevisionConflict, SettingsRequest, UpdateAreaRequest, ValidationFailed,
+                               CreateSourceRequest, UpdateSourceRequest)
 from .events import EventQuery
 
 log = logging.getLogger("area-events.discovery.api")
@@ -43,6 +48,7 @@ MIN_TOKEN_LENGTH = 32
 AUTH_FAILURES = 5
 AUTH_WINDOW = 60
 AREA_PATH = re.compile(r"^/v1/areas/([A-Za-z0-9]{8,40})$")
+SOURCE_PATH = re.compile(r"^/v1/sources/([a-z][a-z0-9_-]{0,79})(?:/(enable|disable))?$")
 MEDIA_PATH = re.compile(r"^/v1/media/([a-z0-9][a-z0-9.-]{3,60}\.(?:svg|jpg|png|webp))$")
 SCOPES = ("read", "control", "process")
 
@@ -166,6 +172,11 @@ class DiscoveryApi:
         if unknown:
             raise ValidationFailed(f"unknown fields: {', '.join(unknown)[:100]}")
 
+    @staticmethod
+    def _source_json(source):
+        return {"id": source.source_key, "type": source.adapter, "name": source.name, "enabled": source.enabled,
+                "interval_minutes": source.interval_minutes, "options": source.options_dict(), "revision": source.revision}
+
     def _route(self, method, path, query, headers, body, scope):
         if scope == "process" and not (path.startswith("/v1/processing/") and (method == "POST" or path == "/v1/processing/status")):
             raise ApiError(403, "forbidden", "a processing token may only use the processing routes")
@@ -179,6 +190,41 @@ class DiscoveryApi:
             return 200, {"schema": CONTROL_SCHEMA, "status": to_jsonable(self._control.get_status())}
         if method == "GET" and path == "/v1/areas":
             return 200, {"schema": CONTROL_SCHEMA, "areas": to_jsonable(self._control.list_areas())}
+        if method == "GET" and path == "/v1/sources":
+            return 200, {"schema": CONTROL_SCHEMA, "sources": [self._source_json(source) for source in self._control.list_sources()]}
+        source_match = SOURCE_PATH.match(path)
+        if method == "GET" and source_match and source_match.group(2) is None:
+            return 200, {"schema": CONTROL_SCHEMA, "source": self._source_json(self._control.get_source(source_match.group(1)))}
+        if method == "POST" and path == "/v1/sources":
+            self._need(scope, "control")
+            data = self._json(headers, body)
+            self._only(data, ("id", "type", "name", "enabled", "interval_minutes", "options"))
+            required = {"id", "type", "name", "enabled", "interval_minutes", "options"}
+            if required - set(data):
+                raise ValidationFailed("id, type, name, enabled, interval_minutes and options are required")
+            result = self._control.create_source(CreateSourceRequest(data["id"], data["type"], data["name"], data["enabled"], data["interval_minutes"], data["options"]))
+            return 201, {"schema": result.schema, "revision": result.revision, "change_seq": result.change_seq, "replayed": result.replayed,
+                         "source": self._source_json(result.source)}
+        if source_match and source_match.group(2) is not None and method == "POST":
+            self._need(scope, "control")
+            data = self._json(headers, body)
+            self._only(data, ("expected_revision",))
+            if "expected_revision" not in data:
+                raise ValidationFailed("expected_revision is required")
+            enabled = source_match.group(2) == "enable"
+            result = self._control.set_source_enabled(source_match.group(1), enabled, data["expected_revision"])
+            return 200, {"schema": result.schema, "revision": result.revision, "change_seq": result.change_seq, "replayed": result.replayed,
+                         "source": self._source_json(result.source)}
+        if source_match and source_match.group(2) is None and method == "PATCH":
+            self._need(scope, "control")
+            data = self._json(headers, body)
+            self._only(data, ("expected_revision", "name", "enabled", "interval_minutes", "options"))
+            if "expected_revision" not in data:
+                raise ValidationFailed("expected_revision is required")
+            result = self._control.update_source(UpdateSourceRequest(source_match.group(1), data["expected_revision"], data.get("name"), data.get("enabled"),
+                                                                     data.get("interval_minutes"), data.get("options")))
+            return 200, {"schema": result.schema, "revision": result.revision, "change_seq": result.change_seq, "replayed": result.replayed,
+                         "source": self._source_json(result.source)}
         match = AREA_PATH.match(path)
         if method == "GET" and match:
             return 200, {"schema": CONTROL_SCHEMA, "area": to_jsonable(self._control.get_area(match.group(1)))}
@@ -226,8 +272,8 @@ class DiscoveryApi:
                 raise ApiError(404, "not_found", "this service cannot be stopped through the API")
             self._on_stop()
             return 202, {"schema": CONTROL_SCHEMA, "stopping": True}
-        known = path == "/v1/discovery/status" or path in ("/v1/areas", "/v1/changes", "/v1/discovery/settings", "/v1/discovery/pause", "/v1/discovery/resume",
-                                                           "/v1/service/stop") or match
+        known = path == "/v1/discovery/status" or path in ("/v1/areas", "/v1/sources", "/v1/changes", "/v1/discovery/settings", "/v1/discovery/pause", "/v1/discovery/resume",
+                                                           "/v1/service/stop") or match or source_match
         raise ApiError(405 if known else 404, "method_not_allowed" if known else "not_found", "method not allowed" if known else "not found")
 
 

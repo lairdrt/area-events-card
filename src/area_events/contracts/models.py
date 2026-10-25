@@ -1,7 +1,7 @@
 """Records and protocols of the Discovery Service, independent of how they travel (in process now, HTTP later).
 
 Every record carries stable string keys (never local integer ids), so a consumer on another computer can rely on them:
-`source_key` (registry id), `url_key` (sha256 of the canonical URL), `candidate_key` (`<source_key>:<local id>`, the existing event id),
+`source_key` (stable producer-instance id), `url_key` (sha256 of the canonical URL), `candidate_key` (`<source_key>:<local id>`, the existing event id),
 `content_hash` (sha256 of the stored bytes) and `payload_hash` (sha256 of the candidate's comparable fields).
 """
 from dataclasses import dataclass, field
@@ -20,6 +20,21 @@ class SourceRecord:
     interval_s: int
     last_success_at: Optional[int]
     last_attempt_at: Optional[int]
+
+
+@dataclass(frozen=True)
+class ConfiguredSource:
+    """A persisted producer instance as exposed by the control API."""
+    source_key: str
+    adapter: str
+    name: str
+    enabled: bool
+    interval_minutes: int
+    options: tuple
+    revision: int
+
+    def options_dict(self):
+        return dict(self.options)
 
 
 @dataclass(frozen=True)
@@ -198,6 +213,10 @@ class ValidationFailed(ControlError):
 
 class NotFound(ControlError):
     code, status = "not_found", 404
+
+
+class SourceExists(ControlError):
+    code, status = "source_exists", 409
 
 
 class RevisionConflict(ControlError):
@@ -401,6 +420,15 @@ class ControlResult:
     replayed: bool = False
     area: Optional[AreaRecord] = None
     settings: Optional[SettingsRecord] = None
+
+
+@dataclass(frozen=True)
+class SourceControlResult:
+    schema: str
+    revision: int
+    change_seq: Optional[int]
+    replayed: bool
+    source: ConfiguredSource
 
 
 @dataclass(frozen=True)

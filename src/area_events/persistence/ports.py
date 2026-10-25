@@ -5,8 +5,8 @@ crosses a port in either direction: every operation that must be atomic is ONE c
 Persistence never imports the modules that use it; they never import its implementation, only these ports (and the plain records in `contracts.py`).
 
     CrawlStorage       claim a crawl job, read the source's previous records, record a whole run atomically, release a failed job, retention
-    SchedulingStorage  keep jobs in line with the configuration (areas, settings), report what is due
-    ControlStorage     areas and settings: read, create, update (revision-checked), pause; each change with its durable change record
+    SchedulingStorage  keep jobs in line with the configuration (areas, sources, settings), report what is due
+    ControlStorage     areas, source instances and settings: read and revision-checked updates with durable change records
     ProcessingStorage  lease candidates to a processing worker, and accept its validated result: lookup, deduplication decision and commit in ONE operation
     EventQueries       read normalized events
     DiscoveryReader    the read contract over the discovery data (changes, snapshot, candidates, pages, status): defined in contracts.py
@@ -144,9 +144,17 @@ class ControlStorage(Protocol):
 
     def get_area(self, area_key: str): ...
 
+    def list_sources(self) -> tuple: ...
+
+    def get_source(self, source_key: str): ...
+
     def status(self, runtime: dict): ...
 
     def create_area(self, fields: dict, enabled: bool, request_id: Optional[str], source_keys: tuple, new_key): ...
+
+    def create_source(self, spec, enabled: bool): ...
+
+    def update_source(self, source_key: str, expected_revision: int, spec, enabled: bool): ...
 
     def update_area(self, area_key: str, expected_revision: int, wanted: dict, source_keys: Optional[tuple], settle): ...
 

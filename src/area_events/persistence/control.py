@@ -3,9 +3,11 @@
 Every command is ONE write transaction that checks the expected revision, makes the change and appends its durable change record. Validation of a request is the caller's; what
 depends on the stored state (the expected revision, a radius against the area's unit) is checked here, inside the transaction, with the caller's `settle` function.
 """
+import json
 import sqlite3
 
-from ..contracts.models import CONTROL_SCHEMA, ControlResult, ControlStatus, NotFound, RevisionConflict, SourceStatus, digest_of
+from ..contracts.models import (CONTROL_SCHEMA, ControlResult, ControlStatus, NotFound, RevisionConflict, SourceControlResult, SourceExists, SourceSpec,
+                                SourceStatus, ValidationFailed, digest_of)
 
 
 class SqliteControlStorage:
@@ -25,6 +27,15 @@ class SqliteControlStorage:
     def get_area(self, area_key):
         with self._store.read() as connection:
             return self._areas.get(connection, area_key)
+
+    def list_sources(self):
+        with self._store.read() as connection:
+            return tuple(self._sources.configuration(row) for row in self._sources.all_configured(connection))
+
+    def get_source(self, source_key):
+        with self._store.read() as connection:
+            row = self._sources.by_key(connection, source_key)
+            return self._sources.configuration(row) if row else None
 
     def status(self, runtime):
         with self._store.read() as connection:
@@ -65,6 +76,36 @@ class SqliteControlStorage:
                 return self.create_area(fields, enabled, request_id, source_keys, new_key)
             raise
         return ControlResult(CONTROL_SCHEMA, area.revision, seq, False, area=area)
+
+    def create_source(self, spec: SourceSpec, enabled: bool):
+        now = self._now()
+        with self._store.write() as tx:
+            if self._sources.by_key(tx, spec.source_key) is not None:
+                raise SourceExists(f"source '{spec.source_key}' already exists")
+            source_id = self._sources.create_configured(tx, spec, enabled, now)
+            source = self._sources.configuration(self._sources.by_id(tx, source_id))
+            seq = self._changes.append(tx, "source", source.source_key, digest_of(source), now, kind="source.configuration_changed")
+        return SourceControlResult(CONTROL_SCHEMA, source.revision, seq, False, source)
+
+    def update_source(self, source_key, expected_revision, spec: SourceSpec, enabled: bool):
+        now = self._now()
+        with self._store.write() as tx:
+            row = self._sources.by_key(tx, source_key)
+            if row is None:
+                raise NotFound(f"no source '{source_key}'")
+            if row["adapter"] != spec.adapter:
+                raise ValidationFailed("a source instance's producer type cannot change")
+            if row["revision"] != expected_revision:
+                raise RevisionConflict(f"the source is at revision {row['revision']}, not {expected_revision}", row["revision"])
+            same = (row["name"] == spec.name and row["base_url"] == spec.base_url and row["options_json"] == json.dumps(spec.options_dict(), sort_keys=True)
+                    and bool(row["enabled"]) == enabled and row["interval_s"] == spec.interval_s)
+            if same:
+                source = self._sources.configuration(row)
+                return SourceControlResult(CONTROL_SCHEMA, source.revision, None, True, source)
+            self._sources.update_configured(tx, row["source_id"], spec, enabled, now)
+            source = self._sources.configuration(self._sources.by_id(tx, row["source_id"]))
+            seq = self._changes.append(tx, "source", source.source_key, digest_of(source), now, kind="source.configuration_changed")
+        return SourceControlResult(CONTROL_SCHEMA, source.revision, seq, False, source)
 
     def update_area(self, area_key, expected_revision, wanted, source_keys, settle):
         now = self._now()

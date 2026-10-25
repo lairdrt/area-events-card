@@ -9,17 +9,21 @@ pausing a paused service and resuming a running one all succeed without a new re
 `RevisionConflict`, never merged. This module holds no SQL: it validates, and asks Persistence.
 """
 import math
+import re
 import types
 import uuid
 from dataclasses import dataclass
 from typing import Optional, Protocol
+from urllib.parse import urlsplit
 
-from ..contracts.models import (CONTROL_SCHEMA, INTENSITIES, MODES, UNITS, AreaRecord, ControlError, ControlResult, ControlStatus, NotFound, RevisionConflict,  # noqa: F401
-                        SourceStatus, ValidationFailed)
+from ..contracts.models import (CONTROL_SCHEMA, INTENSITIES, MODES, UNITS, AreaRecord, ControlError, ControlResult, ControlStatus, NotFound, RevisionConflict,
+                                SourceControlResult, SourceSpec, SourceStatus, ValidationFailed)
 from ..persistence.ports import ControlStorage
 
 MAX_SOURCES_PER_AREA = 20
 MAX_RADIUS = types.MappingProxyType({"mi": 250.0, "km": 400.0})
+SOURCE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,79}$")
+TIMEZONE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._+-]*(?:/[A-Za-z0-9._+-]+)+$")
 
 
 @dataclass(frozen=True)
@@ -56,12 +60,37 @@ class SettingsRequest:
     intensity: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class CreateSourceRequest:
+    source_key: str
+    adapter: str
+    name: str
+    enabled: bool
+    interval_minutes: int
+    options: dict
+
+
+@dataclass(frozen=True)
+class UpdateSourceRequest:
+    source_key: str
+    expected_revision: int
+    name: Optional[str] = None
+    enabled: Optional[bool] = None
+    interval_minutes: Optional[int] = None
+    options: Optional[dict] = None
+
+
 class DiscoveryControl(Protocol):
     def get_status(self) -> ControlStatus: ...
     def list_areas(self) -> tuple: ...
+    def list_sources(self) -> tuple: ...
+    def get_source(self, source_key: str): ...
     def get_area(self, area_key: str) -> AreaRecord: ...
     def create_area(self, request: CreateAreaRequest) -> ControlResult: ...
     def update_area(self, request: UpdateAreaRequest) -> ControlResult: ...
+    def create_source(self, request: CreateSourceRequest) -> SourceControlResult: ...
+    def update_source(self, request: UpdateSourceRequest) -> SourceControlResult: ...
+    def set_source_enabled(self, source_key: str, enabled: bool, expected_revision: int) -> SourceControlResult: ...
     def set_area_enabled(self, area_key: str, enabled: bool, expected_revision: Optional[int] = None) -> ControlResult: ...
     def set_discovery_mode(self, request: SettingsRequest) -> ControlResult: ...
     def pause(self) -> ControlResult: ...
@@ -100,13 +129,24 @@ def _revision(value):
 class LocalDiscoveryControl:
     """The control contract: validates a command and asks Persistence to carry it out. `runtime` is a callable returning the host's operating state (loop, uptime) for status."""
 
-    def __init__(self, storage: ControlStorage, runtime=lambda: {}, new_key=lambda: uuid.uuid4().hex[:16]):
+    def __init__(self, storage: ControlStorage, runtime=lambda: {}, new_key=lambda: uuid.uuid4().hex[:16], adapters=(), source_configuration=None, reserved_source_keys=()):
         self._storage, self._runtime, self._new_key = storage, runtime, new_key
+        self._adapters, self._source_configuration = frozenset(adapters), dict(source_configuration or {})
+        self._reserved_source_keys = frozenset(reserved_source_keys)
 
     # --- reads -----------------------------------------------------------------------------------------------------
 
     def list_areas(self):
         return self._storage.list_areas()
+
+    def list_sources(self):
+        return self._storage.list_sources()
+
+    def get_source(self, source_key):
+        source = self._storage.get_source(source_key)
+        if source is None:
+            raise NotFound(f"no source '{source_key}'")
+        return source
 
     def get_area(self, area_key):
         area = self._storage.get_area(area_key)
@@ -161,6 +201,35 @@ class LocalDiscoveryControl:
 
         return self._storage.update_area(request.area_key, expected, wanted, keys, settle)
 
+    def create_source(self, request: CreateSourceRequest):
+        if not isinstance(request.source_key, str) or not SOURCE_ID.fullmatch(request.source_key):
+            raise ValidationFailed("id must be a lowercase source key using letters, numbers, '_' or '-'")
+        if request.source_key in self._reserved_source_keys:
+            raise ValidationFailed("id is reserved for a built-in source")
+        if not isinstance(request.enabled, bool):
+            raise ValidationFailed("enabled must be true or false")
+        spec = self._source_spec(request.source_key, request.adapter, request.name, request.interval_minutes, request.options)
+        return self._storage.create_source(spec, request.enabled)
+
+    def update_source(self, request: UpdateSourceRequest):
+        expected = _revision(request.expected_revision)
+        if request.source_key in self._reserved_source_keys:
+            raise ValidationFailed("built-in source configuration is read-only")
+        current = self.get_source(request.source_key)
+        name = current.name if request.name is None else _name(request.name)
+        enabled = current.enabled if request.enabled is None else request.enabled
+        if not isinstance(enabled, bool):
+            raise ValidationFailed("enabled must be true or false")
+        interval = current.interval_minutes if request.interval_minutes is None else request.interval_minutes
+        options = current.options_dict() if request.options is None else request.options
+        spec = self._source_spec(current.source_key, current.adapter, name, interval, options)
+        return self._storage.update_source(current.source_key, expected, spec, enabled)
+
+    def set_source_enabled(self, source_key, enabled, expected_revision):
+        if not isinstance(enabled, bool):
+            raise ValidationFailed("enabled must be true or false")
+        return self.update_source(UpdateSourceRequest(source_key, expected_revision, enabled=enabled))
+
     def set_area_enabled(self, area_key, enabled, expected_revision=None):
         if not isinstance(enabled, bool):
             raise ValidationFailed("enabled must be true or false")
@@ -172,6 +241,50 @@ class LocalDiscoveryControl:
         mode = None if request.mode is None else _choice(request.mode, "mode", MODES)
         intensity = None if request.intensity is None else _choice(request.intensity, "intensity", INTENSITIES)
         return self._storage.set_settings(expected, mode, intensity)
+
+    def _source_spec(self, source_key, adapter, name, interval_minutes, options):
+        if not isinstance(adapter, str) or adapter not in self._adapters:
+            raise ValidationFailed("type must name an installed producer")
+        definition = self._source_configuration.get(adapter)
+        if definition is None:
+            raise ValidationFailed("the installed producer does not support source configuration")
+        supported = definition["options"]
+        clean_name = _name(name)
+        if isinstance(interval_minutes, bool) or not isinstance(interval_minutes, int) or interval_minutes < 1 or interval_minutes > (2**63 - 1) // 60:
+            raise ValidationFailed("interval_minutes must be a positive integer")
+        if not isinstance(options, dict):
+            raise ValidationFailed("options must be an object")
+        if any(not isinstance(key, str) for key in options):
+            raise ValidationFailed("option names must be text")
+        unknown = sorted(set(options) - set(supported) - {"url"})
+        if unknown:
+            raise ValidationFailed(f"unsupported {adapter} options: {', '.join(str(k) for k in unknown)[:100]}")
+        url = options.get("url", definition.get("default_url"))
+        if url is None:
+            raise ValidationFailed("options.url is required for this producer")
+        try:
+            parts = urlsplit(url) if isinstance(url, str) else None
+            host = parts.hostname if parts else None
+            port = parts.port if parts else None
+        except ValueError:
+            parts, host, port = None, None, None
+        if not parts or parts.scheme not in ("http", "https") or not host or parts.username is not None or parts.password is not None or parts.query or parts.fragment or (port is not None and not 1 <= port <= 65535):
+            raise ValidationFailed("options.url must be an http(s) site address without credentials, query or fragment")
+        clean_options = {}
+        for key, value in options.items():
+            if key == "url":
+                continue
+            rule = supported[key]
+            if rule == "timezone":
+                if not isinstance(value, str) or not 1 <= len(value) <= 64 or not TIMEZONE_NAME.fullmatch(value):
+                    raise ValidationFailed("timezone must be an IANA time-zone name")
+                clean_options[key] = value
+            else:
+                low, high = rule
+                if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                    raise ValidationFailed(f"{key} must be an integer between {low} and {high}")
+                clean_options[key] = value
+        return SourceSpec(source_key, adapter, clean_name, url.rstrip("/"), tuple(sorted(clean_options.items())), interval_minutes * 60)
 
     def pause(self):
         return self._storage.set_paused(True)

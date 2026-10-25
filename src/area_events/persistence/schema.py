@@ -386,6 +386,27 @@ DROP INDEX events_match;
 ALTER TABLE events DROP COLUMN match_key;
 CREATE INDEX events_start_key ON events(starts_at, event_key);
 """),
+    (9, "database-backed producer configuration with revision-safe source changes", """
+ALTER TABLE sources ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1);
+INSERT INTO store_meta (key, value) VALUES ('seq_before_sources_migration', COALESCE((SELECT CAST(seq AS TEXT) FROM sqlite_sequence WHERE name = 'changes'), '0'));
+CREATE TABLE changes_new (
+  seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity       TEXT NOT NULL CHECK (entity IN ('candidate', 'page', 'area', 'settings', 'discovery', 'event', 'source')),
+  entity_key   TEXT NOT NULL,
+  op           TEXT NOT NULL CHECK (op IN ('upsert', 'delete')),
+  kind         TEXT NOT NULL DEFAULT '',
+  payload_hash TEXT NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+INSERT INTO changes_new (seq, entity, entity_key, op, kind, payload_hash, created_at) SELECT seq, entity, entity_key, op, kind, payload_hash, created_at FROM changes;
+DROP TABLE changes;
+ALTER TABLE changes_new RENAME TO changes;
+CREATE INDEX changes_entity ON changes(entity, entity_key);
+DELETE FROM sqlite_sequence WHERE name = 'changes';
+INSERT INTO sqlite_sequence (name, seq) VALUES ('changes', MAX((SELECT COALESCE(MAX(seq), 0) FROM changes),
+                                                              (SELECT CAST(value AS INTEGER) FROM store_meta WHERE key = 'seq_before_sources_migration')));
+DELETE FROM store_meta WHERE key = 'seq_before_sources_migration';
+"""),
 )
 
 LATEST = MIGRATIONS[-1][0]
