@@ -4,12 +4,13 @@ never used to guess a time. Coordinates are only the API's own `geo` block."""
 import json
 import re
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from ..safe import FetchError
 from ..producer import EventCandidate, ProducerResult, Provenance, stated
 
 PAGE_SIZE = 100
+_TIMEZONE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._+-]*(?:/[A-Za-z0-9._+-]+)+$")
 
 
 def host_of(site):
@@ -33,6 +34,37 @@ class LocalistProducer:
     adapter = "localist"
     extractor = "producers/localist@v1"
     method = "adapter"
+
+    @staticmethod
+    def validate_options(options):
+        """Validate a Localist instance's site and producer-specific options."""
+        if any(not isinstance(key, str) for key in options):
+            raise ValueError("option names must be text")
+        unknown = sorted(set(options) - {"url", "days", "max_pages", "timezone"})
+        if unknown:
+            raise ValueError(f"unsupported localist options: {', '.join(unknown)[:100]}")
+        url = options.get("url")
+        try:
+            parts = urlsplit(url) if isinstance(url, str) else None
+            host = parts.hostname if parts else None
+            port = parts.port if parts else None
+        except ValueError:
+            parts, host, port = None, None, None
+        if not parts or parts.scheme not in ("http", "https") or not host or parts.username is not None or parts.password is not None or parts.query or parts.fragment or (port is not None and not 1 <= port <= 65535):
+            raise ValueError("options.url must be an http(s) site address without credentials, query or fragment")
+        clean_options = {}
+        for key, value, low, high in (("days", options.get("days", 14), 1, 365),
+                                      ("max_pages", options.get("max_pages", 5), 1, 100)):
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                raise ValueError(f"{key} must be an integer between {low} and {high}")
+            if key in options:
+                clean_options[key] = value
+        if "timezone" in options:
+            value = options["timezone"]
+            if not isinstance(value, str) or not 1 <= len(value) <= 64 or not _TIMEZONE_NAME.fullmatch(value):
+                raise ValueError("timezone must be an IANA time-zone name")
+            clean_options["timezone"] = value
+        return url.rstrip("/"), clean_options
 
     def crawl(self, fetcher, previous, options):
         site, days, max_pages = options["url"].rstrip("/"), int(options.get("days", 14)), int(options.get("max_pages", 5))

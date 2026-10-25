@@ -10,7 +10,7 @@ run's records (`EventCandidate.state`), so nothing is stored anywhere but in the
 import re
 from datetime import datetime, timedelta, timezone
 from html import unescape
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from ...geolocation import textloc
 from ..safe import FetchError
@@ -180,6 +180,32 @@ class CityOfSanDiegoProducer:
     adapter = "sandiego_gov"
     extractor = f"producers/city_of_san_diego@v{DETAIL_VERSION}"
     method = "adapter"
+
+    @staticmethod
+    def validate_options(options):
+        """Validate this producer's configured instance and return its URL and crawl options."""
+        if any(not isinstance(key, str) for key in options):
+            raise ValueError("option names must be text")
+        unknown = sorted(set(options) - {"url", "pages", "max_details_per_run"})
+        if unknown:
+            raise ValueError(f"unsupported sandiego_gov options: {', '.join(unknown)[:100]}")
+        url = options.get("url", LISTING_URL)
+        try:
+            parts = urlsplit(url) if isinstance(url, str) else None
+            host = parts.hostname if parts else None
+            port = parts.port if parts else None
+        except ValueError:
+            parts, host, port = None, None, None
+        if not parts or parts.scheme not in ("http", "https") or not host or parts.username is not None or parts.password is not None or parts.query or parts.fragment or (port is not None and not 1 <= port <= 65535):
+            raise ValueError("options.url must be an http(s) site address without credentials, query or fragment")
+        clean_options = {}
+        for key, value, low, high in (("pages", options.get("pages", 2), 1, 20),
+                                      ("max_details_per_run", options.get("max_details_per_run", 10), 0, 100)):
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                raise ValueError(f"{key} must be an integer between {low} and {high}")
+            if key in options:
+                clean_options[key] = value
+        return url.rstrip("/"), clean_options
 
     def crawl(self, fetcher, previous, options):
         source_name, url = options.get("name", NAME), options.get("url", LISTING_URL)

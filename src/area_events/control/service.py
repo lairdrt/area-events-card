@@ -14,7 +14,6 @@ import types
 import uuid
 from dataclasses import dataclass
 from typing import Optional, Protocol
-from urllib.parse import urlsplit
 
 from ..contracts.models import (CONTROL_SCHEMA, INTENSITIES, MODES, UNITS, AreaRecord, ControlError, ControlResult, ControlStatus, NotFound, RevisionConflict,
                                 SourceControlResult, SourceSpec, SourceStatus, ValidationFailed)
@@ -23,7 +22,6 @@ from ..persistence.ports import ControlStorage
 MAX_SOURCES_PER_AREA = 20
 MAX_RADIUS = types.MappingProxyType({"mi": 250.0, "km": 400.0})
 SOURCE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,79}$")
-TIMEZONE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._+-]*(?:/[A-Za-z0-9._+-]+)+$")
 
 
 @dataclass(frozen=True)
@@ -129,9 +127,9 @@ def _revision(value):
 class LocalDiscoveryControl:
     """The control contract: validates a command and asks Persistence to carry it out. `runtime` is a callable returning the host's operating state (loop, uptime) for status."""
 
-    def __init__(self, storage: ControlStorage, runtime=lambda: {}, new_key=lambda: uuid.uuid4().hex[:16], adapters=(), source_configuration=None, reserved_source_keys=()):
+    def __init__(self, storage: ControlStorage, runtime=lambda: {}, new_key=lambda: uuid.uuid4().hex[:16], adapters=(), source_validators=None, reserved_source_keys=()):
         self._storage, self._runtime, self._new_key = storage, runtime, new_key
-        self._adapters, self._source_configuration = frozenset(adapters), dict(source_configuration or {})
+        self._adapters, self._source_validators = frozenset(adapters), dict(source_validators or {})
         self._reserved_source_keys = frozenset(reserved_source_keys)
 
     # --- reads -----------------------------------------------------------------------------------------------------
@@ -245,46 +243,21 @@ class LocalDiscoveryControl:
     def _source_spec(self, source_key, adapter, name, interval_minutes, options):
         if not isinstance(adapter, str) or adapter not in self._adapters:
             raise ValidationFailed("type must name an installed producer")
-        definition = self._source_configuration.get(adapter)
-        if definition is None:
+        validate_options = self._source_validators.get(adapter)
+        if validate_options is None:
             raise ValidationFailed("the installed producer does not support source configuration")
-        supported = definition["options"]
         clean_name = _name(name)
         if isinstance(interval_minutes, bool) or not isinstance(interval_minutes, int) or interval_minutes < 1 or interval_minutes > (2**63 - 1) // 60:
             raise ValidationFailed("interval_minutes must be a positive integer")
         if not isinstance(options, dict):
             raise ValidationFailed("options must be an object")
-        if any(not isinstance(key, str) for key in options):
-            raise ValidationFailed("option names must be text")
-        unknown = sorted(set(options) - set(supported) - {"url"})
-        if unknown:
-            raise ValidationFailed(f"unsupported {adapter} options: {', '.join(str(k) for k in unknown)[:100]}")
-        url = options.get("url", definition.get("default_url"))
-        if url is None:
-            raise ValidationFailed("options.url is required for this producer")
         try:
-            parts = urlsplit(url) if isinstance(url, str) else None
-            host = parts.hostname if parts else None
-            port = parts.port if parts else None
-        except ValueError:
-            parts, host, port = None, None, None
-        if not parts or parts.scheme not in ("http", "https") or not host or parts.username is not None or parts.password is not None or parts.query or parts.fragment or (port is not None and not 1 <= port <= 65535):
-            raise ValidationFailed("options.url must be an http(s) site address without credentials, query or fragment")
-        clean_options = {}
-        for key, value in options.items():
-            if key == "url":
-                continue
-            rule = supported[key]
-            if rule == "timezone":
-                if not isinstance(value, str) or not 1 <= len(value) <= 64 or not TIMEZONE_NAME.fullmatch(value):
-                    raise ValidationFailed("timezone must be an IANA time-zone name")
-                clean_options[key] = value
-            else:
-                low, high = rule
-                if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
-                    raise ValidationFailed(f"{key} must be an integer between {low} and {high}")
-                clean_options[key] = value
-        return SourceSpec(source_key, adapter, clean_name, url.rstrip("/"), tuple(sorted(clean_options.items())), interval_minutes * 60)
+            url, clean_options = validate_options(options)
+        except (TypeError, ValueError) as error:
+            raise ValidationFailed(str(error)) from error
+        if not isinstance(url, str) or not isinstance(clean_options, dict):
+            raise ValidationFailed("producer configuration validator returned an invalid result")
+        return SourceSpec(source_key, adapter, clean_name, url, tuple(sorted(clean_options.items())), interval_minutes * 60)
 
     def pause(self):
         return self._storage.set_paused(True)

@@ -156,6 +156,33 @@ class SourceConfiguration(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_updating_one_source_does_not_reschedule_an_unrelated_source(self):
+        first = self._source("calendar-one")
+        second = self._source("calendar-two", options={**LOCALIST_OPTIONS, "url": "https://calendar.two.example"})
+        self.app.control.create_area(CreateAreaRequest("First area", 32.7, -117.1, 25, sources=(first.source.source_key,)))
+        self.app.control.create_area(CreateAreaRequest("Second area", 30.2, -97.7, 25, sources=(second.source.source_key,)))
+        self.app.scheduler.plan()
+
+        connection = sqlite3.connect(self.db)
+        try:
+            now = self.clock()
+            connection.execute("UPDATE sources SET last_success_at=? WHERE source_key IN ('calendar-one', 'calendar-two')", (now,))
+            connection.execute("UPDATE jobs SET next_run_at=? WHERE source_id IN (SELECT source_id FROM sources WHERE source_key IN ('calendar-one', 'calendar-two'))",
+                               (now + 60 * 60,))
+            connection.commit()
+        finally:
+            connection.close()
+
+        self.app.control.update_source(UpdateSourceRequest("calendar-one", 1, interval_minutes=120))
+        self.app.scheduler.plan()
+        connection = sqlite3.connect(self.db)
+        try:
+            due = dict(connection.execute("SELECT s.source_key, j.next_run_at FROM jobs j JOIN sources s USING (source_id) WHERE s.source_key IN ('calendar-one', 'calendar-two')"))
+        finally:
+            connection.close()
+        now = self.clock()
+        self.assertEqual(due, {"calendar-one": now + 120 * 60, "calendar-two": now + 60 * 60})
+
     def test_builtin_registration_does_not_overwrite_existing_database_configuration(self):
         connection = sqlite3.connect(self.db)
         try:

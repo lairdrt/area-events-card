@@ -16,7 +16,9 @@ class SqliteSchedulingStorage:
         with self._store.read() as connection:
             seen = int(self._settings.get(connection, "scheduler_seen_seq"))
             latest = connection.execute("SELECT COALESCE(MAX(seq), 0) FROM changes WHERE entity IN ('area', 'settings', 'source')").fetchone()[0]
-            source_changed = connection.execute("SELECT COALESCE(MAX(seq), 0) > ? FROM changes WHERE entity='source'", (seen,)).fetchone()[0]
+            changed_sources = {row[0] for row in connection.execute(
+                "SELECT DISTINCT entity_key FROM changes WHERE entity='source' AND seq > ?", (seen,)
+            )}
             eligible = self._areas.eligible_sources(connection)
             missing = connection.execute("""SELECT COUNT(*) FROM sources s WHERE s.enabled=1 AND EXISTS
                                             (SELECT 1 FROM area_sources x JOIN areas a USING (area_id) WHERE x.source_id=s.source_id AND a.enabled=1)
@@ -34,7 +36,7 @@ class SqliteSchedulingStorage:
                 tx.execute("UPDATE jobs SET priority=? WHERE job_key=? AND state <> 'leased'", (priority, key))
                 wait = policy.interval(interval_s, intensity, settings.mode, quiet)
                 due = max((last_success or 0) + wait, now)
-                if source_changed:
+                if source_key in changed_sources:
                     brought += tx.execute("UPDATE jobs SET next_run_at=?, updated_at=? WHERE job_key=? AND state <> 'leased' AND next_run_at <> ?",
                                           (due, now, key, due)).rowcount
                 else:

@@ -48,12 +48,6 @@ KNOWN_SOURCES = types.MappingProxyType({  # read-only
                             options=(("days", 14), ("max_pages", 5), ("timezone", "America/Chicago")), interval_s=3600),
 })
 
-SOURCE_CONFIGURATION = {
-    "sandiego_gov": {"default_url": city_of_san_diego.LISTING_URL, "options": {"pages": (1, 20), "max_details_per_run": (0, 100)}},
-    "localist": {"options": {"days": (1, 365), "max_pages": (1, 100), "timezone": "timezone"}},
-}
-
-
 @dataclass
 class DiscoveryApp:
     persistence: object
@@ -97,10 +91,12 @@ def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None,
     pacing = AreaPacing(scheduler_config)
     scheduler = DiscoveryScheduler(persistence.scheduling, pacing)
     config = config or DiscoveryConfig(require_area=service_gate)
-    service = DiscoveryService(persistence.crawl, client, {"sandiego_gov": CityOfSanDiegoProducer(), "localist": LocalistProducer()}, clock,
-                               config, worker_id, pacing=pacing if service_gate else None, gate=scheduler if service_gate else None)
+    adapters = {"sandiego_gov": CityOfSanDiegoProducer(), "localist": LocalistProducer()}
+    service = DiscoveryService(persistence.crawl, client, adapters, clock, config, worker_id,
+                               pacing=pacing if service_gate else None, gate=scheduler if service_gate else None)
     host = DiscoveryHost(service, scheduler, clock, host_config)
-    control = LocalDiscoveryControl(persistence.control, runtime=host.status, adapters=service.adapters, source_configuration=SOURCE_CONFIGURATION,
+    control = LocalDiscoveryControl(persistence.control, runtime=host.status, adapters=service.adapters,
+                                    source_validators={key: producer.validate_options for key, producer in service.adapters.items()},
                                     reserved_source_keys=(spec.source_key for spec in KNOWN_SOURCES.values()))
     processing = ProcessingService(persistence.processing, clock, processing_config)
     events = EventQueryService(persistence.events)
