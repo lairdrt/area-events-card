@@ -25,7 +25,7 @@ from area_events.api.http_api import ApiTokens
 from area_events.discovery.host import HostConfig
 from tests.test_discovery_control import CONTROL_TOKEN, READ_TOKEN, UrllibSession
 from tests.test_extraction import PROCESS_TOKEN, Fixture
-from tests.test_site_discovery import CITY_URL
+from tests.city_fixtures import CITY_URL
 
 ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "custom_components", "area_events")
 

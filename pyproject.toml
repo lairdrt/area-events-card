@@ -15,6 +15,3 @@ area-events = "area_events.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["area_events*"]
-
-[tool.setuptools.package-data]
-area_events = ["discovery/sources.json"]

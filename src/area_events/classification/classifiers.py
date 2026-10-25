@@ -15,7 +15,7 @@ Contract (what any implementation must honour)
     errors   `check_decision` lists what is wrong with a decision; `annotate` never publishes an invalid one: it uses the general category
              and records why.
 
-Consumers (the feed builder, the Event Analysis Workbench) call `annotate` or `current().classify` and know nothing about the algorithm, so a
+Consumers call `annotate` or `current().classify` and know nothing about the algorithm, so a
 different classifier is installed with `use(...)` (or `set_classifier`) without touching them. The keyword lexicon in `classify.py` is the
 production implementation, wrapped unchanged by `KeywordClassifier`.
 """

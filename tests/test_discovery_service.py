@@ -1,6 +1,5 @@
 """The Discovery Service and its SQLite store: schema, identity, jobs and leases, atomic and idempotent writes, recovery, retention,
 the reader contract, the shared host policy, and concurrent readers. Deterministic: a fixed clock and saved pages, no network."""
-import ast
 import json
 import os
 import sqlite3
@@ -13,7 +12,6 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from area_events.discovery import safe
 from tests.db import database
 from area_events.discovery.safe import FetchError
 from area_events.discovery.safe import BlockedError, HostPolicy, Response, SafeFetcher
@@ -37,10 +35,8 @@ from area_events.discovery.service import DiscoveryConfig, job_key_for
 from area_events.persistence.store import DiscoveryStore, StorageUnavailable
 from area_events.discovery.urls import canonical_url, url_key
 
-from tests.test_site_discovery import CITY_URL, city_detail, city_listing
+from tests.city_fixtures import CITY_URL, city_detail, city_listing
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SERVICE_DIR = os.path.join(ROOT, "area_events", "discovery", "service")
 def build_plain(*args, **kwargs):
     """The 2A behaviour: no area is needed for a source to be crawled."""
     return app_module.build(*args, service_gate=False, **kwargs)
@@ -510,7 +506,7 @@ class ChangeFeed(Fixture):
 
 
 class HostPolicyShared(Fixture):
-    def test_every_fetcher_of_the_service_shares_one_injected_policy_and_the_legacy_global_is_untouched(self):
+    def test_every_fetcher_of_the_service_shares_one_injected_policy(self):
         sent = []
 
         def send(scheme, host, port, ip, target, headers, timeout, limit):
@@ -527,11 +523,9 @@ class HostPolicyShared(Fixture):
         self.addCleanup(built.close)
         self.assertIs(built.policy, policy)
         self.assertIs(built.service.fetch_client.state, policy)
-        legacy_hosts = set(safe._STATE.last)
         built.service.register_source(SPEC)
         self.assertEqual(built.service.run_once().outcome, "completed")
         self.assertIn("www.sandiego.gov", policy.last)
-        self.assertEqual(set(safe._STATE.last), legacy_hosts, "nothing in the discovery path used the legacy global")
         with self.assertRaises(BlockedError):
             client.fetch("https://www.sandiego.gov/blocked")
         count = len(sent)
@@ -552,28 +546,6 @@ class HostPolicyShared(Fixture):
         report = built.service.run_once()
         self.assertEqual(report.outcome, "fetch_failed")
         self.assertEqual(self.count("fetches", "outcome='blocked'"), 1)
-
-
-class NoGlobals(unittest.TestCase):
-    """New modules hold no module-level mutable state: only constants (literals, tuples, frozensets, compiled patterns, read-only mappings),
-    functions and classes; and no `global` statement."""
-
-    ALLOWED_CALLS = {"frozenset", "tuple", "re.compile", "types.MappingProxyType", "SourceSpec", "os.path.join", "RetentionPolicy", "DiscoveryConfig", "logging.getLogger", "SchedulerConfig", "HostConfig", "re.compile"}
-
-    def test_the_service_package(self):
-        files = sorted(os.path.relpath(os.path.join(folder, name), SERVICE_DIR) for folder, _, names in os.walk(SERVICE_DIR) if "__pycache__" not in folder
-                       for name in names if name.endswith(".py"))
-        for name in files:
-            with open(os.path.join(SERVICE_DIR, name), encoding="utf-8") as handle:
-                tree = ast.parse(handle.read())
-            for node in ast.walk(tree):
-                self.assertNotIsInstance(node, (ast.Global, ast.Nonlocal), f"{name}: global statement")
-            for node in tree.body:
-                if isinstance(node, (ast.Assign, ast.AnnAssign)):
-                    value = node.value
-                    self.assertFalse(isinstance(value, (ast.Dict, ast.List, ast.Set, ast.DictComp, ast.ListComp, ast.SetComp)), f"{name}: mutable module-level value")
-                    if isinstance(value, ast.Call):
-                        self.assertIn(ast.unparse(value.func), self.ALLOWED_CALLS, f"{name}: module-level object {ast.unparse(value)[:60]}")
 
 
 class Readers(Fixture):

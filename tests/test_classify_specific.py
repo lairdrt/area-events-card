@@ -1,5 +1,7 @@
 """The six specific illustrations (farmers_market, carnival, car_show, halloween, christmas, street_festival) are chosen from clear subjects
 in the title or description, before the broad categories, and do not capture unrelated events."""
+import json
+import os
 import unittest
 
 from area_events.classification import classify
@@ -65,6 +67,25 @@ class Not_captured(unittest.TestCase):
 
     def test_a_movie_that_is_both_goes_to_halloween_not_christmas(self):
         self.assertEqual(pick("The Nightmare Before Christmas FREE Spooky Movie Night"), "halloween")
+
+
+class Reviewed_events(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        path = os.path.join(os.path.dirname(__file__), "data", "classification_eval.json")
+        with open(path, encoding="utf-8") as handle:
+            cls.rows = json.load(handle)["events"]
+
+    def test_reviewed_real_event_categories_remain_stable(self):
+        drift = [(row["title"], row["after"], pick(row["title"], row["description"], categories=row["tags"], venue=row["venue"]))
+                 for row in self.rows
+                 if pick(row["title"], row["description"], categories=row["tags"], venue=row["venue"]) != row["after"]]
+        self.assertEqual(drift, [])
+
+    def test_review_set_covers_the_documented_places_and_sources(self):
+        self.assertGreaterEqual(len(self.rows), 30)
+        self.assertEqual({row["city"] for row in self.rows}, {"San Diego", "Austin"})
+        self.assertGreaterEqual(len({row["source"] for row in self.rows}), 4)
 
 
 if __name__ == "__main__":

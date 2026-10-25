@@ -52,7 +52,7 @@ class Response:
 class HostPolicy:
     """Politeness towards each host, shared by every fetcher that is given the same instance: request spacing, the robots.txt
     cache, and backing off from a host that answered 429 or 503. The Discovery Service creates one and injects it into all of its
-    fetchers; nothing in that path uses the legacy default below."""
+    fetchers for one Discovery Service instance."""
 
     def __init__(self, backoff_seconds=600, max_backoff_seconds=3600):
         self.lock = threading.Lock()
@@ -74,10 +74,6 @@ class HostPolicy:
         with self.lock:
             until = self.backoff.get(host)
         return until is not None and until > now
-
-
-State = HostPolicy  # the earlier name
-_STATE = HostPolicy()  # legacy default for callers that do not inject a policy (the pre-Discovery-Service runtime); to be removed
 
 
 def public_addresses(host, port, resolver=socket.getaddrinfo):
@@ -178,11 +174,11 @@ def _texty(content_type):
 
 
 class SafeFetcher:
-    """`get(url)` returns text (like core.Fetcher); `fetch(url)` also returns the final address and content type."""
+    """`get(url)` returns text; `fetch(url)` also returns the final address and content type."""
 
     def __init__(self, interval=2.0, resolver=socket.getaddrinfo, send=transport, clock=time.monotonic, sleep=time.sleep, state=None):
         self.interval, self.resolver, self.send, self.clock, self.sleep = interval, resolver, send, clock, sleep
-        self.state = state or _STATE
+        self.state = state if state is not None else HostPolicy()
 
     def get(self, url, check_robots=True):
         return self.fetch(url, check_robots).text

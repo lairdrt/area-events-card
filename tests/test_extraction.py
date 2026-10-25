@@ -38,7 +38,7 @@ from area_events.persistence.repositories import ChangeLog, PageRepository, Sour
 from tests.records import document, put_document
 from tests.test_discovery_control import CONTROL_TOKEN, READ_TOKEN, request
 from tests.test_discovery_service import SPEC, Clock, FakeClient, city_pages
-from tests.test_site_discovery import CITY_URL, city_detail, city_listing
+from tests.city_fixtures import CITY_URL, city_detail, city_listing
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVICE_DIR = os.path.join(ROOT, "src", "area_events")

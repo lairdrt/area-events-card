@@ -5,7 +5,7 @@ import time
 import unittest
 
 from area_events.enrichment import media
-from tests.test_media import SD, FakeFetcher
+from tests.media_fixtures import SD, FakeFetcher
 
 
 def way(way_id, name, node_ids, highway="residential"):

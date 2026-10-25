@@ -10,7 +10,7 @@ can select a field and inspect its support. A reference is a dict:
                     "inferred"   derived by a rule from source fields (a category from keywords, a date normalised to ISO)
                     "verified"   confirmed by an external lookup (the geocoder), with the lookup's own evidence
                     "recorded"   a statement a module wrote about its own work (a verification line), kept as it was written
-    recorded_by   the module and function that made the decision (e.g. "sources/webparse.candidate_from_ld")
+    recorded_by   the module and function that made the decision (e.g. "discovery.producers.city_of_san_diego.parse_detail")
     source_url    the page or document the supporting text was found in, when there is one
     quote         the exact supporting text as it appears in the source (after decoding HTML entities and collapsing white space), when found
     context       a window of the source around the quote, when found

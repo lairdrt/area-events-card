@@ -19,16 +19,12 @@ from area_events.api.http_api import ApiTokens
 from area_events.control.service import CreateAreaRequest
 from area_events.discovery.fetching import RecordingFetcher
 from area_events.discovery.producer import EventCandidate, ProducerResult, Provenance, SourceLead, Verification
-from area_events.discovery.producers.city_of_san_diego import CityOfSanDiegoProducer
-from area_events.discovery.producers.craft_fairs import CraftFairProducer
+from area_events.discovery.producers.city_of_san_diego import CityOfSanDiegoProducer, LISTING_URL, NAME
 from area_events.discovery.producers.localist import LocalistProducer
 from area_events.contracts.models import SourceSpec
-from area_events.discovery.sources import localist, sandiego_gov
 from area_events.persistence.repositories import CandidateRepository, SourceRepository
 from tests.records import record
-from tests.test_austin import API, Recorder, sample_pages
-from tests.test_austin import options as localist_options
-from tests.test_craft_fair_acquisition import DRAGON, SEVEN, SQ, TODAY, web
+from tests.localist_fixtures import API, Recorder, options as localist_options, sample_pages
 from tests.test_discovery_control import CONTROL_TOKEN, READ_TOKEN, request
 from tests.test_discovery_service import FakeClient, city_pages
 from tests.test_extraction import PROCESS_TOKEN, Fixture
@@ -46,35 +42,26 @@ def iso(epoch):
 
 
 def city_run():
-    opts = {"source_key": "sandiego_gov", "name": sandiego_gov.NAME, "url": sandiego_gov.LISTING_URL, "pages": 2, "max_details_per_run": 10}
+    opts = {"source_key": "sandiego_gov", "name": NAME, "url": LISTING_URL, "pages": 2, "max_details_per_run": 10}
     result = CityOfSanDiegoProducer().crawl(RecordingFetcher(FakeClient(city_pages()), 40), (), opts)
-    legacy, _ = sandiego_gov.discover(RecordingFetcher(FakeClient(city_pages()), 40), [], details=True, pages=2, max_details_per_run=10, source_id="sandiego_gov",
-                                      source_name=sandiego_gov.NAME, url=sandiego_gov.LISTING_URL)
-    return "sandiego_gov", result, legacy
+    return "sandiego_gov", result
 
 
 def austin_run():
     opts = localist_options()
     pages = sample_pages()
     result = LocalistProducer().crawl(Recorder({API + "1": pages[0], API + "2": pages[1]}), (), opts)
-    legacy, _ = localist.discover(Recorder({API + "1": pages[0], API + "2": pages[1]}), [], details=False, days=int(opts.get("days", 14)), max_pages=int(opts.get("max_pages", 5)),
-                                  source_id=opts["source_key"], source_name=opts["name"], url=opts["url"], location={"timezone": opts.get("timezone")})
-    return opts["source_key"], result, legacy
+    return opts["source_key"], result
 
 
-def craft_run():
-    opts = {"source_key": "sd_craft_fairs", "name": "San Diego craft fairs", "url": SQ, "seeds": (SQ, DRAGON), "seed_region": "San Diego County"}
-    return "sd_craft_fairs", CraftFairProducer(today=lambda: TODAY).crawl(RecordingFetcher(FakeClient(web()), 40), (), opts), None
-
-
-RUNS = {"City of San Diego": city_run, "UT Austin (Localist)": austin_run, "San Diego craft fairs": craft_run}
+RUNS = {"City of San Diego": city_run, "UT Austin (Localist)": austin_run}
 
 
 class ExistingProducers(unittest.TestCase):
     def test_every_existing_producer_answers_with_standard_records_the_boundary_admits(self):
         for name, run in RUNS.items():
             with self.subTest(name):
-                key, result, _ = run()
+                key, result = run()
                 self.assertIsInstance(result, ProducerResult)
                 self.assertTrue(result.candidates, "the fixtures hold real events")
                 self.assertTrue(all(type(c) is EventCandidate and c.schema == producer.SCHEMA for c in result.candidates))
@@ -82,32 +69,15 @@ class ExistingProducers(unittest.TestCase):
                 boundary = producer.accept(result)
                 self.assertEqual((boundary.rejections, len(boundary.candidates), boundary.notes["records_rejected"]), ((), len(result.candidates), 0))
 
-    def test_the_city_and_localist_producers_say_what_their_sources_readers_always_said(self):
-        """Behaviour is preserved: each record states the same facts, evidence and bookkeeping as the event dictionary the source's reading code builds."""
-        for name in ("City of San Diego", "UT Austin (Localist)"):
+    def test_current_producers_return_standard_records_without_specialized_leads(self):
+        for name, run in RUNS.items():
             with self.subTest(name):
-                key, result, legacy = RUNS[name]()
-                self.assertEqual(len(result.candidates), len(legacy))
-                by_id = {f"{key}:{c.local_id}": c for c in result.candidates}
-                for old in legacy:
-                    new = by_id[old["id"]]
-                    self.assertEqual((new.title, new.starts_at, new.ends_at, new.timezone, new.venue, new.address, new.description, new.url, new.image_url, new.image_source),
-                                     (old["title"], old["start"], old["end"], old["timezone"], old["venue"], old["address"], old["description"], old["url"], old["image_url"], old["image_source"]))
-                    self.assertEqual((new.categories, new.price, new.organizer, dict(new.geo) if new.geo else None), (tuple(old["categories"]), old["price"], old.get("organizer"), old.get("geo")))
-                    self.assertEqual((new.verification.status, list(new.verification.evidence), list(new.verification.missing), new.verification.verified),
-                                     (old["verification"]["status"], old["verification"]["evidence"], old["verification"]["missing"], old["verified"]))
-                    self.assertEqual((new.provenance.source_name, new.provenance.listing_url), (old["source"]["name"], old["source"]["listing_url"]))
-                    self.assertEqual(dict(new.state), old["extraction"] if name == "City of San Diego" else {})
-
-    def test_only_the_acquisition_producer_returns_leads_and_they_carry_no_event_facts(self):
-        _, craft, _ = craft_run()
-        self.assertTrue(craft.leads and all(isinstance(lead, SourceLead) for lead in craft.leads))
-        self.assertFalse({"title", "starts_at", "start"} & {f.name for f in dataclasses.fields(SourceLead)}, "a lead has no event fields to masquerade with")
-        self.assertEqual({lead.url: lead.decision for lead in craft.leads if lead.url == SEVEN}, {SEVEN: "accepted"})
-        self.assertEqual(city_run()[1].leads, ())
+                _, result = run()
+                self.assertFalse(result.leads)
+                self.assertFalse({"title", "starts_at", "start"} & {f.name for f in dataclasses.fields(SourceLead)})
 
     def test_records_are_immutable_and_closed(self):
-        _, result, _ = city_run()
+        _, result = city_run()
         first = result.candidates[0]
         with self.assertRaises(dataclasses.FrozenInstanceError):
             first.title = "changed"
@@ -173,7 +143,7 @@ class Boundary(unittest.TestCase):
         self.assertTrue(any("a lead is not an event" in r.reason for r in result.rejections))
 
     def test_a_lead_is_never_an_event_and_an_event_is_never_a_lead(self):
-        lead = SourceLead("https://example.org/craft-fair", "event", "accepted", ("page names a craft fair",), 5, "https://example.org/list", "Craft Fair", 1, True)
+        lead = SourceLead("https://example.org/event", "event", "accepted", ("page identifies a possible event",), 5, "https://example.org/list", "Event page", 1, True)
         only_leads = accepted(leads=[lead])
         self.assertEqual((only_leads.candidates, len(only_leads.leads)), ((), 1), "leads alone create no event")
         confused = accepted(lead, leads=[record("x1")])

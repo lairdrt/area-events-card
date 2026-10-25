@@ -1,11 +1,10 @@
-"""Automated architecture checks on the actual import graph and code of the Discovery Service and the modules it uses.
+"""Automated architecture checks on the actual import graph and code of the Discovery Service.
 
     SOURCE PRODUCERS -> STANDARD RECORDS -> EVENT PROCESSING -> DEDUPLICATION <-> PERSISTENCE (one database) -> PRESENTATION
 
 * A producer (`producers/<name>/`) owns everything about one source and depends only on the contract, the fetch client it is given, URL identity and the neutral text and
   time utilities. Producers do not depend on each other, on persistence, or on any earlier-engine code.
-* The new application (``) and the neutral modules it relies on never import, directly or through any chain of imports, the earlier engine (`core`, `engine`, `registry`,
-  `server`, `workbench`, ...) or its source readers (`sources/`). The earlier engine may import the new code; not the other way round.
+* The application contains only responsibility-based modules; retired engines and source readers are absent.
 * Persistence (`persistence/`) exclusively owns the database: only it imports sqlite3, runs SQL or holds a transaction, and the rest of the service reaches it only through
   `persistence/ports.py`. Only the composition root builds it.
 * Deduplication (`deduplication/`) owns the matching rules: it imports no database and no persistence, and Persistence knows its interface only, never a concrete strategy.
@@ -42,7 +41,7 @@ SQL_TEXT = re.compile(r"\b(SELECT\s.+\sFROM|INSERT\s+(OR\s+\w+\s+)?INTO|UPDATE\s
 MATCHING_NAME = re.compile(r"(^|_)(match|matches|matching|matcher|similar|similarity|same_event|is_duplicate|find_twin|twin|dedupe|dedup)(_|$)")
 STORAGE_CLASS = re.compile(r"^(Sqlite\w+|\w+Repository|DiscoveryStore|LocalMedia\w+|LocalDiscoveryReader|Retention)$")
 LEGACY_EVENT_BUILDERS = frozenset(("make_event", "finish_event"))
-SOURCE_WORDS = ("sandiego_gov", "ut_austin", "localist", "craft_fairs", "sd_craft_fairs", "sandiego.gov", "eventbrite", "sweetandquirky")
+SOURCE_WORDS = ("sandiego_gov", "ut_austin", "localist", "sandiego.gov", "eventbrite")
 # The reviewed layering of the service itself: each module may import only these service modules (new edges must be added here on purpose).
 LEGACY_PREFIXES = ("discovery.core", "discovery.engine", "discovery.merge", "discovery.profiles", "discovery.publish", "discovery.refresh", "discovery.registry", "discovery.server", "discovery.supervisor", "discovery.workbench", "discovery.sources")
 ALLOWED = {
@@ -55,8 +54,6 @@ ALLOWED = {
     "discovery": set(), "discovery.fetching": {"discovery.safe"}, "discovery.host": set(), "discovery.producer": set(), "discovery.producers": set(),
     "discovery.producers.city_of_san_diego": {"discovery.producer", "discovery.safe", "common.textutil", "common.timeutil", "geolocation.textloc"},
     "discovery.producers.localist": {"discovery.producer", "discovery.safe"},
-    "discovery.producers.craft_fairs": set(), "discovery.producers.craft_fairs.acquisition": {"discovery.safe", "discovery.fetching", "discovery.producer", "discovery.urls", "common.timeutil"},
-    "discovery.producers.craft_fairs.pages": {"common.textutil", "common.timeutil"}, "discovery.producers.craft_fairs.reading": {"geolocation.textloc", "common.textutil", "common.timeutil"},
     "discovery.safe": set(), "discovery.scheduler": {PORTS}, "discovery.service": {"contracts.evidence", "discovery.safe", "discovery.producer", "contracts.models", "discovery.fetching", PORTS}, "discovery.urls": set(),
     "enrichment": set(), "enrichment.images": set(), "enrichment.maps": set(), "enrichment.media": {"enrichment.maps", "geolocation.textloc", "discovery.safe"},
     "enrichment.service": {"classification.classifiers", "enrichment.images", "discovery.safe", "enrichment.media", "contracts.models", PORTS, "extraction.text"},
@@ -160,8 +157,11 @@ def graph(root):
         inside, names, outside = set(), {}, set()
 
         def add(target, imported=()):
-            while target and target not in mods:
+            requested = target
+            while target and target not in mods and not is_legacy(target):
                 target = target.rpartition(".")[0]
+            if is_legacy(requested):
+                target = requested
             if target:
                 inside.add(target)
                 names.setdefault(target, set()).update(imported)
@@ -180,7 +180,7 @@ def graph(root):
             dotted = ".".join(parts)
             for alias in imported:
                 child = f"{dotted}.{alias}" if dotted else alias
-                add(child if child in mods else dotted, [alias])
+                add(child if child in mods or is_legacy(child) else dotted, [alias])
         for dotted_name in plain:
             if dotted_name.startswith("area_events."):
                 add(".".join(dotted_name.split(".")[1:]))
@@ -352,6 +352,15 @@ def violations(root):
 
 
 class Real(unittest.TestCase):
+    def test_retired_engine_addon_and_specialized_producer_are_absent(self):
+        retired = (
+            "area_events/DOCS.md", "area_events/Dockerfile", "area_events/config.yaml", "repository.yaml", "scripts/discovery.py", "scripts/workbench.py", "scripts/deploy-ha.ps1", "scripts/install-ha.ps1",
+            "src/area_events/discovery/core.py", "src/area_events/discovery/engine.py", "src/area_events/discovery/sources/__init__.py",
+            "src/area_events/discovery/producers/craft_fairs/__init__.py", "tests/test_engine.py", "tests/test_craft_fair_acquisition.py",
+        )
+        for relative in retired:
+            self.assertFalse(os.path.exists(os.path.join(ROOT, relative)), relative)
+
     def test_the_real_tree_has_no_violation(self):
         self.assertEqual(violations(DISCOVERY), [])
 
@@ -359,7 +368,6 @@ class Real(unittest.TestCase):
         g = graph(DISCOVERY)
         producers = {n for n in g if is_producer(n)}
         self.assertTrue({"discovery.producers.city_of_san_diego", "discovery.producers.localist"} <= producers)
-        self.assertTrue(any(n.startswith("discovery.producers.craft_fairs") for n in producers))
         self.assertTrue({"discovery.producer", "discovery.service", "extraction.service", "enrichment.service", "validation.processing", PORTS, BUILD, DEDUPLICATION} <= set(g))
         self.assertTrue(set(ALLOWED) - {""} <= set(g), "the reviewed layering names real modules only")
         for name in g:
@@ -501,7 +509,7 @@ class Detection(unittest.TestCase):
 
     def test_dependencies_between_unrelated_producers(self):
         self.assertCaught({"producers/city_of_san_diego.py": "from area_events.discovery.producers.localist import LocalistProducer"}, "producer-independence")
-        self.assertCaught({"producers/localist.py": "from area_events.discovery.producers.craft_fairs import reading"}, "producer-independence")
+        self.assertCaught({"producers/localist.py": "from area_events.discovery.producers.city_of_san_diego import CityOfSanDiegoProducer"}, "producer-independence")
 
     def test_a_downstream_module_depending_on_a_producer(self):
         self.assertCaught({"events.py": "from area_events.discovery.producers import localist"}, "producers-wired-in-the-root-only")
@@ -510,7 +518,7 @@ class Detection(unittest.TestCase):
     def test_source_specific_code_in_generic_processing(self):
         self.assertCaught({"extraction.py": "WHICH = 'sandiego_gov'"}, "source-knowledge")
         self.assertCaught({"processing.py": "def handle_localist(record):\n    return record"}, "source-knowledge")
-        self.assertCaught({"persistence/events.py": "KIND = 'craft_fairs'"}, "source-knowledge")
+        self.assertCaught({"persistence/events.py": "KIND = 'sandiego_gov'"}, "source-knowledge")
         self.assertCaught({"deduplication/exact.py": "if source == 'ut_austin':\n    pass"}, "source-knowledge")
         self.assertCaught({"textutil.py": "x = 'eventbrite'"}, "source-knowledge")
 

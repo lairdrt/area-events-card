@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 from tests.db import database
-from area_events.discovery.core import FetchError
+from area_events.discovery.safe import FetchError
 from area_events import app as app_module
 from area_events.api.http_api import ApiTokens, DiscoveryApi, DiscoveryApiServer, MAX_BODY
 from area_events.persistence.areas import AreaRepository, SettingsRepository
@@ -27,7 +27,7 @@ from area_events.discovery.scheduler import AreaPacing, SchedulerConfig
 from area_events.persistence.schema import LATEST, MIGRATIONS
 from area_events.persistence.store import DiscoveryStore
 from tests.test_discovery_service import Clock, FakeClient, SPEC, city_pages
-from tests.test_site_discovery import CITY_URL
+from tests.city_fixtures import CITY_URL
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONTROL_TOKEN = "c" * 40
@@ -36,7 +36,7 @@ OTHER = SourceSpec("other_city", "sandiego_gov", "Other city", "https://other.ex
 
 
 def other_pages(n=2):
-    from tests.test_site_discovery import city_detail, city_listing
+    from tests.city_fixtures import city_detail, city_listing
     items = [(f"o{i}", f"Other {i}", i + 1) for i in range(n)]
     pages = {"https://other.example/events": city_listing(items).replace("/event/", "/event/")}
     for i in range(n):
@@ -713,12 +713,6 @@ class EndToEnd(Fixture):
             self.assertEqual(built2.reader.candidates(CandidateQuery(limit=10))[0].source_key, "sandiego_gov")
         finally:
             self.stop(built2, server2)
-
-
-class NoGlobalState(unittest.TestCase):
-    def test_the_new_modules_hold_no_mutable_module_level_state(self):
-        from tests.test_discovery_service import NoGlobals
-        NoGlobals("test_the_service_package").test_the_service_package()
 
 
 if __name__ == "__main__":

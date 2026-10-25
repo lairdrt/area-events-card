@@ -43,7 +43,7 @@ show_filters: true
 | `title` | Header text. |
 | `id` | Optional short name (letters, digits, `-`, `_`) that keeps saved filters separate for identical cards on one dashboard. |
 | `area` | The discovery area this card follows. Events are matched to an area by the sources it uses, **not** by a verified distance; events whose place is only a description are marked unverified. `radius_miles` and `sources` from earlier versions are accepted and ignored: areas and their sources belong to the Discovery Service. |
-| `categories` | Built-in category ids or names to keep: music, festivals, food-drink, arts, sports, science, technology, family, community, outdoors, education, craft-fair, theater, comedy, markets, other. |
+| `categories` | Built-in category ids or names to keep: music, festivals, food-drink, arts, sports, science, technology, family, community, outdoors, education, theater, comedy, markets, other. |
 | `interests` | Extra topics as `Name: keyword, keyword` (or `{name, keywords}`), up to 20. |
 | `exclude` | Topics to hide, matched as whole words in title, description and categories. |
 | `days`, `max_events`, `sort` | Date range, event limit and ordering. |

@@ -47,6 +47,13 @@ Check 'script parses and production engine is explicit operations only' {
   if ($errors.Count) { throw $errors[0].Message }
   if ((Get-Content -Raw $module) -notmatch 'Rehearse|DryRun|Recover') { throw 'required engine gates are missing' }
 }
+Check 'Cubi deployment archives the src package and starts its CLI module' {
+  $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
+  foreach($needle in @("'src/area_events'", "'pyproject.toml'", "'-m','area_events'", "systemd unit does not use the retired Python discovery entry point")) {
+    if ($text -notmatch [regex]::Escape($needle)) { throw "package-based deployment step is missing: $needle" }
+  }
+  if ($text -match "stage\+'/scripts/discovery.py'|stage\+'/area_events'") { throw 'deployment still starts or copies the retired application package' }
+}
 Check 'Cubi JSON deployment result maps to the engine contract' {
   $wire='{"changed":true,"schema_changed":false}' | ConvertFrom-Json
   $normalized=ConvertTo-CubiDeployResult $wire

@@ -27,11 +27,11 @@ from area_events.persistence.schema import LATEST
 
 from area_events.persistence.repositories import CandidateRepository, SourceRepository
 from tests.records import record
-from tests.test_austin import API, JsonClient, sample_pages
+from tests.localist_fixtures import API, JsonClient, sample_pages
 from tests.test_discovery_control import CONTROL_TOKEN, READ_TOKEN, request
 from tests.test_discovery_service import SPEC, Clock, city_pages
 from tests.test_extraction import PROCESS_TOKEN
-from tests.test_media import VIEJAS, FakeFetcher, Wikimedia, nominatim
+from tests.media_fixtures import VIEJAS, FakeFetcher, Wikimedia, nominatim
 
 JPEG = b"\xff\xd8\xff\xe0" + b"photo" * 600
 PNG = b"\x89PNG\r\n\x1a\n" + b"png" * 600

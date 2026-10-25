@@ -7,7 +7,7 @@ import unittest
 
 from area_events.enrichment import media
 from area_events.geolocation import textloc
-from tests.test_media import SD, FakeFetcher, Wikimedia, nominatim
+from tests.media_fixtures import SD, FakeFetcher, Wikimedia, nominatim
 
 CARNIVAL = {"title": 'South Clairemont Rec Ctr & Park "Winter" Carnival', "address": None,
             "venue": "This will be a family carnival with approx. 14-16 rides, (6) games & (2) Food Concessions located on the front side of South Clairemont Park area.",

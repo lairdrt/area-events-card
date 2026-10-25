@@ -64,5 +64,5 @@ class RecordingFetcher:
         return response
 
     def get(self, url, check_robots=True):
-        """The interface registry adapters use (the earlier engine's Fetcher.get): the page's text."""
+        """Return the fetched page text through the standard producer interface."""
         return self.fetch(url, check_robots).text
