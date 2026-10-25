@@ -55,6 +55,15 @@ Check 'Cubi JSON deployment result maps to the engine contract' {
   try { ConvertTo-CubiDeployResult ([pscustomobject]@{changed=$true}) | Out-Null } catch { $invalid=$true }
   if (-not $invalid) { throw 'invalid Cubi deployment response was accepted' }
 }
+Check 'HA WebSocket verification uses increasing request IDs and matching unsubscribe ID' {
+  $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
+  $start=$text.IndexOf('function Test-HaWebSocket {')
+  $end=$text.IndexOf('function Test-HaAssets {',$start)
+  if ($start -lt 0 -or $end -le $start) { throw 'HA WebSocket verification function was not found' }
+  $code=$text.Substring($start,$end-$start)
+  $ids=@([regex]::Matches($code,"Send-HaMessage\s+@\{id=(\d+);type='area_events/(?:events|subscribe)'") | ForEach-Object { [int]$_.Groups[1].Value })
+  if (($ids -join ',') -ne '1,2,3' -or $code -notmatch 'type=''unsubscribe_events'';subscription=3') { throw "HA WebSocket request IDs are not strictly increasing and unsubscribed correctly: $($ids -join ',')" }
+}
 Check 'bounded build runner uses the repository working directory' {
   $repoRoot=Split-Path -Parent $PSScriptRoot
   $npm=(Get-Command npm.cmd -ErrorAction Stop).Source

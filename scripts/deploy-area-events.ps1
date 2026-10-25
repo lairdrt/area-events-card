@@ -456,25 +456,25 @@ function Test-HaWebSocket {
     Send-HaMessage @{type='auth';access_token=$script:Token}
     if ((Receive-HaMessage).type -ne 'auth_ok') { throw 'HA rejected the stored access token over WebSocket.' }
     Send-HaMessage @{id=1;type='area_events/events';area='San Diego';limit=20}
-    Send-HaMessage @{id=3;type='area_events/events';area='Austin';limit=20}
+    Send-HaMessage @{id=2;type='area_events/events';area='Austin';limit=20}
     $pages=@{}
     for ($i=0;$i -lt 8 -and $pages.Count -lt 2;$i++) {
       $m=Receive-HaMessage
-      if ($m.id -in @(1,3)) { if (-not $m.success) { throw "HA event command failed: $($m.error.code)" }; $pages[[int]$m.id]=$m.result }
+      if ($m.id -in @(1,2)) { if (-not $m.success) { throw "HA event command failed: $($m.error.code)" }; $pages[[int]$m.id]=$m.result }
     }
-    $page=$pages[1]; $austin=$pages[3]
+    $page=$pages[1]; $austin=$pages[2]
     Assert-AreaEventsFeedResponse -Response $page -Area 'San Diego' | Out-Null
     Assert-AreaEventsFeedResponse -Response $austin -Area 'Austin' | Out-Null
-    Send-HaMessage @{id=2;type='area_events/subscribe';area='San Diego'}
+    Send-HaMessage @{id=3;type='area_events/subscribe';area='San Diego'}
     $subscribed=$false; $view=$null
     for ($i=0;$i -lt 8;$i++) {
       $m=Receive-HaMessage
-      if ($m.id -eq 2 -and $m.type -eq 'result') { if (-not $m.success) { throw "HA subscription failed: $($m.error.code)" }; $subscribed=$true }
-      if ($m.id -eq 2 -and $m.type -eq 'event') { $view=$m.event; if ($subscribed) { break } }
+      if ($m.id -eq 3 -and $m.type -eq 'result') { if (-not $m.success) { throw "HA subscription failed: $($m.error.code)" }; $subscribed=$true }
+      if ($m.id -eq 3 -and $m.type -eq 'event') { $view=$m.event; if ($subscribed) { break } }
     }
     if (-not $subscribed -or $null -eq $view) { throw 'HA subscription did not deliver its initial view.' }
     Assert-AreaEventsFeedResponse -Response $view -Area 'San Diego subscription' | Out-Null
-    Send-HaMessage @{type='unsubscribe_events';subscription=2}
+    Send-HaMessage @{type='unsubscribe_events';subscription=3}
     $script:WsEventCount=@($page.events).Count; $script:WsAustinCount=@($austin.events).Count; $script:WsViewCount=@($view.events).Count
   } finally { $cancel.Cancel(); $socket.Dispose(); $cancel.Dispose() }
 }
