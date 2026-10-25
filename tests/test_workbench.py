@@ -5,6 +5,7 @@ import re
 import socket
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 
 from discovery import classifiers, classify, evidence, refresh, workbench
@@ -20,6 +21,13 @@ DATA = os.path.join(ROOT, "tests", "data", "workbench")
 PIZZARELLI = os.path.join(DATA, "pizzarelli-dear-mr-bennett.html")
 ST_AGNES = os.path.join(DATA, "st-agnes-craft-fair.json")
 READER = "https://www.sandiegoreader.com/events/2026/oct/24/john-pizzarelli-presents-dear-mr-be/"
+FIXTURE_NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
+
+
+def analyze_pizzarelli_fixture():
+    with mock.patch.object(web, "datetime") as clock:
+        clock.now.return_value = FIXTURE_NOW
+        return workbench.analyze(PIZZARELLI, fixture=True, base_url=READER, now=FIXTURE_NOW)
 
 
 def future_fixture(directory, title="Spring Fair"):
@@ -151,7 +159,7 @@ class Evidence(unittest.TestCase):
     def test_a_quote_is_text_that_really_is_in_the_source(self):
         with open(PIZZARELLI, encoding="utf-8") as handle:
             page = handle.read()
-        report = workbench.analyze(PIZZARELLI, fixture=True, base_url=READER)
+        report = analyze_pizzarelli_fixture()
         texts = self.source_texts(report, {READER: page})
         refs = list(report["evidence"].values())[0]
         located = [r for r in refs if r.get("quote")]
@@ -208,7 +216,7 @@ class Findings(unittest.TestCase):
     """The workbench shows what the production pipeline does, shortcomings included; nothing here is tuned to look better."""
 
     def test_the_pizzarelli_concert_is_not_classified_and_the_word_chemistry_is_never_read(self):
-        report = workbench.analyze(PIZZARELLI, fixture=True, base_url=READER)
+        report = analyze_pizzarelli_fixture()
         row = report["stages"]["classification"]["events"][0]
         self.assertEqual(row["decision"]["category"], "general")
         self.assertTrue(row["decision"]["fallback"])
