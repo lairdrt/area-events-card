@@ -1,4 +1,4 @@
-"""Event Analysis Workbench: python scripts/workbench.py url <address> | fixture <file>   (see docs/architecture-modules.md)."""
+"""Event Analysis Workbench: python scripts/workbench.py url <address> | fixture <file> (see docs/producer-contract.md)."""
 import os
 import sys
 

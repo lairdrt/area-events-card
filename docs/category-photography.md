@@ -1,6 +1,6 @@
-# Category photography: candidates and licence manifest
+# Category photography: private photo manifest
 
-Status: **candidates for visual review only. Nothing here is wired into the card or the engine.** The images are not in the repository (`/review/` is git-ignored); only this manifest is.
+Status: Optional private assets. The source images stay outside Git in `review/category-photos/images/`; `scripts/prepare-category-photos.py` validates and prepares selected files for the integration's private photo index.
 
 Contact sheets (local, untracked): `review/category-photos/final-1.jpg` (music, theater, festival, sports), `final-2.jpg` (food: restaurant / farmers market / food truck, arts), `final-3.jpg` (science, family, outdoors, community, general). Full images: `review/category-photos/images/<code>.jpg`, 900 px wide, as downloaded from the Pexels CDN.
 

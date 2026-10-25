@@ -4,8 +4,8 @@ Same conventions as `client.py`: the aiohttp session is injected (Home Assistant
 timeout, nothing blocks the event loop, and failures become typed exceptions the integration can turn into availability and
 config-entry errors. The token is only ever sent in the Authorization header and is never part of an error message.
 
-Not wired into the integration yet (Milestone 2B): the Discovery Service has no config entry or WebSocket command of its own; the
-remaining Home Assistant wiring is described in docs/discovery-service-architecture.md.
+The integration uses this client for authenticated read and control requests to the Discovery Service. Home Assistant-facing
+commands and config-entry behavior are described in docs/ha-integration-2d.md.
 """
 import asyncio
 from urllib.parse import quote, urlencode, urlsplit

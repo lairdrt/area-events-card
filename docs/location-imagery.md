@@ -11,13 +11,9 @@ Image priority (each step hands over to the next when an image is missing or fai
 3. a map of the event's location, badge **MAP**, with a pin, the venue name and a small credit button;
 4. the category illustration, labelled "Illustration".
 
-Generic category photographs are **not** part of the selection (the curated set described in [category-photography.md](category-photography.md) is kept on disk but unused).
-
 `show_images: false` shows none of 2 and 3. The pin, badges, venue name and credit button are elements of the card, never part of an image. Alt text says what each image is ("Map of the event location: Viejas Arena (approximate position)", "Photograph of the venue, Viejas Arena, not of the event").
 
 ## Maps
-
-*Why not USGS.* The USGS National Map was measured first ([location-imagery-evaluation.md](location-imagery-evaluation.md)). Its Topo service is a raster cache whose finest level (zoom 16, about 2.4 m per pixel) is the limit: tiles beyond it do not exist (HTTP 404), and exports at 1280 x 720 and 1920 x 1080 show the same stair-stepped building outlines and the same soft labels as 640 x 360, because they are upscaled. Its dynamic services have no building footprints. So it cannot be sharp on a high-density display and was not used.
 
 *What is used.* [OpenFreeMap](https://openfreemap.org) serves OpenStreetMap-based **vector** tiles with no key, no account and no cost. One tile at zoom 14 covers about 2.4 km, so a city's venues share a handful of tiles. The engine (standard library only: a small vector-tile reader and an SVG writer in `area_events/discovery/maps.py`) draws the 480 m by 270 m around a position as an **SVG** in two colour schemes with identical geometry: light, and graphite with orange main roads. SVG is sharp at any size and pixel density, is 12 to 50 KB, has no script, no text except street names, and no external reference. Nothing is rendered by a heavy framework and nothing is added to the app's dependencies.
 

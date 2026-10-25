@@ -179,7 +179,7 @@ function Invoke-Preflight {
   $branch=(Invoke-Bounded 'git.exe' @('-C',$script:Repo,'branch','--show-current') 10).Trim()
   if ($branch -ne 'ha-native-refactor') { throw "Expected ha-native-refactor, found $branch." }
   $dirty=Invoke-Bounded 'git.exe' @('-C',$script:Repo,'status','--porcelain') 10
-  $unexpected=@($dirty -split [Environment]::NewLine | Where-Object { $_ -and $_ -notmatch '^\?\? scripts/deploy-cubi-2f-display\.ps1\s*$' })
+  $unexpected=@($dirty -split [Environment]::NewLine | Where-Object { $_ })
   if ($unexpected.Count) { throw "Resolve local changes before deployment: $($unexpected -join ', ')" }
   if (-not (Test-Path -LiteralPath (Join-Path $ConfigShare 'configuration.yaml'))) { throw "HA config share unavailable: $ConfigShare" }
   $script:Token=Get-HaToken; $script:BaseUrl=$HaUrl.TrimEnd('/')
@@ -252,7 +252,7 @@ function Invoke-DeploymentPlan($preflight) {
   $currentHead=(Invoke-Bounded 'git.exe' @('-C',$script:Repo,'rev-parse','HEAD') 10).Trim()
   if ($currentHead -ne $preflight.Head) { throw 'Git HEAD changed between preflight and deployment planning.' }
   $dirty=Invoke-Bounded 'git.exe' @('-C',$script:Repo,'status','--porcelain') 10
-  $unexpected=@($dirty -split [Environment]::NewLine | Where-Object { $_ -and $_ -notmatch '^(?:\?\? scripts/deploy-cubi-2f-display\.ps1\s*|.. custom_components/area_events/frontend/area-events-card\.js\s*)$' })
+  $unexpected=@($dirty -split [Environment]::NewLine | Where-Object { $_ -and $_ -notmatch '^.. custom_components/area_events/frontend/area-events-card\.js\s*$' })
   if ($unexpected.Count) { throw "Build changed unexpected source files; refusing inconsistent source/artifact deployment: $($unexpected -join ', ')" }
   $script:CubiFingerprint=Get-CubiFingerprint
   $haSource=Join-Path $script:Repo 'custom_components\area_events'

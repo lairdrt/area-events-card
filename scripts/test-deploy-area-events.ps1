@@ -73,7 +73,7 @@ Check 'bounded build runner uses the repository working directory' {
 Check 'only the intended Cubi systemd unit and HA share are deployment targets' {
   $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
   if ($text -notmatch 'area-events-discovery\.service' -or $text -notmatch 'configuration\.yaml') { throw 'expected targets are not identified' }
-  if ($text -match 'docker\s+(stop|restart)|8765|(?:&|Invoke-Bounded).*deploy-cubi-2f-display\.ps1') { throw 'deployment addresses protected Docker/legacy targets' }
+  if ($text -match 'docker\s+(stop|restart)|8765') { throw 'deployment addresses protected Docker/legacy targets' }
   if ($text -notmatch 'ConnectTimeout=8' -or $text -notmatch 'Wait-Job -Job \$job -Timeout') { throw 'external calls lack finite deadlines' }
 }
 Check 'backup uses SQLite backup API and migration checks preserve stable keys and links' {

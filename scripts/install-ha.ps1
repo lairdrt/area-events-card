@@ -9,7 +9,7 @@
   An existing copy of either is backed up first (next to this repository, in area-events-card-ha-backups). Every copied file
   is verified by hash. Nothing else on the share is read, changed or deleted, and Home Assistant is never restarted.
 
-  The app can alternatively be installed from the repository (see docs/installation.md); -AppsShare is for trying a branch
+  The app can alternatively be installed from the repository (see docs/automated-deployment.md); -AppsShare is for trying a branch
   before it is merged.
 
 .PARAMETER ConfigShare
@@ -97,4 +97,4 @@ if ($AppsShare) {
 
 Write-Host ""
 if ($DryRun) { Write-Host "Dry run: nothing was changed." } else { Write-Host "Copied. Home Assistant was not restarted." }
-Write-Host "Next (see docs/installation.md): restart Home Assistant once so it loads the integration, install and start the app, then add the integration."
+Write-Host "Next (see docs/automated-deployment.md): restart Home Assistant once so it loads the integration, install and start the app, then add the integration."
