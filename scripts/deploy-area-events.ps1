@@ -437,22 +437,21 @@ updated=re.sub(r'(?m)^(ExecStart=\S+)\s+'+entry+r'(?=\s|$)',r'\1 -m area_events'
 if legacy and updated==unit_text: raise RuntimeError('systemd unit does not use a supported legacy Python discovery entry point')
 if modern and updated!=unit_text: raise RuntimeError('modern systemd ExecStart unexpectedly references the legacy entry point')
 with open(unit,'w',encoding='utf-8') as f: f.write(updated)
+r=subprocess.run(['python3','-m','pip','install','--user','--no-deps','--force-reinstall',root],timeout=120,check=True,capture_output=True,text=True)
+r=subprocess.run(['python3','-m','area_events','status','--db',root+'/data/discovery/discovery.db'],cwd=root,timeout=120,capture_output=True,text=True)
+if r.returncode: raise RuntimeError('migration failed: '+r.stderr[-1000:])
+a=sqlite3.connect('file:'+root+'/data/discovery/discovery.db?mode=ro',uri=True); b=sqlite3.connect('file:'+os.environ['AE_BACKUP']+'/discovery.db?mode=ro',uri=True)
 try:
- r=subprocess.run(['python3','-m','pip','install','--user','--no-deps','--force-reinstall',root],timeout=120,check=True,capture_output=True,text=True)
- r=subprocess.run(['python3','-m','area_events','status','--db',root+'/data/discovery/discovery.db'],cwd=root,timeout=120,capture_output=True,text=True)
- if r.returncode: raise RuntimeError('migration failed: '+r.stderr[-1000:])
- a=sqlite3.connect('file:'+root+'/data/discovery/discovery.db?mode=ro',uri=True); b=sqlite3.connect('file:'+os.environ['AE_BACKUP']+'/discovery.db?mode=ro',uri=True)
- try:
-  keys={x[0] for x in a.execute('select event_key from events')}; oldkeys={x[0] for x in b.execute('select event_key from events')}
-  q='select c.candidate_key,e.event_key,ec.role from event_candidates ec join candidates c using(candidate_id) join events e using(event_id)'
-  links=set(a.execute(q)); oldlinks=set(b.execute(q)); versions=[x[0] for x in a.execute('select version from schema_migrations')]
-  if max(versions)!=int(os.environ['AE_TARGET']) or not oldkeys<=keys or not oldlinks<=links: raise RuntimeError('identity/schema check failed')
-  if a.execute('pragma quick_check').fetchone()[0]!='ok' or list(a.execute('pragma foreign_key_check')): raise RuntimeError('database integrity failed')
-  changed=max(versions)>int(os.environ['AE_OLD'])
- finally: a.close(); b.close()
- subprocess.run(['systemctl','--user','daemon-reload'],timeout=30,check=True)
- subprocess.run(['systemctl','--user','start','area-events-discovery.service'],timeout=45,check=True)
- print(json.dumps({'changed':True,'schema_changed':changed,'schema':max(versions),'events':len(keys),'transition_id':run}))
+ keys={x[0] for x in a.execute('select event_key from events')}; oldkeys={x[0] for x in b.execute('select event_key from events')}
+ q='select c.candidate_key,e.event_key,ec.role from event_candidates ec join candidates c using(candidate_id) join events e using(event_id)'
+ links=set(a.execute(q)); oldlinks=set(b.execute(q)); versions=[x[0] for x in a.execute('select version from schema_migrations')]
+ if max(versions)!=int(os.environ['AE_TARGET']) or not oldkeys<=keys or not oldlinks<=links: raise RuntimeError('identity/schema check failed')
+ if a.execute('pragma quick_check').fetchone()[0]!='ok' or list(a.execute('pragma foreign_key_check')): raise RuntimeError('database integrity failed')
+ changed=max(versions)>int(os.environ['AE_OLD'])
+finally: a.close(); b.close()
+subprocess.run(['systemctl','--user','daemon-reload'],timeout=30,check=True)
+subprocess.run(['systemctl','--user','start','area-events-discovery.service'],timeout=45,check=True)
+print(json.dumps({'changed':True,'schema_changed':changed,'schema':max(versions),'events':len(keys),'transition_id':run}))
 '@
   try {
     $script:CubiTransitionId=[IO.Path]::GetFileNameWithoutExtension($archive)
