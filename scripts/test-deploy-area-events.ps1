@@ -47,6 +47,14 @@ Check 'script parses and production engine is explicit operations only' {
   if ($errors.Count) { throw $errors[0].Message }
   if ((Get-Content -Raw $module) -notmatch 'Rehearse|DryRun|Recover') { throw 'required engine gates are missing' }
 }
+Check 'Cubi JSON deployment result maps to the engine contract' {
+  $wire='{"changed":true,"schema_changed":false}' | ConvertFrom-Json
+  $normalized=ConvertTo-CubiDeployResult $wire
+  if (-not $normalized.Changed -or $normalized.SchemaChanged) { throw 'Cubi deployment flags were not mapped correctly' }
+  $invalid=$false
+  try { ConvertTo-CubiDeployResult ([pscustomobject]@{changed=$true}) | Out-Null } catch { $invalid=$true }
+  if (-not $invalid) { throw 'invalid Cubi deployment response was accepted' }
+}
 Check 'bounded build runner uses the repository working directory' {
   $repoRoot=Split-Path -Parent $PSScriptRoot
   $npm=(Get-Command npm.cmd -ErrorAction Stop).Source

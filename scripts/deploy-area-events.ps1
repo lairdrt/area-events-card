@@ -382,7 +382,7 @@ finally: shutil.rmtree(stage,ignore_errors=True)
   try {
     $res=Invoke-CubiPython $py @{AE_ARCHIVE=$archive;AE_BACKUP=$script:RemoteBackup;AE_OLD="$($state.Remote.schema)";AE_TARGET="$script:TargetSchema"} 300 | ConvertFrom-Json
     $script:SchemaChanged=[bool]$res.schema_changed
-    $res
+    ConvertTo-CubiDeployResult $res
   } catch {
     try {
       $check=Invoke-CubiPython "import sqlite3,json; c=sqlite3.connect('file:$script:RemoteRoot/data/discovery/discovery.db?mode=ro',uri=True); print(json.dumps({'schema':c.execute('select max(version) from schema_migrations').fetchone()[0]}))" @{} 15 | ConvertFrom-Json
@@ -554,6 +554,12 @@ with os.fdopen(fd,'w') as f: json.dump({'commit':os.environ['AE_COMMIT'],'schema
 os.replace(t,p)
 '@
   $null=Invoke-CubiPython $py @{AE_COMMIT=$state.Head;AE_SCHEMA="$script:TargetSchema";AE_CUBI_HASH=$state.CubiFingerprint;AE_HA_HASH=$state.HAFingerprint} 30
+}
+function ConvertTo-CubiDeployResult($Result) {
+  if ($null -eq $Result -or $null -eq $Result.PSObject.Properties['changed'] -or $null -eq $Result.PSObject.Properties['schema_changed']) {
+    throw 'Cubi deployment returned an invalid result schema.'
+  }
+  return [pscustomobject]@{Changed=[bool]$Result.changed;SchemaChanged=[bool]$Result.schema_changed}
 }
 function Invoke-Recovery($phase,$state,$schemaChanged,$haChanged) {
   if ($phase -eq 'Cubi cutover') {
