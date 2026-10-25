@@ -14,6 +14,8 @@ jobs:
     name: tests-and-build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      TZ: America/Los_Angeles
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -25,9 +27,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Run JavaScript tests
-        run: npm test
       - name: Run Python tests
         run: python -m unittest discover -s tests -t .
       - name: Validate frontend build
         run: npm run build
+      - name: Run JavaScript tests
+        run: npm test
