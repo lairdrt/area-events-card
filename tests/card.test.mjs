@@ -70,7 +70,7 @@ const openFilters = (root) => click(byClass(root, "filter-toggle")[0]);
 
 /** What the integration's area_events/subscribe command sends for a feed (the first view, and again whenever the area changes). */
 const answer = (feed, extra = {}) => ({
-  state: "ready", connected: true, refreshing: false, message: null, report: [],
+  state: "ready", connected: true, refreshing: false, message: null,
   generated_at: feed.generated_at, location: feed.location || { display_name: "San Diego, CA" }, sources: feed.sources, events: feed.events, ...extra,
 });
 
@@ -243,7 +243,7 @@ test("configured mission presentation uses only supplied typed mission details",
 });
 
 test("the card follows its own area through one subscription and asks nothing else of Home Assistant", async () => {
-  const card = await make({ area: "Austin", radius_miles: 30, sources: ["https://calendar.utexas.edu"] }); // radius and sources are no longer the card's business
+  const card = await make({ area: "Austin", radius_miles: 30 });
   assert.deepEqual(card.hassStub.eventsCalls(), [{ type: "area_events/subscribe", area: "Austin" }]);
   assert.ok(card.hassStub.calls.every((m) => /^(area_events\/subscribe|frontend\/)/.test(m.type)), "no other Home Assistant commands");
   await pollAgain(card); // a push with the same view changes nothing
@@ -254,7 +254,7 @@ test("a card without an area says so and subscribes to nothing", async () => {
   const card = await make({ area: undefined });
   assert.equal(card.hassStub.eventsCalls().length, 0);
   assert.match(text(card.shadowRoot), /Set 'area' to the name of a discovery area/);
-  const pending = await make({ area: "Austin" }, { reply: () => ({ state: "unavailable", connected: false, message: "the Discovery Service is not reachable", report: [], sources: {} }) });
+  const pending = await make({ area: "Austin" }, { reply: () => ({ state: "unavailable", connected: false, message: "the Discovery Service is not reachable", sources: {} }) });
   assert.match(text(byClass(pending.shadowRoot, "notice")[0]), /not reachable/);
 });
 
@@ -285,45 +285,16 @@ test("a failure shows an error, never demo events", async () => {
   assert.match(text(byClass(root, "sticky-header")[0]), /Events unavailable/);
 });
 
-test("discovery states are told apart: finding, not reachable, nothing found, unsupported sources", async () => {
-  const pending = await make({ area: "Austin, TX" }, { reply: () => ({ state: "discovering", connected: true, report: [], sources: {} }) });
+test("discovery states are told apart: finding, not reachable, and nothing found", async () => {
+  const pending = await make({ area: "Austin, TX" }, { reply: () => ({ state: "discovering", connected: true, sources: {} }) });
   assert.match(text(byClass(pending.shadowRoot, "progress")[0]), /Discovering events near Austin, TX/);
   assert.equal(byClass(pending.shadowRoot, "progress")[0].hidden, false);
 
-  const down = await make({}, { reply: () => ({ state: "unavailable", connected: false, message: "connection refused", report: [], sources: {} }) });
+  const down = await make({}, { reply: () => ({ state: "unavailable", connected: false, message: "connection refused", sources: {} }) });
   assert.match(text(byClass(down.shadowRoot, "notice")[0]), /app is not reachable \(connection refused\)/);
 
-  const failed = await make({ area: "Nowhere" }, { reply: () => ({ state: "error", connected: true, message: "could not resolve location 'Nowhere'", report: [], sources: {} }) });
+  const failed = await make({ area: "Nowhere" }, { reply: () => ({ state: "error", connected: true, message: "could not resolve location 'Nowhere'", sources: {} }) });
   assert.match(text(byClass(failed.shadowRoot, "notice")[0]), /could not be found for Nowhere: could not resolve location/);
-
-  const report = [{ url: "https://blog.example", status: "unsupported", reason: "no adapter reads this website" }, { url: "https://calendar.utexas.edu", status: "supported" }];
-  const partial = await make({ sources: ["https://blog.example"] }, { reply: () => answer(makeFeed(), { report }) });
-  const notice = text(byClass(partial.shadowRoot, "notice")[0]);
-  assert.match(notice, /Source not supported: https:\/\/blog\.example \(no adapter reads this website\)/);
-  assert.doesNotMatch(notice, /utexas/);
-  assert.equal(byClass(partial.shadowRoot, "event").length, 3);
-});
-
-test("added websites report what happened to them: blocked, unavailable, no events, and how many events were found", async () => {
-  const report = [
-    { url: "https://a.example", status: "blocked", reason: "robots.txt does not allow this page" },
-    { url: "https://b.example", status: "unavailable", reason: "could not be read: HTTP 503" },
-    { url: "https://c.example", status: "no_events", reason: "no upcoming events were found" },
-    { url: "https://d.example", status: "unsupported", reason: "no event data was found" },
-    { url: "https://e.example/events", status: "supported", adapter: "web", name: "E Events", id: "web_e" },
-    { url: "https://f.example/events", status: "supported", adapter: "web", name: "F Events", id: "web_f" },
-    { url: "https://kpbs.org", status: "supported", adapter: "kpbs", name: "KPBS", id: "kpbs" },
-  ];
-  const sources = { web_e: { ok: true, events: 12 }, web_f: { ok: false, events: 0, error: "extraction produced no events" }, kpbs: { ok: true, events: 9 } };
-  const card = await make({ sources: report.map((item) => item.url) }, { reply: () => answer(makeFeed(), { report, sources }) });
-  const notice = text(byClass(card.shadowRoot, "notice")[0]);
-  assert.match(notice, /Source blocked: https:\/\/a\.example \(robots\.txt does not allow this page\)/);
-  assert.match(notice, /Source unavailable: https:\/\/b\.example \(could not be read: HTTP 503\)/);
-  assert.match(notice, /No events found at https:\/\/c\.example \(no upcoming events were found\)/);
-  assert.match(notice, /Source not supported: https:\/\/d\.example \(no event data was found\)/);
-  assert.match(notice, /E Events: 12 events found\./);
-  assert.match(notice, /F Events: no events found in the search area \(extraction produced no events\)\./);
-  assert.doesNotMatch(notice, /KPBS/); // built-in sources are not announced
 });
 
 test("a refresh failure keeps the earlier events and says so", async () => {
@@ -392,16 +363,15 @@ test("the configuration is validated with clear messages", () => {
   const bad = [
     [{ feed: "/f.json" }, /no longer supported/], [{ entity: "sensor.e" }, /no longer supported/],
     [{ area: 5 }, /'area'/], [{ area: " " }, /'area'/], [{ radius_miles: 0 }, /radius_miles/], [{ radius_miles: 300 }, /radius_miles/],
-    [{ sources: ["ftp://x"] }, /sources/], [{ sources: "nonsense" }, /sources/], [{ categories: ["nonsense"] }, /Unknown category/],
+    [{ categories: ["nonsense"] }, /Unknown category/],
     [{ interests: [5] }, /interest/], [{ interests: ["Music: jazz"] }, /duplicates/], [{ sort: "random" }, /sort/],
     [{ days: 0 }, /days/], [{ max_events: 1.5 }, /max_events/], [{ columns: 9 }, /columns/], [{ show_images: "yes" }, /show_images/],
   ];
   for (const [config, message] of bad) assert.throws(() => new CardClass().setConfig(config), message, JSON.stringify(config));
-  const settings = readSettings({ area: " Austin, TX ", radius_miles: "40", sources: "https://a.example\nhttps://b.example", categories: ["Music", "food-drink"],
+  const settings = readSettings({ area: " Austin, TX ", radius_miles: "40", categories: ["Music", "food-drink"],
     interests: ["Board games: board game, tabletop"], exclude: "Politics\n Gala", days: 14, max_events: 12, sort: "verified", columns: 2, show_images: false });
   assert.equal(settings.area, "Austin, TX");
   assert.equal(settings.radius, 40);
-  assert.deepEqual(settings.sources, ["https://a.example", "https://b.example"]);
   assert.deepEqual([...settings.categories], ["music", "food-drink"]);
   assert.deepEqual(settings.interests.map((c) => [c.name, c.keywords]), [["Board games", ["board game", "tabletop"]]]);
   assert.deepEqual(settings.exclude, ["politics", "gala"]);
@@ -459,7 +429,7 @@ test("the visual editor is Home Assistant's own form: schema, labels and what it
   assert.equal(lists.length, 2);
   assert.ok(lists.every((item) => item.selector.select.multiple && item.selector.select.custom_value));
   // what the form can edit is accepted; what it cannot, or what is invalid, makes Home Assistant show YAML instead
-  form.assertConfig({ type: "custom:area-events-card", title: "T", area: "Austin, TX", sources: ["https://a.example"], interests: ["Games: dice"], exclude: ["x"] });
+  form.assertConfig({ type: "custom:area-events-card", title: "T", area: "Austin, TX", interests: ["Games: dice"], exclude: ["x"] });
   assert.throws(() => form.assertConfig({ interests: [{ name: "Games", keywords: ["dice"] }] }), /only be edited in YAML/);
   assert.throws(() => form.assertConfig({ feed: "/f.json" }), /no longer supported/);
   assert.throws(() => form.assertConfig({ radius_miles: 999 }), /radius_miles/);
@@ -753,7 +723,7 @@ test("inline events show a header without a fabricated update time", async () =>
 
 const searching = (extra = {}) => ({ phase: "searching", current: "KPBS", completed: 1, total: 3, failed: 0, empty: 0, events: 12, ...extra });
 const panel = (card) => byClass(card.shadowRoot, "progress")[0];
-const nothingYet = (progress, extra = {}) => ({ state: "discovering", connected: true, report: [], sources: {}, initial: true, refreshing: false, progress, ...extra });
+const nothingYet = (progress, extra = {}) => ({ state: "discovering", connected: true, sources: {}, initial: true, refreshing: false, progress, ...extra });
 /** Replies one after another (the last repeats), so a test can play a discovery from start to finish. */
 const sequence = (...replies) => { let i = 0; return () => replies[Math.min(i++, replies.length - 1)]; };
 
@@ -843,11 +813,11 @@ test("the viewer's filter stays applied while new events arrive", async () => {
 });
 
 test("outcomes are told apart: no results, complete failure, partial failure, a failed refresh", async () => {
-  const none = await make({ area: "Nowhere" }, { reply: () => ({ state: "error", outcome: "no_results", message: "No upcoming events were found by the 2 sources searched.", connected: true, report: [], sources: {}, initial: true, progress: searching({ phase: "complete" }) }) });
+  const none = await make({ area: "Nowhere" }, { reply: () => ({ state: "error", outcome: "no_results", message: "No upcoming events were found by the 2 sources searched.", connected: true, sources: {}, initial: true, progress: searching({ phase: "complete" }) }) });
   assert.match(text(byClass(none.shadowRoot, "notice")[0]), /No upcoming events were found by the 2 sources searched\. Try a larger radius or another area/);
   assert.equal(panel(none).hidden, true);
 
-  const failed = await make({ area: "Austin, TX" }, { reply: () => ({ state: "error", outcome: "failed", message: "all sources are down", connected: true, report: [], sources: {}, initial: true, progress: searching({ phase: "complete" }) }) });
+  const failed = await make({ area: "Austin, TX" }, { reply: () => ({ state: "error", outcome: "failed", message: "all sources are down", connected: true, sources: {}, initial: true, progress: searching({ phase: "complete" }) }) });
   assert.match(text(byClass(failed.shadowRoot, "notice")[0]), /Events could not be found for Austin, TX: all sources are down/);
 
   const partial = await make({}, { reply: () => answer(makeFeed({ sources: { a: { ok: true }, b: { ok: false } } }), { outcome: "partial", initial: false, progress: searching({ phase: "complete", failed: 1 }) }) });
@@ -1111,7 +1081,7 @@ test("ordinary configurations, including the Austin card, are editable visually"
     { type: "custom:area-events-card", title: "Austin Events", radius_miles: 25, area: "Austin, TX" },
     { type: "custom:area-events-card", title: "Area Events", radius_miles: 25 },
     { type: "custom:area-events-card" },
-    { type: "custom:area-events-card", area: "San Diego, CA", radius_miles: 40, sources: ["https://calendar.utexas.edu"], categories: ["music"], interests: ["Games: dice"], exclude: ["x"], days: 14, max_events: 20, sort: "title", columns: 2, show_images: false, show_filters: true },
+    { type: "custom:area-events-card", area: "San Diego, CA", radius_miles: 40, categories: ["music"], interests: ["Games: dice"], exclude: ["x"], days: 14, max_events: 20, sort: "title", columns: 2, show_images: false, show_filters: true },
   ]) assert.doesNotThrow(() => assertConfig(config), JSON.stringify(config));
   assert.ok(Array.isArray(schema) && schema.length > 0);
   assert.equal(typeof CardClass.getConfigForm, "function");
@@ -1242,48 +1212,6 @@ test("an element that is not ours, or an older card, in the registry is never re
       assert.match(errors.join(" "), /older Area Events card is already registered/);
     });
   } finally { console.error = realError; }
-});
-
-test("an unsupported added website is one short, nonfatal line with its reason behind a disclosure, and the events stay", async () => {
-  const reason = "the page builds its events with JavaScript, which Area Events does not run, and it offers no calendar feed";
-  const report = [{ url: "https://www.smpoway.org/calendar", status: "unsupported", reason }];
-  const card = await make({ sources: ["https://www.smpoway.org/calendar"] }, { reply: () => answer(makeFeed(), { report, outcome: "complete", initial: false, progress: searching({ phase: "complete" }) }) });
-  const [notice] = byClass(card.shadowRoot, "notice");
-  assert.equal(notice.hidden, false);
-  const details = notice.children.find((child) => child.tag === "details");
-  assert.equal(details.children[0].tag, "summary");
-  assert.equal(details.children[0].textContent, "1 additional website couldn't be read.");
-  assert.match(text(details), /smpoway\.org\/calendar.*JavaScript/);
-  assert.doesNotMatch(text(notice), /refresh failed|could not be found|not available/i);
-  assert.equal(byClass(card.shadowRoot, "event").length, 3);
-});
-
-test("a healthy search never shows a failure for the optional website while it is still being processed", async () => {
-  const report = [{ url: "https://www.smpoway.org/calendar", status: "unsupported", reason: "needs JavaScript" }];
-  // events visible, the app is still reading other sources, nothing is wrong with the profile itself
-  const working = await make({ sources: ["https://www.smpoway.org/calendar"] }, { reply: () => answer(makeFeed(), { report, refreshing: true, initial: false, message: null, progress: searching() }) });
-  assert.doesNotMatch(text(byClass(working.shadowRoot, "notice")[0]), /last refresh failed/);
-  assert.equal(byClass(working.shadowRoot, "event").length, 3);
-  // a genuine failure of the whole run is still reported, whatever the added websites did
-  const failing = await make({ sources: ["https://www.smpoway.org/calendar"] }, { reply: () => answer(makeFeed(), { report, refreshing: true, initial: false, message: "all sources are down", progress: searching() }) });
-  assert.match(text(byClass(failing.shadowRoot, "notice")[0]), /The last refresh failed \(all sources are down\)/);
-  // once a later run succeeds the message is gone and only the short line remains
-  const recovered = await make({ sources: ["https://www.smpoway.org/calendar"] }, { reply: () => answer(makeFeed(), { report, message: null, outcome: "complete", initial: false, progress: searching({ phase: "complete" }) }) });
-  assert.doesNotMatch(text(byClass(recovered.shadowRoot, "notice")[0]), /refresh failed|all sources are down/);
-  assert.match(text(byClass(recovered.shadowRoot, "notice")[0]), /1 additional website couldn't be read\./);
-});
-
-test("events already shown stay while a later answer adds source status", async () => {
-  const feed = makeFeed();
-  let next = answer(feed, { refreshing: true, initial: false, progress: searching() });
-  const card = await make({ sources: ["https://www.smpoway.org/calendar"] }, { reply: () => next });
-  const before = byClass(card.shadowRoot, "event").map((el) => el);
-  next = answer(feed, { report: [{ url: "https://www.smpoway.org/calendar", status: "unsupported", reason: "x" }], initial: false, progress: searching({ phase: "complete" }) });
-  await pollAgain(card);
-  const after = byClass(card.shadowRoot, "event");
-  assert.match(text(byClass(card.shadowRoot, "notice")[0]), /1 additional website couldn't be read/); // the new answer was applied
-  assert.equal(after.length, before.length);
-  assert.ok(after.every((el, i) => el === before[i]), "tiles are reused, not rebuilt or blanked");
 });
 
 // --- generic category photographs are no longer part of image selection ---------------------------------------------

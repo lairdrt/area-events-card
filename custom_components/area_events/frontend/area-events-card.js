@@ -11,7 +11,7 @@
  */
 
 import { PRESENTATIONS } from "./presentation/manifest.js";
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-504473e0";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-18180b22";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
@@ -139,8 +139,6 @@ const STYLES = `
     margin: 0 0 8px; padding: 6px 12px; border-radius: 8px; font-size: 0.875rem;
     border: 1px solid var(--divider-color); color: var(--primary-text-color); overflow-wrap: anywhere;
   }
-  .notice summary { cursor: pointer; }
-  .notice .detail-line { margin-top: 4px; color: var(--secondary-text-color); }
   .empty { padding: 16px 4px; color: var(--secondary-text-color); }
   .progress {
     display: flex; flex-direction: column; gap: 8px; margin: 0 0 8px; padding: 14px 16px; border-radius: 12px; box-sizing: border-box;
@@ -274,7 +272,7 @@ function normalizePrefs(raw, extraIds = []) {
  *
  *   title, id                  header text; `id` keeps saved filters apart for identical cards on one dashboard
  *   area                       the name (or key) of a discovery area configured in the Discovery Service; required
- *   radius_miles, sources      no longer used (areas and their sources belong to the Discovery Service); accepted and ignored
+ *   radius_miles               retained for older card configurations
  *   categories                 limit events to these built-in categories (ids or names); omit for all
  *   interests                  extra topics: "Name: keyword, keyword" (or {name, keywords})
  *   exclude                    topics to hide (any event mentioning one is dropped)
@@ -284,7 +282,6 @@ function normalizePrefs(raw, extraIds = []) {
 const SORTS = ["date", "title", "verified"];
 const MAX_INTERESTS = 20;
 const MAX_EXCLUDE = 30;
-const MAX_SOURCES = 10;
 
 function listOf(value, what) {
   if (value === undefined || value === null || value === "") return [];
@@ -344,10 +341,6 @@ function readSettings(config) {
   if (config.area !== undefined && (typeof config.area !== "string" || !config.area.trim())) {
     throw new Error("'area' must be text such as 'San Diego, CA' (a city, a ZIP code or 'latitude, longitude').");
   }
-  const sources = listOf(config.sources, "sources");
-  if (sources.length > MAX_SOURCES || !sources.every((url) => /^https?:\/\/[^\s/]+/i.test(url))) {
-    throw new Error(`'sources' must be at most ${MAX_SOURCES} website addresses starting with http:// or https://.`);
-  }
   const interests = parseInterests(config.interests);
   const wanted = listOf(config.categories, "categories");
   const known = DEFAULT_CATEGORIES.filter((c) => c.id !== OTHER_ID);
@@ -364,7 +357,6 @@ function readSettings(config) {
   return {
     area: config.area === undefined ? undefined : config.area.trim(),
     radius: numberIn(config, "radius_miles", 1, 250) ?? 25,
-    sources,
     categories: categories.size ? categories : undefined,
     interests,
     exclude,
@@ -389,13 +381,13 @@ function hashString(text) {
  * frontend/set_user_data, so choices follow the user across devices) with
  * localStorage as an immediate cache and fallback. The key combines the
  * dashboard path with the card's `id` option, or, when there is none, a hash
- * of its title/area/radius/sources so different cards do not collide. Two cards with
+ * of its title/area/radius so different cards do not collide. Two cards with
  * identical configuration on one dashboard need distinct `id` values.
  */
 function prefsKey(config) {
   const path = (typeof window !== "undefined" && window.location && window.location.pathname) || "/";
   const explicit = typeof config.id === "string" ? config.id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40) : "";
-  const instance = explicit || `h${hashString(JSON.stringify([config.title || "", config.area || "", config.radius_miles || "", config.sources || "", Array.isArray(config.events) ? "inline" : ""]))}`;
+  const instance = explicit || `h${hashString(JSON.stringify([config.title || "", config.area || "", config.radius_miles || "", Array.isArray(config.events) ? "inline" : ""]))}`;
   return `area-events-card:prefs:v1:${encodeURIComponent(path)}:${instance}`;
 }
 
@@ -682,7 +674,7 @@ class AreaEventsCard extends HTMLElement {
     if (reply) {
       this._status = {
         state: reply.state, message: reply.message, refreshing: Boolean(reply.refreshing), connected: reply.connected !== false,
-        report: reply.report || [], initial: reply.initial !== false, outcome: reply.outcome || undefined, progress: reply.progress || undefined,
+        initial: reply.initial !== false, outcome: reply.outcome || undefined, progress: reply.progress || undefined,
         notice: reply.notice || undefined, service: reply.service,
       };
       this._feedError = this._feedErrorCode = undefined;
@@ -843,34 +835,7 @@ class AreaEventsCard extends HTMLElement {
       notes.push("No upcoming events match.");
     }
     if (status.notice && !this._feedError) notes.push(status.notice);
-    // Websites added to the card are extras: one short line says how many could not be read; the reasons sit behind a disclosure.
-    const problems = [], provided = [];
-    let providedEvents = 0;
-    for (const item of status.report || []) {
-      if (item.status === "unsupported") problems.push(`Source not supported: ${item.url} (${item.reason}).`);
-      else if (item.status === "blocked") problems.push(`Source blocked: ${item.url} (${item.reason}).`);
-      else if (item.status === "unavailable") problems.push(`Source unavailable: ${item.url} (${item.reason}).`);
-      else if (item.status === "no_events") problems.push(`No events found at ${item.url} (${item.reason}).`);
-      else if (item.status === "supported" && item.id && (item.adapter === "web" || item.adapter === "localist") && !this._discovering()) {
-        const found = this._feed && this._feed.sources && this._feed.sources[item.id];
-        if (found && found.ok !== false && found.events > 0) {
-          provided.push(`${item.name || item.url}: ${found.events} event${found.events === 1 ? "" : "s"} found.`);
-          providedEvents += found.events;
-        } else if (found && found.ok === false) {
-          problems.push(`${item.name || item.url}: no events found in the search area${found.error ? ` (${found.error})` : ""}.`);
-        }
-      }
-    }
-    let summary;
-    if (problems.length) summary = `${problems.length} additional website${problems.length === 1 ? "" : "s"} couldn't be read.`;
-    else if (provided.length) summary = `Additional websites: ${providedEvents} event${providedEvents === 1 ? "" : "s"} found.`;
-    return { text: notes.join(" ") || undefined, summary, lines: [...problems, ...provided] };
-  }
-
-  /** The notice as plain text (the summary line included), or undefined when there is nothing to say. */
-  _feedNotice(count) {
-    const { text, summary } = this._noticeParts(count);
-    return [text, summary].filter(Boolean).join(" ") || undefined;
+    return notes.join(" ") || undefined;
   }
 
   // --- rendering ----------------------------------------------------------------
@@ -1053,17 +1018,11 @@ class AreaEventsCard extends HTMLElement {
 
   _updateNotice(count) {
     if (!this._els || !this._els.notice) return;
-    const { text, summary, lines } = this._noticeParts(count === undefined ? (this._tiles || []).length : count);
+    const message = this._noticeParts(count === undefined ? (this._tiles || []).length : count);
     const notice = this._els.notice;
     notice.replaceChildren();
-    if (text) notice.append(this._el("div", "", text));
-    if (summary) {
-      const details = this._el("details", "");
-      details.append(this._el("summary", "", summary));
-      for (const line of lines) details.append(this._el("div", "detail-line", line));
-      notice.append(details);
-    }
-    notice.hidden = !(text || summary);
+    if (message) notice.append(this._el("div", "", message));
+    notice.hidden = !message;
   }
 
   _visibleCount() {

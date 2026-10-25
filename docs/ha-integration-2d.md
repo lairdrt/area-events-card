@@ -67,7 +67,7 @@ An event belongs to a discovery area because **a source that area uses** produce
 
 ## Card configuration
 
-`area:` is the name (or key) of a discovery area, shown in `area_events/areas`. `radius_miles` and `sources` are no longer card settings and are ignored. See the README for the filters the card keeps for itself. Two cards:
+`area:` is the name (or key) of a discovery area, shown in `area_events/areas`. `radius_miles` is not used for event matching. See the README for the filters the card keeps for itself. Two cards:
 
 ```yaml
 type: custom:area-events-card
@@ -103,4 +103,4 @@ Use the supported one-command deployment described in [automated-deployment.md](
 
 ## Area selection
 
-Events belong to an area through the sources configured for that area. `radius_miles` and `sources` are not card settings; the Discovery Service owns source selection. Events whose place is only a description are marked unverified in the card.
+Events belong to an area through the sources configured for that area; the Discovery Service owns source selection. `radius_miles` is not applied to event matching. Events whose place is only a description are marked unverified in the card.
