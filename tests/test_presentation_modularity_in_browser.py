@@ -13,7 +13,7 @@ import unittest
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
-from tests.test_grid_layout import find_browser
+from tests.test_grid_layout import browser_flags, find_browser
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -107,7 +107,7 @@ class PresentationModularityInBrowser(unittest.TestCase):
             self.browser_runs = getattr(self, "browser_runs", 0) + 1
             profile = self.root / f"profile-{self.browser_runs}"
             url = f"http://127.0.0.1:{server.server_address[1]}/fixture.html"
-            result = subprocess.run([BROWSER, "--headless=new", "--disable-gpu", "--no-first-run",
+            result = subprocess.run([BROWSER, *browser_flags(), "--headless=new", "--disable-gpu", "--no-first-run",
                                      f"--user-data-dir={profile}", "--virtual-time-budget=10000", "--dump-dom", url],
                                     capture_output=True, text=True, timeout=90, check=False)
         finally:

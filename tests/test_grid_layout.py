@@ -41,13 +41,17 @@ def find_browser():
     return next((path for path in BROWSERS if os.path.isfile(path) or shutil.which(path)), None)
 
 
+def browser_flags():
+    return ["--no-sandbox"] if os.name != "nt" and os.environ.get("CI") == "true" else []
+
+
 def measure(css, browser):
     page = PAGE.replace("CSS", css).replace("WIDTHS", json.dumps(WIDTHS)).replace("COUNTS", json.dumps(COUNTS))
     with tempfile.TemporaryDirectory() as folder:
         html = os.path.join(folder, "grid.html")
         with open(html, "w", encoding="utf-8") as handle:
             handle.write(page)
-        done = subprocess.run([browser, "--headless=new", "--disable-gpu", "--no-first-run", f"--user-data-dir={os.path.join(folder, 'profile')}", "--window-size=1400,1000",
+        done = subprocess.run([browser, *browser_flags(), "--headless=new", "--disable-gpu", "--no-first-run", f"--user-data-dir={os.path.join(folder, 'profile')}", "--window-size=1400,1000",
                                "--virtual-time-budget=3000", "--dump-dom", "file:///" + html.replace("\\", "/")], capture_output=True, text=True, timeout=90, encoding="utf-8")
     match = re.search(r'<pre id="out">(.*?)</pre>', done.stdout, re.S)
     if not match:

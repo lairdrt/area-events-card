@@ -10,7 +10,7 @@ import tempfile
 import threading
 import unittest
 
-from tests.test_grid_layout import find_browser
+from tests.test_grid_layout import browser_flags, find_browser
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND = os.path.join(ROOT, "custom_components", "area_events", "frontend")
@@ -91,7 +91,7 @@ class CardInABrowser(unittest.TestCase):
             server_thread.start()
             try:
                 url = f"http://127.0.0.1:{server.server_address[1]}/card.html"
-                done = subprocess.run([find_browser(), "--headless=new", "--disable-gpu", "--no-first-run", f"--user-data-dir={os.path.join(folder, 'profile')}", "--window-size=1300,900",
+                done = subprocess.run([find_browser(), *browser_flags(), "--headless=new", "--disable-gpu", "--no-first-run", f"--user-data-dir={os.path.join(folder, 'profile')}", "--window-size=1300,900",
                                        "--virtual-time-budget=6000", "--dump-dom", url], capture_output=True, text=True, timeout=90, encoding="utf-8")
             finally:
                 server.shutdown()
