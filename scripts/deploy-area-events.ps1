@@ -501,18 +501,69 @@ function Test-HaAssets {
   if (-not $script:BuildId) { throw 'Build identifier missing.' }
   $script:AssetCount=$assets.Count
 }
+function Get-HaRecoveryPaths([string]$BackupRoot,[string]$ComponentsRoot) {
+  $backup=[IO.Path]::GetFullPath($BackupRoot).TrimEnd('\')
+  $components=[IO.Path]::GetFullPath($ComponentsRoot).TrimEnd('\')
+  $allowedRoot=[IO.Path]::GetFullPath($script:LocalBackupRoot).TrimEnd('\')
+  if (-not $backup.StartsWith($allowedRoot+'\',[StringComparison]::OrdinalIgnoreCase)) {
+    throw 'HA recovery backups must remain under the Area Events backup root.'
+  }
+  $cursor=$backup
+  while ($cursor -and (Test-Path -LiteralPath $cursor)) {
+    if ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+      throw 'HA recovery backup path contains a reparse point.'
+    }
+    $parent=Split-Path -Parent $cursor
+    if (-not $parent -or $parent -eq $cursor) { break }
+    $cursor=$parent
+  }
+  if ($backup.Equals($components,[StringComparison]::OrdinalIgnoreCase) -or
+      $backup.StartsWith($components+'\',[StringComparison]::OrdinalIgnoreCase)) {
+    throw 'HA recovery backups must be outside custom_components.'
+  }
+  $root=[IO.Path]::GetFullPath((Join-Path $backup 'ha-recovery'))
+  if (-not $root.StartsWith($backup+'\',[StringComparison]::OrdinalIgnoreCase) -or
+      $root.StartsWith($components+'\',[StringComparison]::OrdinalIgnoreCase)) {
+    throw 'HA recovery backup path escaped its protected Area Events backup root.'
+  }
+  if (Test-Path -LiteralPath $root) {
+    if ((Get-Item -LiteralPath $root -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+      throw 'HA recovery destination is a reparse point.'
+    }
+  }
+  $id=[guid]::NewGuid().ToString('N')
+  return [pscustomobject]@{
+    Root=$root
+    Failed=(Join-Path $root ('area_events_failed_'+$id))
+    Partial=(Join-Path $root ('area_events_partial_'+$id))
+  }
+}
+function Protect-HaRecoveryRoot([string]$Path) {
+  New-Item -ItemType Directory -Path $Path -Force | Out-Null
+  $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User
+  $icacls=Join-Path $env:SystemRoot 'System32\icacls.exe'
+  $null=& $icacls $Path '/inheritance:r' '/grant:r' "*$($sid.Value):(OI)(CI)(F)" 2>&1
+  if ($LASTEXITCODE -ne 0) { throw 'Could not restrict the HA recovery backup DACL to the current Windows user.' }
+  $acl=Get-Acl -LiteralPath $Path
+  $rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
+  if (-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or
+      $rules[0].IdentityReference.Value -ne $sid.Value -or
+      $rules[0].AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+      $rules[0].FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+      $rules[0].IsInherited) { throw 'HA recovery backup DACL is not restricted to the current Windows user.' }
+}
 function Restore-HaBackup($state) {
   $saved=Join-Path $script:LocalBackup 'area_events'
-  $parent=Split-Path -Parent $state.HAPath
-  $failed=Join-Path $parent ('.area_events_failed_'+[guid]::NewGuid().ToString('N'))
-  $partial=Join-Path $parent ('.area_events_partial_'+[guid]::NewGuid().ToString('N'))
   $componentsRoot=[IO.Path]::GetFullPath((Join-Path $ConfigShare 'custom_components')).TrimEnd('\')
   $liveResolved=[IO.Path]::GetFullPath($state.HAPath)
-  foreach ($candidate in @($liveResolved,[IO.Path]::GetFullPath($failed),[IO.Path]::GetFullPath($partial))) {
-    if (-not $candidate.StartsWith($componentsRoot+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Refusing HA recovery path outside custom_components.' }
-  }
+  $expectedLive=[IO.Path]::GetFullPath((Join-Path $componentsRoot 'area_events'))
+  if (-not $liveResolved.Equals($expectedLive,[StringComparison]::OrdinalIgnoreCase)) { throw 'Refusing an unexpected HA integration recovery path.' }
   if (-not (Test-Path -LiteralPath $saved)) { throw 'HA rollback copy is missing.' }
   if (Test-FolderMatches $saved $state.HAPath) { Write-Host 'HA files already match rollback copy; no restart needed.'; return }
+  $recovery=Get-HaRecoveryPaths -BackupRoot $script:LocalBackup -ComponentsRoot $componentsRoot
+  Protect-HaRecoveryRoot -Path $recovery.Root
+  $failed=$recovery.Failed
+  $partial=$recovery.Partial
   $null=Invoke-BoundedBlock {
     param($live,$source,$old,$partialPath)
     $ErrorActionPreference='Stop'

@@ -87,6 +87,37 @@ Check 'HA restart and module verification are authenticated and bounded' {
   if ($text -match 'Count -ne 6|six presentation modules|No current events|samples.*-lt 1') { throw 'hardcoded renderer count or nonempty event requirement remains' }
   if ($text -match 'ServerCertificateCustomValidationCallback|DangerousAcceptAnyServerCertificateValidator') { throw 'TLS verification is disabled' }
 }
+Check 'HA rollback artifacts are protected and stored outside integration discovery' {
+  $root=Join-Path ([IO.Path]::GetTempPath()) ('ae-recovery-'+[guid]::NewGuid().ToString('N'))
+  $backup=Join-Path $root 'AreaEventsBackups'
+  $components=Join-Path $root 'ha-config\custom_components'
+  New-Item -ItemType Directory -Path $backup,$components -Force | Out-Null
+  $previousBackupRoot=$script:LocalBackupRoot
+  $script:LocalBackupRoot=$root
+  try {
+    $paths=Get-HaRecoveryPaths -BackupRoot $backup -ComponentsRoot $components
+    foreach($path in @($paths.Root,$paths.Failed,$paths.Partial)) {
+      $full=[IO.Path]::GetFullPath($path)
+      if ($full.StartsWith([IO.Path]::GetFullPath($components).TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) { throw "Recovery artifact is inside custom_components: $full" }
+      if (-not $full.StartsWith([IO.Path]::GetFullPath($backup).TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) { throw "Recovery artifact escaped Area Events backup storage: $full" }
+    }
+    if ($paths.Failed -eq $paths.Partial -or (Split-Path -Leaf $paths.Failed) -match '^\.') { throw 'Recovery artifacts are not uniquely named ordinary backup directories.' }
+    Protect-HaRecoveryRoot -Path $paths.Root
+    $acl=Get-Acl -LiteralPath $paths.Root
+    $rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
+    $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if (-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid -or $rules[0].IsInherited) { throw 'Recovery backup ACL is not protected for the current user.' }
+    $rejected=$false
+    try { Get-HaRecoveryPaths -BackupRoot (Join-Path $components 'nested') -ComponentsRoot $components | Out-Null } catch { $rejected=$true }
+    if (-not $rejected) { throw 'A backup location under custom_components was accepted.' }
+    $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
+    $start=$text.IndexOf('function Restore-HaBackup($state) {')
+    $end=$text.IndexOf('function Write-Receipt($state) {',$start)
+    if ($start -lt 0 -or $end -le $start) { throw 'HA recovery function was not found.' }
+    $restore=$text.Substring($start,$end-$start)
+    if ($restore -notmatch 'Get-HaRecoveryPaths' -or $restore -match 'Join-Path \$parent|Move-Item[^\r\n]*\$parent') { throw 'HA recovery does not use the protected external artifact paths.' }
+  } finally { $script:LocalBackupRoot=$previousBackupRoot; Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
+}
 Check 'production preflight component decisions reach the orchestration engine' {
   $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
   foreach($needle in @('CubiNeeded=[bool]$cubiNeeded','HANeeded=[bool]$haNeeded','cubi_hash','ha_hash','Built artifacts fingerprinted')) { if ($text -notmatch [regex]::Escape($needle)) { throw "missing final component deployment state: $needle" } }
