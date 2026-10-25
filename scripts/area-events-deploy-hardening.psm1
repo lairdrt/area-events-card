@@ -107,4 +107,39 @@ function Test-AreaEventsCodeBackupMembers {
   return $true
 }
 
-Export-ModuleMember -Function Import-AreaEventsDpapiCredential, New-AreaEventsRemotePythonCommand, Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsRequiredFrontendAssets, Assert-AreaEventsFeedResponse, Test-AreaEventsCodeBackupMembers
+function Resolve-AreaEventsSystemdLayout {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$WorkingDirectory,
+    [Parameter(Mandatory)][string]$ExecStart,
+    [Parameter(Mandatory)][string]$Root,
+    [Parameter(Mandatory)][bool]$LegacyEntryExists,
+    [Parameter(Mandatory)][bool]$ModernPackageExists
+  )
+  $expected = $Root.Replace([string][char]92,'/').TrimEnd('/')
+  $actual = $WorkingDirectory.Replace([string][char]92,'/').TrimEnd('/')
+  if (-not $actual.Equals($expected,[StringComparison]::Ordinal)) { throw 'Discovery Service WorkingDirectory does not match its deployment root.' }
+  $argvMatch = [regex]::Match($ExecStart,'(?:^|[;{])\s*argv\[\]=([^;}]+)')
+  if (-not $argvMatch.Success) { throw 'Discovery Service ExecStart could not be parsed safely.' }
+  $argv = @($argvMatch.Groups[1].Value.Trim() -split '\s+')
+  if ($argv.Count -lt 2 -or $argv[0] -notmatch '(^|/)python3?$') { throw 'Discovery Service ExecStart does not use a supported Python command.' }
+  if ($argv.Count -ge 3 -and $argv[1] -eq '-m' -and $argv[2] -eq 'area_events') {
+    if (-not $ModernPackageExists) { throw 'Active modular Discovery Service package is incomplete.' }
+    return 'modern'
+  }
+  if ($argv[1] -in @('scripts/discovery.py',($expected+'/scripts/discovery.py')) -and $LegacyEntryExists) { return 'legacy' }
+  throw 'Discovery Service ExecStart uses an unknown or unsupported code layout.'
+}
+
+function Convert-AreaEventsSystemdExecStart {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$UnitText,[Parameter(Mandatory)][string]$Root)
+  $absolute = [regex]::Escape(($Root.Replace([string][char]92,'/').TrimEnd('/') + '/scripts/discovery.py'))
+  $entry = '(?:scripts/discovery\.py|' + $absolute + ')'
+  $pattern = '(?m)^(ExecStart=\S+)\s+' + $entry + '(?=\s|$)'
+  $updated = [regex]::Replace($UnitText,$pattern,'$1 -m area_events',1)
+  if ($updated -eq $UnitText) { throw 'systemd unit does not use a supported legacy Python discovery entry point' }
+  return $updated
+}
+
+Export-ModuleMember -Function Import-AreaEventsDpapiCredential, New-AreaEventsRemotePythonCommand, Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsRequiredFrontendAssets, Assert-AreaEventsFeedResponse, Test-AreaEventsCodeBackupMembers, Resolve-AreaEventsSystemdLayout, Convert-AreaEventsSystemdExecStart

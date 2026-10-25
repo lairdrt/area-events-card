@@ -274,15 +274,18 @@ function Invoke-Backups($state) {
   $py=@'
 import hashlib,json,os,re,sqlite3,subprocess,tarfile
 root='/home/robohobo/area-events-discovery'; out=os.environ['AE_BACKUP']; os.makedirs(out,mode=0o700,exist_ok=False)
-unit=subprocess.run(['systemctl','--user','show','area-events-discovery.service','--property=ExecStart'],capture_output=True,text=True,timeout=12,check=True).stdout
-if root+'/scripts/discovery.py' in unit:
+working=subprocess.run(['systemctl','--user','show','area-events-discovery.service','--property=WorkingDirectory','--value'],capture_output=True,text=True,timeout=12,check=True).stdout.strip()
+unit=subprocess.run(['systemctl','--user','show','area-events-discovery.service','--property=ExecStart','--value'],capture_output=True,text=True,timeout=12,check=True).stdout
+match=re.search(r'(?:^|[;{])\s*argv\[\]=([^;}]+)',unit)
+if os.path.realpath(working)!=os.path.realpath(root) or not match: raise RuntimeError('Discovery Service WorkingDirectory or ExecStart is unsupported')
+argv=match.group(1).strip().split()
+if len(argv)<2 or not os.path.basename(argv[0]) in ('python','python3'): raise RuntimeError('Discovery Service ExecStart is not a supported Python command')
+if len(argv)>=3 and argv[1:3]==['-m','area_events'] and os.path.isfile(root+'/pyproject.toml') and os.path.isdir(root+'/src/area_events'):
+ code_layout='modern'; code_required=['pyproject.toml']; code_root='src/area_events'
+elif len(argv)>=2 and argv[1] in ('scripts/discovery.py',root+'/scripts/discovery.py') and os.path.isfile(root+'/scripts/discovery.py'):
  code_layout='legacy'
  code_required=['scripts/discovery.py']
  code_root='area_events'
-elif re.search(r'(?<!\S)-m\s+area_events(?:\s|$)',unit):
- code_layout='modern'
- code_required=['pyproject.toml']
- code_root='src/area_events'
 else: raise RuntimeError('could not identify the active Discovery Service code layout')
 package=os.path.join(root,code_root)
 if os.path.islink(package): raise RuntimeError('active Discovery Service package is a symlink and cannot be safely archived')
@@ -400,16 +403,28 @@ function Invoke-CubiDeploy($state) {
   $archive="/home/robohobo/.cache/ae-deploy-$([guid]::NewGuid().ToString('N')).tar"
   $null=Invoke-Bounded 'scp.exe' (@(Get-SshBase)+@($script:Archive,"$($script:Cubi):$archive")) 120
   $py=@'
-import json,os,re,shutil,sqlite3,subprocess,tarfile,tempfile
-root='/home/robohobo/area-events-discovery'; stage=tempfile.mkdtemp(prefix='.ae-stage-',dir=root)
+import json,os,re,shlex,shutil,sqlite3,subprocess,tarfile,tempfile
+root='/home/robohobo/area-events-discovery'; run=os.path.basename(os.environ['AE_ARCHIVE']).replace('.tar',''); stage=root+'/.ae-stage-'+run
+working=subprocess.run(['systemctl','--user','show','area-events-discovery.service','--property=WorkingDirectory','--value'],capture_output=True,text=True,timeout=12,check=True).stdout.strip()
+shown=subprocess.run(['systemctl','--user','show','area-events-discovery.service','--property=ExecStart','--value'],capture_output=True,text=True,timeout=12,check=True).stdout
+argv_match=re.search(r'(?:^|[;{])\s*argv\[\]=([^;}]+)',shown)
+if os.path.realpath(working)!=os.path.realpath(root) or not argv_match: raise RuntimeError('Discovery Service WorkingDirectory or ExecStart is unsupported')
+argv=shlex.split(argv_match.group(1).strip())
+if not argv or os.path.basename(argv[0]) not in ('python','python3'): raise RuntimeError('Discovery Service ExecStart is not a supported Python command')
+legacy=(len(argv)>=2 and argv[1] in ('scripts/discovery.py',root+'/scripts/discovery.py'))
+modern=(len(argv)>=3 and argv[1:3]==['-m','area_events'])
+if legacy and not os.path.isfile(root+'/scripts/discovery.py'): raise RuntimeError('active legacy entry point is missing')
+if modern and not (os.path.isfile(root+'/pyproject.toml') and os.path.isdir(root+'/src/area_events')): raise RuntimeError('active modular package is incomplete')
+if legacy==modern: raise RuntimeError('active Discovery Service code layout is unknown or ambiguous')
+if os.path.lexists(stage): raise RuntimeError('deployment staging path already exists')
+os.mkdir(stage,0o700)
 subprocess.run(['systemctl','--user','stop','area-events-discovery.service'],timeout=45,check=True)
 with tarfile.open(os.environ['AE_ARCHIVE']) as t:
  members=t.getmembers()
  if any(os.path.isabs(m.name) or '..' in m.name.split('/') or m.issym() or m.islnk() for m in members): raise RuntimeError('unsafe deployment archive')
  t.extractall(stage,filter='data')
-run=os.path.basename(os.environ['AE_ARCHIVE']).replace('.tar','')
-old_legacy=root+'/.area-events-legacy-'+run
-if os.path.exists(root+'/area_events'): os.rename(root+'/area_events',old_legacy)
+old_legacy=stage+'/legacy-area-events'
+if os.path.lexists(root+'/area_events'): os.rename(root+'/area_events',old_legacy)
 for rel in ('src/area_events','pyproject.toml'):
  target=root+'/'+rel; incoming=stage+'/'+rel; previous=root+'/.area-events-package-old-'+run+'-'+rel.replace('/','-')
  os.makedirs(os.path.dirname(target),exist_ok=True)
@@ -417,8 +432,10 @@ for rel in ('src/area_events','pyproject.toml'):
  os.rename(incoming,target)
 unit=os.path.expanduser('~/.config/systemd/user/area-events-discovery.service')
 with open(unit,encoding='utf-8') as f: unit_text=f.read()
-updated=re.sub(r'(?m)^(ExecStart=\S*python3?)\s+'+re.escape(root+'/scripts/discovery.py')+r'(?=\s|$)',r'\1 -m area_events',unit_text)
-if updated==unit_text: raise RuntimeError('systemd unit does not use the retired Python discovery entry point')
+entry=r'(?:scripts/discovery\.py|'+re.escape(root+'/scripts/discovery.py')+r')'
+updated=re.sub(r'(?m)^(ExecStart=\S+)\s+'+entry+r'(?=\s|$)',r'\1 -m area_events',unit_text,count=1)
+if legacy and updated==unit_text: raise RuntimeError('systemd unit does not use a supported legacy Python discovery entry point')
+if modern and updated!=unit_text: raise RuntimeError('modern systemd ExecStart unexpectedly references the legacy entry point')
 with open(unit,'w',encoding='utf-8') as f: f.write(updated)
 try:
  r=subprocess.run(['python3','-m','pip','install','--user','--no-deps','--force-reinstall',root],timeout=120,check=True,capture_output=True,text=True)
@@ -435,19 +452,13 @@ try:
  finally: a.close(); b.close()
  subprocess.run(['systemctl','--user','daemon-reload'],timeout=30,check=True)
  subprocess.run(['systemctl','--user','start','area-events-discovery.service'],timeout=45,check=True)
- shutil.rmtree(old_legacy,ignore_errors=True)
- for path in (root+'/scripts/discovery.py',root+'/scripts/workbench.py'):
-  if os.path.isfile(path): os.remove(path)
- for rel in ('src/area_events','pyproject.toml'):
-  previous=root+'/.area-events-package-old-'+run+'-'+rel.replace('/','-')
-  if os.path.isdir(previous): shutil.rmtree(previous,ignore_errors=True)
-  elif os.path.exists(previous): os.remove(previous)
- print(json.dumps({'changed':True,'schema_changed':changed,'schema':max(versions),'events':len(keys)}))
-finally: shutil.rmtree(stage,ignore_errors=True)
+ print(json.dumps({'changed':True,'schema_changed':changed,'schema':max(versions),'events':len(keys),'transition_id':run}))
 '@
   try {
+    $script:CubiTransitionId=[IO.Path]::GetFileNameWithoutExtension($archive)
     $res=Invoke-CubiPython $py @{AE_ARCHIVE=$archive;AE_BACKUP=$script:RemoteBackup;AE_OLD="$($state.Remote.schema)";AE_TARGET="$script:TargetSchema"} 300 | ConvertFrom-Json
     $script:SchemaChanged=[bool]$res.schema_changed
+    if ($res.transition_id -ne $script:CubiTransitionId) { throw 'Cubi deployment transition identifier did not match its staging path.' }
     ConvertTo-CubiDeployResult $res
   } catch {
     try {
@@ -484,6 +495,31 @@ print(json.dumps({'state':state,'samples':samples}))
   }
   if ($null -eq $h -or $h.state -ne 'running' -or $null -eq $h.samples.'San Diego' -or $null -eq $h.samples.Austin) { throw "Cubi API did not become healthy within 90 seconds. Last check: $last" }
   Write-Host "API verified; valid event page lengths San Diego/Austin: $($h.samples.'San Diego')/$($h.samples.Austin)"
+  if ($script:CubiTransitionId) {
+    $cleanup=@'
+import json,os,re,shutil
+root='/home/robohobo/area-events-discovery'; run=os.environ['AE_TRANSITION']; stage=os.path.join(root,'.ae-stage-'+run)
+if not re.fullmatch(r'ae-deploy-[0-9a-f]{32}',run): raise RuntimeError('unsafe transition identifier during cleanup')
+if os.path.commonpath([root,os.path.realpath(stage)])!=root or os.path.islink(stage): raise RuntimeError('unsafe legacy staging path')
+for path in (root+'/scripts/discovery.py',root+'/scripts/workbench.py'):
+ if os.path.islink(path): raise RuntimeError('refusing to remove a symlink at a retired legacy entry point')
+ if os.path.isfile(path): os.remove(path)
+legacy=root+'/area_events'
+if os.path.islink(legacy): raise RuntimeError('refusing to remove a symlink at the retired runtime package')
+if os.path.isdir(legacy): shutil.rmtree(legacy)
+elif os.path.lexists(legacy): raise RuntimeError('retired runtime package is not a directory')
+for rel in ('src/area_events','pyproject.toml'):
+ previous=root+'/.area-events-package-old-'+run+'-'+rel.replace('/','-')
+ if os.path.isdir(previous): shutil.rmtree(previous)
+ elif os.path.lexists(previous): os.remove(previous)
+if os.path.isdir(stage): shutil.rmtree(stage)
+elif os.path.lexists(stage): raise RuntimeError('legacy staging path is not a directory')
+print(json.dumps({'cleaned':True}))
+'@
+    $null=Invoke-CubiPython $cleanup @{AE_TRANSITION=$script:CubiTransitionId} 30
+    $script:CubiTransitionId=$null
+    Write-Host 'Legacy entry point and runtime tree removed after successful API verification; verified backup retained.'
+  }
 }
 function Install-Ha {
   $old=$env:HA_TOKEN; $env:HA_TOKEN=$script:Token
@@ -687,7 +723,7 @@ function Invoke-Recovery($phase,$state,$schemaChanged,$haChanged) {
     }
     Write-Warning 'Restoring Cubi code only; database is untouched.'
     $py=@'
-import json,os,shutil,sqlite3,ssl,subprocess,tarfile,tempfile,time,urllib.request
+import json,os,re,shutil,sqlite3,ssl,subprocess,tarfile,tempfile,time,urllib.request
 root='/home/robohobo/area-events-discovery'; t=tempfile.mkdtemp(dir=root,prefix='.ae-restore-')
 subprocess.run(['systemctl','--user','stop','area-events-discovery.service'],timeout=45,check=True)
 with tarfile.open(os.environ['AE_BACKUP']+'/accepted-files.tar.gz') as z:
@@ -712,6 +748,12 @@ archived_unit=t+'/systemd/area-events-discovery.service'
 if os.path.isfile(archived_unit):
  shutil.copy2(archived_unit,unit); subprocess.run(['systemctl','--user','daemon-reload'],timeout=30,check=True)
 shutil.rmtree(t,ignore_errors=True); shutil.rmtree(failed,ignore_errors=True)
+run=os.environ.get('AE_TRANSITION','')
+if run:
+ if not re.fullmatch(r'ae-deploy-[0-9a-f]{32}',run): raise RuntimeError('unsafe transition identifier during recovery')
+ stage=root+'/.ae-stage-'+run
+ if os.path.commonpath([root,os.path.realpath(stage)])!=root or os.path.islink(stage): raise RuntimeError('unsafe transition staging path during recovery')
+ shutil.rmtree(stage,ignore_errors=True)
 subprocess.run(['systemctl','--user','start','area-events-discovery.service'],timeout=45,check=True)
 subprocess.run(['systemctl','--user','is-active','--quiet','area-events-discovery.service'],timeout=12,check=True)
 token=open(root+'/data/discovery/api-read-token').read().strip(); ctx=ssl.create_default_context(cafile=root+'/certs/cert.pem')
@@ -728,7 +770,7 @@ status_data=status.get('status',status) if isinstance(status,dict) else {}
 state=status_data.get('state') or status_data.get('runtime',{}).get('state')
 if state!='running': raise RuntimeError('accepted Cubi service failed rollback health check')
 '@
-    $null=Invoke-CubiPython $py @{AE_BACKUP=$script:RemoteBackup} 120
+    $null=Invoke-CubiPython $py @{AE_BACKUP=$script:RemoteBackup;AE_TRANSITION=$script:CubiTransitionId} 120
   } elseif ($phase -eq 'Home Assistant installation') {
     Write-Warning 'Restoring the backed-up HA integration and requesting one bounded HA restart.'
     Restore-HaBackup $state

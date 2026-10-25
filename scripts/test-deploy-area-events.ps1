@@ -49,7 +49,7 @@ Check 'script parses and production engine is explicit operations only' {
 }
 Check 'Cubi deployment archives the src package and starts its CLI module' {
   $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
-  foreach($needle in @("'src/area_events'", "'pyproject.toml'", "'-m','area_events'", "systemd unit does not use the retired Python discovery entry point")) {
+  foreach($needle in @("'src/area_events'", "'pyproject.toml'", "argv[1:3]==['-m','area_events']")) {
     if ($text -notmatch [regex]::Escape($needle)) { throw "package-based deployment step is missing: $needle" }
   }
   if ($text -match "stage\+'/scripts/discovery.py'|stage\+'/area_events'") { throw 'deployment still starts or copies the retired application package' }
@@ -105,6 +105,53 @@ Check 'code backup verification accepts complete legacy or modern layouts and re
   $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
   if ($text -match "if 'pyproject.toml' not in names or 'src/area_events' not in names") { throw 'backup verifier still requires the modern layout unconditionally' }
   if ($text -notmatch 'active Discovery Service code layout' -or $text -notmatch 'code_archived=') { throw 'backup does not verify the active layout against archived members' }
+}
+Check 'systemd layout detection validates WorkingDirectory and supports relative, absolute and modern startup' {
+  $root='/home/robohobo/area-events-discovery'
+  $relative='ExecStart={ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 scripts/discovery.py serve --db data/discovery/discovery.db --port 8780 ; flags= ; }'
+  $absolute="ExecStart={ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 $root/scripts/discovery.py serve --db data/discovery/discovery.db --port 8780 ; flags= ; }"
+  $modern='ExecStart={ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -m area_events serve --db data/discovery/discovery.db --port 8780 ; flags= ; }'
+  if ((Resolve-AreaEventsSystemdLayout -WorkingDirectory $root -ExecStart $relative -Root $root -LegacyEntryExists $true -ModernPackageExists $false) -ne 'legacy') { throw 'relative legacy ExecStart was not detected' }
+  if ((Resolve-AreaEventsSystemdLayout -WorkingDirectory $root -ExecStart $absolute -Root $root -LegacyEntryExists $true -ModernPackageExists $false) -ne 'legacy') { throw 'absolute legacy ExecStart was not detected' }
+  if ((Resolve-AreaEventsSystemdLayout -WorkingDirectory $root -ExecStart $modern -Root $root -LegacyEntryExists $false -ModernPackageExists $true) -ne 'modern') { throw 'modern module ExecStart was not detected' }
+  foreach($case in @(
+    @{WorkingDirectory='/home/robohobo/other';ExecStart=$relative;Legacy=$true;Modern=$false},
+    @{WorkingDirectory=$root;ExecStart='ExecStart={ argv[]=/usr/bin/python3 scripts/other.py ; }';Legacy=$true;Modern=$false},
+    @{WorkingDirectory=$root;ExecStart=$relative;Legacy=$false;Modern=$false}
+  )) {
+    $rejected=$false
+    try { Resolve-AreaEventsSystemdLayout -WorkingDirectory $case.WorkingDirectory -ExecStart $case.ExecStart -Root $root -LegacyEntryExists $case.Legacy -ModernPackageExists $case.Modern | Out-Null } catch { $rejected=$true }
+    if (-not $rejected) { throw 'unsupported or incomplete systemd startup was accepted' }
+  }
+}
+Check 'systemd conversion changes only legacy entrypoint and preserves service arguments' {
+  $root='/home/robohobo/area-events-discovery'
+  foreach($entry in @('scripts/discovery.py',($root+'/scripts/discovery.py'))) {
+    $unit="[Service]`nWorkingDirectory=$root`nEnvironment=AE_MODE=production`nExecStart=/usr/bin/python3 $entry serve --db data/discovery/discovery.db --bind 192.168.1.88 --allow-remote --port 8780 --tls-cert certs/cert.pem --tls-key certs/key.pem`n"
+    $converted=Convert-AreaEventsSystemdExecStart -UnitText $unit -Root $root
+    if ($converted -notmatch 'ExecStart=/usr/bin/python3 -m area_events serve --db data/discovery/discovery.db --bind 192\.168\.1\.88 --allow-remote --port 8780 --tls-cert certs/cert\.pem --tls-key certs/key\.pem' -or $converted -notmatch 'Environment=AE_MODE=production' -or $converted -notmatch ('WorkingDirectory='+[regex]::Escape($root))) { throw "systemd conversion lost required settings for '$entry'" }
+  }
+  $modern='ExecStart=/usr/bin/python3 -m area_events serve --port 8780'
+  $rejected=$false; try { Convert-AreaEventsSystemdExecStart -UnitText $modern -Root $root | Out-Null } catch { $rejected=$true }
+  if (-not $rejected) { throw 'modern ExecStart was incorrectly treated as a legacy conversion' }
+  $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
+  if ($text -notmatch "if legacy and updated==unit_text" -or $text -notmatch "if modern and updated!=unit_text") { throw 'remote deployment does not preserve modern module startup' }
+}
+Check 'legacy cleanup occurs only after API verification and retains verified backups' {
+  $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
+  $start=$text.IndexOf('function Test-CubiHealth {')
+  $end=$text.IndexOf('function Install-Ha {',$start)
+  if ($start -lt 0 -or $end -le $start) { throw 'Cubi health verification function was not found' }
+  $health=$text.Substring($start,$end-$start)
+  $api=$health.IndexOf('if ($null -eq $h -or $h.state')
+  $cleanup=$health.IndexOf('$cleanup=@')
+  if ($api -lt 0 -or $cleanup -le $api -or $health.IndexOf('Invoke-CubiPython $cleanup') -le $api) { throw 'legacy files may be removed before API verification' }
+  if ($health -notmatch 'scripts/discovery\.py' -or $health -notmatch 'scripts/workbench\.py' -or $health -notmatch "root\+'/area_events'" -or $health -notmatch "AE_TRANSITION") { throw 'cleanup does not cover all retired runtime paths safely' }
+  if ($health -notmatch 'verified backup retained') { throw 'successful cleanup does not preserve the verified backup' }
+  $deployStart=$text.IndexOf('function Invoke-CubiDeploy($state) {')
+  $deployEnd=$text.IndexOf('function Test-CubiHealth {',$deployStart)
+  $deploy=$text.Substring($deployStart,$deployEnd-$deployStart)
+  if ($deploy -notmatch "stage=root\+'/.ae-stage-'\+run" -or $deploy -notmatch "transition_id'\:run") { throw 'legacy runtime is not isolated in a bounded transition staging path' }
 }
 Check 'HA restart and module verification are authenticated and bounded' {
   $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
