@@ -285,18 +285,23 @@ class AreaEventsOptionsFlow(OptionsFlow):
 
     async def async_step_source_toggle(self, user_input=None, errors=None):
         source = self._source_snapshot
+        enable = self._source_action == "enable"
+        if bool(source["enabled"]) == enable:
+            return self.async_abort(reason="already_in_requested_state")
         if user_input is not None:
+            if not user_input.get("confirm"):
+                return await self.async_step_sources()
             try:
                 client = await self._client(control=True)
-                await client.set_source_enabled(self._selected_source_key, source["revision"], user_input["enabled"])
+                await client.set_source_enabled(self._selected_source_key, source["revision"], enable)
             except DiscoveryConflictError:
                 return self.async_abort(reason="revision_conflict")
             except (DiscoveryAuthError, DiscoveryConnectionError, DiscoveryRequestError, _ControlTokenMissing) as error:
                 return await self.async_step_source_toggle(errors={"base": self._error(error)})
             return await self._finish_mutation()
-        schema = vol.Schema({vol.Required("enabled", default=not source["enabled"]): bool})
+        schema = vol.Schema({vol.Required("confirm", default=False): bool})
         return self.async_show_form(step_id="source_toggle", data_schema=schema, errors=errors or {},
-                                    description_placeholders={"source_id": self._selected_source_key, "enabled": str(source["enabled"]).lower()})
+                                    description_placeholders={"source_id": self._selected_source_key, "action": "enable" if enable else "disable"})
 
     async def async_step_area_select(self, user_input=None, errors=None):
         try:
