@@ -57,36 +57,41 @@
       },
       "sources": {
         "title": "Producer instances",
-        "description": "Configured instances from Cubi:\\n{instances}",
+        "description": "Configured producer instances on Cubi:\n\n{instances}\n\nSelect an action below. Producer-specific options are edited separately.",
         "data": {
-          "action": "Choose an action"
+          "action": "What would you like to do?"
         }
       },
       "source_create": {
         "title": "Create producer instance",
-        "description": "The Discovery Service validates the producer type and options. Enter options as a JSON object.",
+        "description": "Advanced: create an instance of a producer type installed on the Cubi. Enter its unique ID and the options required by that producer.",
         "data": {
           "id": "Instance ID",
           "type": "Installed producer type",
           "name": "Display name",
           "enabled": "Enabled",
           "interval_minutes": "Refresh interval in minutes",
-          "options": "Producer options (JSON)"
+          "options": "Producer options (JSON; advanced)"
+        },
+        "data_description": {
+          "id": "Unique permanent identifier, for example local_events.",
+          "type": "Producer type registered on the Cubi, for example localist.",
+          "options": "JSON object containing the producer's required configuration, such as its source URL."
         }
       },
       "source_select": {
         "title": "Select producer instance",
         "data": {
           "source_id": "Producer instance"
-        }
+        },
+        "description": "Choose one producer. Enabled state and discovery interval are shown alongside its name."
       },
       "source_edit": {
         "title": "Edit producer instance",
-        "description": "Producer type is fixed. The Discovery Service validates the updated options.",
+        "description": "Edit the producer name and discovery schedule. This does not change its producer-specific settings.",
         "data": {
           "name": "Display name",
-          "interval_minutes": "Refresh interval in minutes",
-          "options": "Producer options (JSON)"
+          "interval_minutes": "Refresh interval in minutes"
         }
       },
       "source_toggle": {
@@ -109,6 +114,16 @@
           "source_id": "Producer instance",
           "action": "Attach or detach"
         }
+      },
+      "source_options": {
+        "title": "Advanced producer settings",
+        "description": "Edit producer-specific options as JSON. Only use this when you know the settings required by the producer type. Other producer fields will not change.",
+        "data": {
+          "options": "Producer options (JSON)"
+        },
+        "data_description": {
+          "options": "A valid JSON object. Existing options are prefilled; invalid JSON will not be saved."
+        }
       }
     },
     "error": {
@@ -119,7 +134,8 @@
       "invalid_request": "The Discovery Service rejected this configuration. Check the producer options and try again.",
       "invalid_json": "Enter producer options as a valid JSON object.",
       "invalid_scan_interval": "Enter a whole number from 5 to 300 seconds.",
-      "unknown": "The configuration could not be saved."
+      "unknown": "The configuration could not be saved.",
+      "invalid_choice": "Select a listed producer or action."
     }
   }
 }
