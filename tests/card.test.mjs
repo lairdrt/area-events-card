@@ -1093,16 +1093,20 @@ test("changing images does not disturb unchanged tiles, and the illustration is 
 test("the card the integration serves is the current source, stamped", async () => {
   const { readFileSync } = await import("node:fs");
   const { createHash } = await import("node:crypto");
-  const source = readFileSync(new URL("../src/frontend/area-events-card.js", import.meta.url), "utf8");
+  // The build hashes canonical LF text so its identifier is stable across
+  // Windows CRLF and Unix LF checkouts.
+  const canonical = (text) => text.replace(/\r\n?/g, "\n");
+  const readCanonical = (url) => canonical(readFileSync(url, "utf8"));
+  const source = readCanonical(new URL("../src/frontend/area-events-card.js", import.meta.url));
   const modules = ["community.js", "contract.js", "generic.js", "manifest.js", "nasa-mission.js", "registry.js"]
-    .map((name) => `${name}\n${readFileSync(new URL(`../src/frontend/presentation/${name}`, import.meta.url), "utf8")}`).join("\n");
+    .map((name) => `${name}\n${readCanonical(new URL(`../src/frontend/presentation/${name}`, import.meta.url))}`).join("\n");
   const { version } = JSON.parse(readFileSync(new URL("../custom_components/area_events/manifest.json", import.meta.url), "utf8"));
   const identifier = `AREA-EVENTS ${version}-${createHash("sha1").update(source).update(modules).digest("hex").slice(0, 8)}`;
-  const served = readFileSync(new URL("../custom_components/area_events/frontend/area-events-card.js", import.meta.url), "utf8");
+  const served = readCanonical(new URL("../custom_components/area_events/frontend/area-events-card.js", import.meta.url));
   assert.equal(served, source.replaceAll("__AREA_EVENTS_CARD_BUILD__", identifier), "run npm run build and commit the result");
   for (const name of ["community.js", "contract.js", "generic.js", "manifest.js", "nasa-mission.js", "registry.js"]) {
-    assert.equal(readFileSync(new URL(`../custom_components/area_events/frontend/presentation/${name}`, import.meta.url), "utf8"),
-      readFileSync(new URL(`../src/frontend/presentation/${name}`, import.meta.url), "utf8"), `${name} is packaged from source`);
+    assert.equal(readCanonical(new URL(`../custom_components/area_events/frontend/presentation/${name}`, import.meta.url)),
+      readCanonical(new URL(`../src/frontend/presentation/${name}`, import.meta.url)), `${name} is packaged from source`);
   }
 });
 

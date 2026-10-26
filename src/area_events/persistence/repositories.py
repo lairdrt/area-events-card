@@ -7,6 +7,7 @@ take a connection from `DiscoveryStore.read()`. No repository makes a network ca
 import hashlib
 import json
 import logging
+import time
 import zlib
 from datetime import datetime
 
@@ -16,6 +17,142 @@ from ..discovery.urls import canonical_url, url_key
 
 log = logging.getLogger("area_events.discovery.repositories")
 MAX_CONTENT_BYTES = 2_000_000
+
+
+class SourceCleanupError(ValueError):
+    pass
+
+
+class SourceCleanup:
+    """Preview and remove one configured source without deleting shared events or global caches."""
+    def __init__(self, store, clock=time.time, reserved_source_keys=()):
+        self._store, self._clock = store, clock
+        self._reserved = frozenset(reserved_source_keys)
+
+    @staticmethod
+    def _inventory(connection, source_key):
+        source = connection.execute("SELECT source_id, source_key, adapter, name, enabled FROM sources WHERE source_key=?", (source_key,)).fetchone()
+        if source is None:
+            raise SourceCleanupError(f"source {source_key!r} does not exist")
+        source_id = source["source_id"]
+        candidate_ids = [r[0] for r in connection.execute("SELECT candidate_id FROM candidates WHERE source_id=?", (source_id,))]
+        candidate_keys = [r[0] for r in connection.execute("SELECT candidate_key FROM candidates WHERE source_id=?", (source_id,))]
+        event_rows = connection.execute("""SELECT e.event_id, e.event_key,
+            SUM(CASE WHEN c.source_id=? THEN 1 ELSE 0 END) owned,
+            SUM(CASE WHEN c.source_id<>? THEN 1 ELSE 0 END) shared
+            FROM events e JOIN event_candidates ec USING(event_id) JOIN candidates c USING(candidate_id)
+            WHERE c.source_id=? OR e.event_id IN (
+              SELECT ec2.event_id FROM event_candidates ec2 JOIN candidates c2 USING(candidate_id) WHERE c2.source_id=?)
+            GROUP BY e.event_id, e.event_key""", (source_id, source_id, source_id, source_id)).fetchall()
+        exclusive_events = [r["event_key"] for r in event_rows if r["owned"] and not r["shared"]]
+        shared_events = [r["event_key"] for r in event_rows if r["owned"] and r["shared"]]
+        protected_shared_events = connection.execute("""SELECT COUNT(*) FROM event_candidates ec JOIN candidates c USING(candidate_id)
+            WHERE c.source_id=? AND ec.role='primary' AND EXISTS (
+                SELECT 1 FROM event_candidates other JOIN candidates oc USING(candidate_id)
+                WHERE other.event_id=ec.event_id AND oc.source_id<>?)""", (source_id, source_id)).fetchone()[0]
+        protected_shared_extractions = connection.execute("""SELECT COUNT(*) FROM event_revisions r
+            JOIN extractions x ON x.extraction_id=r.extraction_id JOIN candidates c ON c.candidate_id=x.candidate_id
+            JOIN event_candidates ec ON ec.event_id=r.event_id
+            WHERE c.source_id=? AND EXISTS (SELECT 1 FROM event_candidates other JOIN candidates oc USING(candidate_id)
+                WHERE other.event_id=r.event_id AND oc.source_id<>?)""", (source_id, source_id)).fetchone()[0]
+        protected_shared_extractions += connection.execute("""SELECT COUNT(*) FROM events e
+            JOIN extractions x ON x.extraction_id=e.extraction_id JOIN candidates c ON c.candidate_id=x.candidate_id
+            WHERE c.source_id=? AND EXISTS (SELECT 1 FROM event_candidates other JOIN candidates oc USING(candidate_id)
+                WHERE other.event_id=e.event_id AND oc.source_id<>?)""", (source_id, source_id)).fetchone()[0]
+        page_rows = connection.execute("SELECT DISTINCT page_id FROM source_pages WHERE source_id=?", (source_id,)).fetchall()
+        page_associations = connection.execute("SELECT COUNT(*) FROM source_pages WHERE source_id=?", (source_id,)).fetchone()[0]
+        exclusive_pages = []
+        for (page_id,) in page_rows:
+            external_source = connection.execute("SELECT 1 FROM source_pages WHERE page_id=? AND source_id<>? LIMIT 1", (page_id, source_id)).fetchone()
+            external_candidate = connection.execute("SELECT 1 FROM candidates WHERE page_id=? AND source_id<>? LIMIT 1", (page_id, source_id)).fetchone()
+            external_evidence = connection.execute("""SELECT 1 FROM evidence e JOIN candidates c USING(candidate_id)
+                WHERE e.page_id=? AND c.source_id<>? LIMIT 1""", (page_id, source_id)).fetchone()
+            external_fetch = connection.execute("""SELECT 1 FROM fetches f LEFT JOIN jobs j USING(job_id)
+                WHERE f.page_id=? AND (j.source_id IS NULL OR j.source_id<>?) LIMIT 1""", (page_id, source_id)).fetchone()
+            unknown_page_history = connection.execute("""SELECT 1 FROM pages p JOIN changes ch ON ch.entity='page' AND ch.entity_key=p.url_key
+                WHERE p.page_id=? LIMIT 1""", (page_id,)).fetchone()
+            if not (external_source or external_candidate or external_evidence or external_fetch or unknown_page_history):
+                exclusive_pages.append(page_id)
+        exclusive_page_keys = tuple(r[0] for r in connection.execute(
+            "SELECT url_key FROM pages WHERE page_id IN (" + (",".join("?" for _ in exclusive_pages) or "NULL") + ")", exclusive_pages))
+        jobs = connection.execute("SELECT job_id, state FROM jobs WHERE source_id=?", (source_id,)).fetchall()
+        return {
+            "source": dict(source), "candidate_ids": tuple(candidate_ids), "candidate_keys": tuple(candidate_keys),
+            "exclusive_events": tuple(exclusive_events), "shared_events": tuple(shared_events),
+            "protected_shared_events": protected_shared_events, "protected_shared_extractions": protected_shared_extractions,
+            "page_ids": tuple(r[0] for r in page_rows), "page_keys": tuple(r[0] for r in connection.execute(
+                "SELECT DISTINCT p.url_key FROM source_pages sp JOIN pages p USING(page_id) WHERE sp.source_id=?", (source_id,))),
+            "exclusive_page_ids": tuple(exclusive_pages), "exclusive_page_keys": exclusive_page_keys,
+            "job_ids": tuple(r["job_id"] for r in jobs), "leased_jobs": sum(r["state"] == "leased" for r in jobs),
+            "leased_processing_work": connection.execute("SELECT COUNT(*) FROM processing_work WHERE state='leased' AND candidate_id IN (SELECT candidate_id FROM candidates WHERE source_id=?)", (source_id,)).fetchone()[0],
+            "counts": {
+                "source": 1, "jobs": len(jobs),
+                "area_assignments": connection.execute("SELECT COUNT(*) FROM area_sources WHERE source_id=?", (source_id,)).fetchone()[0],
+                "source_leads": connection.execute("SELECT COUNT(*) FROM source_leads WHERE source_id=?", (source_id,)).fetchone()[0],
+                "source_page_associations": page_associations, "pages_exclusive": len(exclusive_pages),
+                "pages_shared_or_ambiguous": len(page_rows) - len(exclusive_pages),
+                "candidates": len(candidate_ids),
+                "evidence": connection.execute("SELECT COUNT(*) FROM evidence WHERE candidate_id IN (SELECT candidate_id FROM candidates WHERE source_id=?)", (source_id,)).fetchone()[0],
+                "extractions": connection.execute("SELECT COUNT(*) FROM extractions WHERE candidate_id IN (SELECT candidate_id FROM candidates WHERE source_id=?)", (source_id,)).fetchone()[0],
+                "processing_work": connection.execute("SELECT COUNT(*) FROM processing_work WHERE candidate_id IN (SELECT candidate_id FROM candidates WHERE source_id=?)", (source_id,)).fetchone()[0],
+                "candidate_media": connection.execute("SELECT COUNT(*) FROM candidate_media WHERE candidate_id IN (SELECT candidate_id FROM candidates WHERE source_id=?)", (source_id,)).fetchone()[0],
+                "events_exclusive": len(exclusive_events), "events_shared_preserved": len(shared_events),
+                "fetches_from_source_jobs": connection.execute("SELECT COUNT(*) FROM fetches WHERE job_id IN (SELECT job_id FROM jobs WHERE source_id=?)", (source_id,)).fetchone()[0],
+                "source_change_records": connection.execute("SELECT COUNT(*) FROM changes WHERE entity='source' AND entity_key=?", (source_key,)).fetchone()[0],
+            },
+        }
+
+    def preview(self, source_key):
+        with self._store.read() as connection:
+            return self._inventory(connection, source_key)
+
+    def remove(self, source_key):
+        if source_key in self._reserved:
+            raise SourceCleanupError(f"built-in source {source_key!r} is protected")
+        with self._store.write() as tx:
+            plan = self._inventory(tx, source_key)
+            if plan["leased_jobs"]:
+                raise SourceCleanupError("source has a leased crawl job; stop discovery and retry")
+            if plan["leased_processing_work"]:
+                raise SourceCleanupError("source has leased processing work; stop workers and retry")
+            if plan["protected_shared_events"]:
+                raise SourceCleanupError("a shared event is primarily owned by this source; manual event review is required")
+            if plan["protected_shared_extractions"]:
+                raise SourceCleanupError("a shared event revision depends on this source's extraction; manual history review is required")
+            source_id, now = plan["source"]["source_id"], int(self._clock())
+            candidate_keys, event_keys = plan["candidate_keys"], plan["exclusive_events"]
+            page_ids, page_keys, job_ids = plan["exclusive_page_ids"], plan["exclusive_page_keys"], plan["job_ids"]
+            affected_areas = [r[0] for r in tx.execute("SELECT area_id FROM area_sources WHERE source_id=?", (source_id,))]
+            tx.execute("DELETE FROM area_sources WHERE source_id=?", (source_id,))
+            for area_id in affected_areas:
+                tx.execute("UPDATE areas SET revision=revision+1, updated_at=? WHERE area_id=?", (now, area_id))
+                row = tx.execute("SELECT area_key FROM areas WHERE area_id=?", (area_id,)).fetchone()
+                tx.execute("INSERT INTO changes(entity,entity_key,op,kind,payload_hash,created_at) VALUES('area',?,'upsert','area.configuration_changed',?,?)",
+                           (row[0], "0" * 64, now))
+            if job_ids:
+                marks = ",".join("?" for _ in job_ids)
+                tx.execute(f"DELETE FROM fetches WHERE job_id IN ({marks})", job_ids)
+            tx.execute("DELETE FROM candidates WHERE source_id=?", (source_id,))
+            for key in candidate_keys:
+                tx.execute("DELETE FROM changes WHERE entity='candidate' AND entity_key=?", (key,))
+            for key in event_keys:
+                tx.execute("DELETE FROM events WHERE event_key=? AND NOT EXISTS (SELECT 1 FROM event_candidates ec WHERE ec.event_id=events.event_id)", (key,))
+                tx.execute("DELETE FROM changes WHERE entity='event' AND entity_key=?", (key,))
+                tx.execute("INSERT INTO changes(entity,entity_key,op,kind,payload_hash,created_at) VALUES('event',?,'delete','event.removed',?,?)",
+                           (key, "0" * 64, now))
+            if page_ids:
+                marks = ",".join("?" for _ in page_ids)
+                tx.execute(f"DELETE FROM pages WHERE page_id IN ({marks})", page_ids)
+                for key in page_keys:
+                    tx.execute("DELETE FROM changes WHERE entity='page' AND entity_key=?", (key,))
+                    tx.execute("INSERT INTO changes(entity,entity_key,op,kind,payload_hash,created_at) VALUES('page',?,'delete','page.removed',?,?)",
+                               (key, "0" * 64, now))
+            tx.execute("DELETE FROM sources WHERE source_id=?", (source_id,))
+            tx.execute("DELETE FROM changes WHERE entity='source' AND entity_key=?", (source_key,))
+            violations = tx.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise SourceCleanupError(f"foreign-key violations after cleanup: {len(violations)}")
+            return plan["counts"]
 
 
 def content_hash(body):

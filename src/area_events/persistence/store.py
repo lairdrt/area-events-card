@@ -23,6 +23,45 @@ from .schema import LATEST, MIGRATIONS
 MIN_SQLITE = (3, 35, 0)  # RETURNING
 
 
+def create_verified_database_backup(database_path, backup_dir, application_root):
+    """Create a non-overwriting SQLite backup outside the application tree and verify it."""
+    database_path = os.path.realpath(database_path)
+    backup_dir = os.path.realpath(backup_dir)
+    application_root = os.path.realpath(application_root)
+    try:
+        within_application = os.path.commonpath((backup_dir, application_root)) == application_root
+    except ValueError:
+        within_application = False
+    if within_application:
+        raise ValueError("backup directory must be outside the active application tree")
+    os.makedirs(backup_dir, exist_ok=True)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    path = os.path.join(backup_dir, f"discovery-before-source-cleanup-{stamp}.sqlite3")
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        raise ValueError("backup path already exists; backups are never overwritten")
+    os.close(descriptor)
+    source = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
+    target = sqlite3.connect(path)
+    try:
+        version = source.execute("PRAGMA user_version").fetchone()[0]
+        integrity = source.execute("PRAGMA integrity_check").fetchone()[0]
+        if version != LATEST:
+            raise ValueError(f"database schema {version} differs from this tool's schema {LATEST}")
+        if integrity != "ok":
+            raise ValueError(f"database integrity check failed: {integrity}")
+        source.backup(target)
+        check = target.execute("PRAGMA integrity_check").fetchone()[0]
+        if check != "ok":
+            raise ValueError(f"SQLite backup integrity check failed: {check}")
+        target.commit()
+    finally:
+        target.close()
+        source.close()
+    return path
+
+
 def _statements(script):
     """The statements of a migration script, split where SQLite says a statement is complete."""
     out, buffer = [], ""

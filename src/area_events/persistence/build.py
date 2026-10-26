@@ -15,7 +15,7 @@ from .media import LocalMediaFiles, LocalMediaWork, MediaRepository, SqliteMedia
 from .ports import MediaCache
 from .processing import ProcessingRepository, SqliteProcessingStorage
 from .reading import LocalDiscoveryReader
-from .repositories import CandidateRepository, ChangeLog, JobRepository, PageRepository, Retention, SourceRepository
+from .repositories import CandidateRepository, ChangeLog, JobRepository, PageRepository, Retention, SourceCleanup, SourceRepository
 from .scheduling import SqliteSchedulingStorage
 from .store import DiscoveryStore
 
@@ -32,6 +32,7 @@ class Persistence:
     media_cache: MediaCache
     media_work: object
     media_files: object
+    source_cleanup: object
     _store: object
 
     @property
@@ -42,7 +43,7 @@ class Persistence:
         self._store.close()
 
 
-def open_persistence(db_path, deduplicator, clock=time.time, store_options=None, media_dir=None):
+def open_persistence(db_path, deduplicator, clock=time.time, store_options=None, media_dir=None, reserved_source_keys=()):
     store = DiscoveryStore(db_path, **(store_options or {})).open()
     sources, pages, candidates, jobs, changes = SourceRepository(), PageRepository(), CandidateRepository(), JobRepository(), ChangeLog()
     media_repository = MediaRepository()
@@ -59,4 +60,5 @@ def open_persistence(db_path, deduplicator, clock=time.time, store_options=None,
         media_cache=media_store,
         media_work=LocalMediaWork(store, media_repository, clock),
         media_files=LocalMediaFiles(media_store),
+        source_cleanup=SourceCleanup(store, clock, reserved_source_keys),
         _store=store)

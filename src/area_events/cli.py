@@ -12,6 +12,7 @@
     area-events inspect [--limit N] [--source KEY] [--title TEXT]
     area-events extract [--db PATH | --url http://host:8780 --token-file PATH] [--once]   an extraction worker (local or remote)
     area-events events  [--area ID] [--source KEY] [--limit N] | --event KEY           normalized events
+    area-events sources cleanup KEY [--apply --backup-dir PATH]                         audit or remove one configured source
 
 The commands other than `serve`, `stop` and `run` open the same database as the service would (this tool belongs to the Discovery host)
 and change configuration through the same DiscoveryControl contract the API uses. No tokens are printed.
@@ -30,7 +31,7 @@ import urllib.request
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from .app import DEDUPLICATORS, DEFAULT_DEDUPLICATION, KNOWN_SOURCES, build, build_api, load_tokens
+from .app import DEDUPLICATORS, DEFAULT_DEDUPLICATION, KNOWN_SOURCES, build, build_api, create_verified_database_backup, load_tokens
 from .contracts.models import CandidateQuery
 from .control.service import ControlError, CreateAreaRequest, RevisionConflict, SettingsRequest, UpdateAreaRequest
 from .api.events import EventQuery
@@ -390,6 +391,54 @@ def cmd_inspect(args):
     return 0
 
 
+def cmd_source_cleanup(args):
+    if args.apply:
+        if not args.backup_dir:
+            print("--apply requires --backup-dir outside the active application tree", file=sys.stderr)
+            return 2
+        # Validate and back up before opening DiscoveryStore, which may apply a schema migration.
+        try:
+            app_root = os.environ.get("AREA_EVENTS_APP_ROOT", os.path.abspath(os.path.join(os.path.dirname(args.db), os.pardir, os.pardir)))
+            backup = create_verified_database_backup(args.db, args.backup_dir, app_root)
+        except (OSError, ValueError) as error:
+            print(f"refused: {error}", file=sys.stderr)
+            return 2
+        print(f"verified backup: {backup}")
+
+    app = build(args.db, deduplication=args.deduplication)
+    try:
+        cleanup = app.persistence.source_cleanup
+        plan = cleanup.preview(args.source_key)
+        if args.apply:
+            counts = cleanup.remove(args.source_key)
+            print(f"removed source {args.source_key}")
+        else:
+            counts = plan["counts"]
+            print(f"dry run for {args.source_key} ({plan['source']['name']}, adapter {plan['source']['adapter']})")
+        for key, value in counts.items():
+            print(f"{key}: {value}")
+        if plan["shared_events"]:
+            print(f"shared events preserved: {len(plan['shared_events'])}")
+        if plan["leased_jobs"]:
+            print("apply refused while a crawl job is leased")
+            return 2
+        if plan["leased_processing_work"]:
+            print("apply refused while source processing work is leased")
+            return 2
+        if plan["protected_shared_events"]:
+            print("apply refused: a shared event is primarily owned by this source")
+            return 2
+        if plan["protected_shared_extractions"]:
+            print("apply refused: a shared event revision depends on source extraction history")
+            return 2
+    except ValueError as error:
+        print(f"refused: {error}", file=sys.stderr)
+        return 2
+    finally:
+        app.close()
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="discovery", description="The Area Events Discovery Service.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -457,6 +506,12 @@ def main(argv=None):
     events.add_argument("--source")
     events.add_argument("--limit", type=int, default=20)
     events.add_argument("--event")
+    sources = add("sources", "operator-only maintenance for configured sources")
+    source_actions = sources.add_subparsers(dest="source_action", required=True)
+    cleanup = source_actions.add_parser("cleanup", help="preview or transactionally remove one source and its exclusively owned records")
+    cleanup.add_argument("source_key")
+    cleanup.add_argument("--apply", action="store_true", help="create and verify an external SQLite backup, then remove the source")
+    cleanup.add_argument("--backup-dir", help="required for --apply; must be outside the active application tree")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")
@@ -469,7 +524,7 @@ def main(argv=None):
             parser.error("areas update needs --revision")
     handlers = {"run": cmd_run, "serve": cmd_serve, "stop": cmd_stop, "status": cmd_status, "areas": cmd_areas, "settings": cmd_settings,
                 "pause": cmd_pause_resume, "resume": cmd_pause_resume, "changes": cmd_changes, "inspect": cmd_inspect, "extract": cmd_extract,
-                "events": cmd_events}
+                "events": cmd_events, "sources": cmd_source_cleanup}
     return handlers[args.command](args)
 
 

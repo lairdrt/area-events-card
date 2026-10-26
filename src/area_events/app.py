@@ -28,6 +28,7 @@ from .api.events import EventQueryService
 from .extraction.service import ExtractionConfig, ExtractionService, LocalProcessingClient, StoredCandidateExtractor
 from .discovery.host import DiscoveryHost, HostConfig
 from .persistence.build import open_persistence
+from .persistence.store import create_verified_database_backup
 from .validation.processing import ProcessingService
 from .discovery.producers import city_of_san_diego
 from .discovery.producers.city_of_san_diego import CityOfSanDiegoProducer
@@ -88,7 +89,8 @@ def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None,
     policy = policy or HostPolicy()
     client = fetch_client or SafeFetcher(request_interval, state=policy)
     deduplicator = DEDUPLICATORS[deduplication]() if isinstance(deduplication, str) else deduplication
-    persistence = open_persistence(db_path, deduplicator, clock, store_options, media_dir)
+    persistence = open_persistence(db_path, deduplicator, clock, store_options, media_dir,
+                                   reserved_source_keys=(spec.source_key for spec in KNOWN_SOURCES.values()))
     pacing = AreaPacing(scheduler_config)
     scheduler = DiscoveryScheduler(persistence.scheduling, pacing)
     config = config or DiscoveryConfig(require_area=service_gate)
