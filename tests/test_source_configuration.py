@@ -62,6 +62,39 @@ class SourceConfiguration(unittest.TestCase):
         self.assertEqual((persisted.name, persisted.enabled, persisted.interval_minutes, persisted.revision, persisted.options_dict()),
                          ("Updated Calendar", True, 90, 4, LOCALIST_OPTIONS))
 
+    def test_retired_source_disables_without_loading_removed_adapter(self):
+        """Stopping a retired adapter is state-only; enabling it still requires an installed adapter."""
+        self._source("retired-calendar")
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("UPDATE sources SET adapter='removed_calendar' WHERE source_key='retired-calendar'")
+            connection.commit()
+        finally:
+            connection.close()
+        first = self.app.control.get_source("retired-calendar")
+        self.assertTrue(first.enabled)
+        stopped = self.app.control.set_source_enabled("retired-calendar", False, first.revision)
+        self.assertFalse(stopped.source.enabled)
+        self.assertEqual(stopped.revision, first.revision + 1)
+        replay = self.app.control.set_source_enabled("retired-calendar", False, stopped.revision)
+        self.assertTrue(replay.replayed)
+        with self.assertRaises(RevisionConflict):
+            self.app.control.set_source_enabled("retired-calendar", True, first.revision)
+        with self.assertRaises(ValidationFailed):
+            self.app.control.set_source_enabled("retired-calendar", True, stopped.revision)
+        self.assertEqual(self.app.control.get_source("retired-calendar").revision, stopped.revision)
+        self.app.close()
+        self.app = self._open()
+        self.assertFalse(self.app.control.get_source("retired-calendar").enabled)
+
+    def test_producer_configuration_contract_is_adapter_defined(self):
+        metadata = self.app.control.list_producer_types()
+        self.assertEqual(metadata["schema"], "area_events.producer_forms.v1")
+        configured = {item["id"]: item for item in metadata["types"]}
+        self.assertEqual(set(configured), {"localist", "sandiego_gov"})
+        self.assertIn("days", {field["name"] for field in configured["localist"]["fields"]})
+        self.assertIn("url", {field["name"] for field in configured["sandiego_gov"]["fields"]})
+
     def test_validation_and_builtin_identity_protection(self):
         self._source()
         with self.assertRaises(SourceExists):
