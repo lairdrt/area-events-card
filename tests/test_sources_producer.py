@@ -79,6 +79,7 @@ class GenericProducer(unittest.TestCase):
             {"urls": ["https://me:password@example.org/events"]},
             {"urls": ["file:///etc/passwd"]},
             {"urls": [SEED], "max_pages": 0},
+            {"urls": [SEED, OTHER], "max_pages": 1},
             {"urls": [SEED], "max_depth": 10},
             {"urls": [SEED], "extra": "whatever"},
             {"urls": [SEED, OTHER], "url": OTHER},
@@ -117,8 +118,8 @@ class GenericProducer(unittest.TestCase):
         self.assertEqual(client.requests, [SEED])
 
     def test_multiple_seed_urls_respect_request_budget_and_make_no_cross_domain_links(self):
-        result, client = run_crawl({SEED: HTML, OTHER: HTML}, urls=(SEED, OTHER), max_pages=1)
-        self.assertEqual(client.requests, [SEED])
+        result, client = run_crawl({SEED: HTML, OTHER: HTML}, urls=(SEED, OTHER), max_pages=2)
+        self.assertEqual(client.requests, [SEED, OTHER])
         self.assertEqual(len(result.candidates), 1)
         self.assertEqual(result.notes["sites"], 2)
 
