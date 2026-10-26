@@ -921,11 +921,27 @@ class ProducerOptions(Service):
         flow = self.options_flow()
         flow._source_action = "edit"
         self.with_client_session(flow.async_step_source_select({"source_id": "calendar-one"}))
+        form = self.with_client_session(flow.async_step_source_edit())
+        self.assertNotIn("options", [key.schema for key in form["data_schema"].schema],
+                         "regular producer edits must not expose JSON")
         edited = self.with_client_session(flow.async_step_source_edit({
             "name": "Calendar One Updated", "interval_minutes": 90,
-            "options": '{"url":"https://calendar.example","days":30}',
         }))
         self.assertEqual(edited["data"], {"scan_interval": 30})
+        source = self.with_client_session(self.api_client().source("calendar-one"))
+        self.assertEqual((source["name"], source["interval_minutes"], source["options"]),
+                         ("Calendar One Updated", 90, {"url": "https://calendar.example"}))
+
+        flow = self.options_flow()
+        flow._source_action = "options"
+        advanced = self.with_client_session(flow.async_step_source_select({"source_id": "calendar-one"}))
+        self.assertEqual(advanced["step_id"], "source_options")
+        rejected = self.with_client_session(flow.async_step_source_options({"options": "not-json"}))
+        self.assertEqual(rejected["errors"], {"options": "invalid_json"})
+        saved = self.with_client_session(flow.async_step_source_options({
+            "options": '{"url":"https://calendar.example","days":30}',
+        }))
+        self.assertEqual(saved["type"], "create_entry")
         source = self.with_client_session(self.api_client().source("calendar-one"))
         self.assertEqual((source["name"], source["interval_minutes"], source["options"]["days"]),
                          ("Calendar One Updated", 90, 30))
@@ -983,7 +999,15 @@ class ProducerOptions(Service):
         flow = self.options_flow(control=False)
         listing = self.with_client_session(flow.async_step_sources())
         self.assertEqual(listing["step_id"], "sources")
-        self.assertIn("sandiego_gov", listing["description_placeholders"]["instances"])
+        description = listing["description_placeholders"]["instances"]
+        self.assertIn("City of San Diego", description)
+        self.assertIn("Ready to discover", description)
+        self.assertNotIn("options=", description, "producer list must not dump raw JSON")
+        self.assertNotIn("https://", description, "producer list must not dump URLs")
+        self.assertEqual(
+            self.with_client_session(flow.async_step_sources({"action": "options"}))["step_id"],
+            "source_select",
+        )
         denied = self.with_client_session(flow.async_step_source_create({
             "id": "calendar-one", "type": "localist", "name": "Calendar One", "enabled": True,
             "interval_minutes": 60, "options": '{"url":"https://calendar.example"}',
