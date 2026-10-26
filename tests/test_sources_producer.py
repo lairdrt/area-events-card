@@ -124,6 +124,23 @@ class GenericProducer(unittest.TestCase):
         self.assertEqual(result.notes["invalid_or_ambiguous_event_dates"], 1)
         self.assertEqual(len(producer.accept(result).candidates), 1)
 
+    def test_repeated_ical_uid_with_distinct_instances_keeps_both(self):
+        calendar = """BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:same-event
+SUMMARY:Weekly Talk
+DTSTART:20261106T100000Z
+END:VEVENT
+BEGIN:VEVENT
+UID:same-event
+SUMMARY:Weekly Talk
+DTSTART:20261113T100000Z
+END:VEVENT
+END:VCALENDAR"""
+        result, _ = run_crawl({ICAL: calendar}, urls=(ICAL,))
+        self.assertEqual(len(result.candidates), 2)
+        self.assertNotEqual(result.candidates[0].local_id, result.candidates[1].local_id)
+
     def test_never_guesses_dates_offsets_or_publication_dates(self):
         page = '<script type="application/ld+json">' + json.dumps({
             "@type": "Event", "name": "Ambiguous", "startDate": "2026-11-05T10:00:00"
