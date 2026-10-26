@@ -354,8 +354,9 @@ class DiscoveryHub:
         sources = await self._read.sources()
         areas = await self._read.areas()
         status = await self._read.status()
+        producer_types = await self._read.producer_types()
         return {"schema": "area_events.management.v1", "sources": sources, "areas": areas,
-                "status": status, "can_control": self.can_control}
+                "status": status, "producer_types": producer_types, "can_control": self.can_control}
 
     async def create_source(self, source_key, adapter, name, enabled, interval_minutes, options):
         return await self._changed(self._controller().create_source(source_key, adapter, name, enabled, interval_minutes, options))
