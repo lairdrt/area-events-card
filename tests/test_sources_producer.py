@@ -97,6 +97,12 @@ class GenericProducer(unittest.TestCase):
         self.assertEqual(result.candidates[0].provenance.found_on, (SEED,))
         self.assertEqual(len(producer.accept(result).candidates), 1)
 
+    def test_direct_jsonld_document_as_seed(self):
+        result, client = run_crawl({SEED: json.dumps({"@graph": [DOC]})}, max_depth=0)
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0].title, "Autumn Fair")
+        self.assertEqual(client.requests, [SEED])
+
     def test_follows_only_bounded_same_host_event_links(self):
         landing = """<a href="/events/autumn-fair">Autumn Fair</a>
 <a href="https://remote.example/other-events">External event</a>
