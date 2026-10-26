@@ -212,6 +212,28 @@ END:VCALENDAR"""
         self.assertEqual(result.notes["unstructured_candidates"], 2)
         self.assertEqual(len(producer.accept(result).candidates), 2)
 
+    @unittest.skipUnless(os.getenv("AREA_EVENTS_LIVE_MTRP") == "1",
+                         "live MTRP site smoke test requires explicit network opt-in")
+    def test_mtrp_marketplace_live_public_page(self):
+        """An opt-in real-site acceptance test; default CI uses the stable offline fixture."""
+        from area_events.discovery.safe import SafeFetcher, HostPolicy
+        actual = SafeFetcher(request_interval=2.0, state=HostPolicy())
+        source = SourcesProducer()
+        base, options = source.validate_options({
+            "urls": [MTRP_MARKETPLACE], "timezone": "America/Los_Angeles",
+            "max_pages": 1, "max_depth": 0,
+        })
+        observed = source.crawl(
+            RecordingFetcher(actual, 4, 120), (),
+            {**options, "url": base, "source_key": "mtrp", "name": "Mission Trails"}
+        )
+        self.assertEqual(
+            {e.starts_at for e in producer.accept(observed).candidates},
+            {"2026-11-14T09:00:00-08:00", "2026-11-15T09:00:00-08:00"}
+        )
+        self.assertTrue(all(e.venue == "Mission Trails Regional Park Visitor Center"
+                            for e in observed.candidates))
+
     def test_unstructured_multiple_independent_event_headings(self):
         result, _ = run_crawl({SEED: MULTI_EVENT_HTML},
                               timezone="America/Los_Angeles", max_depth=0)
