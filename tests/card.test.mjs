@@ -471,18 +471,26 @@ test("categories match title, description and source categories; events may matc
   assert.deepEqual(m({ title: "Open day", categories: ["Family"] }), ["family"]);
   assert.deepEqual(m({ title: "Food / Drinks", categories: ["Food / Drinks"] }), ["food-drink"]);
   assert.deepEqual(m({ title: "Quarterly meeting" }), ["other"]);
+  assert.ok(m({ title: "Fall Craft Fair", source_keys: ["sandiego_gov"] }).includes("craft-fair"),
+    "built-in Craft Fairs filter is independent of producer identity");
+  assert.ok(m({ title: "Holiday Marketplace", description: "Find handmade crafts and local makers" }).includes("craft-fair"));
+  assert.ok(m({ title: "Local Artists Show", categories: ["Craft Fairs"] }).includes("craft-fair"));
 });
 
 test("keywords match whole words only", () => {
   assert.deepEqual([...categoriesFor({ title: "Parking lot sale" })], ["other"]);
   assert.deepEqual([...categoriesFor({ title: "Farmers Markets" })], ["markets"]);
+  assert.ok(!categoriesFor({ title: "Science Fair" }).has("craft-fair"), "an unrelated fair must not become a craft fair");
+  assert.ok(!categoriesFor({ title: "Craft Beer Festival" }).has("craft-fair"), "a single craft word is not sufficient");
 });
 
 test("the retired history category id is dropped from saved filters and card config, never converted", () => {
   const custom = [{ id: "c_abc123", name: "History", keywords: ["history"] }];
   const mixed = normalizePrefs({ v: 1, selected: ["history", "markets", "craft-fair", "c_abc123", "music"], custom });
-  assert.deepEqual(mixed.selected, ["markets", "c_abc123", "music"], "other valid selections, including a user-defined category named History, are kept in order");
+  assert.deepEqual(mixed.selected, ["markets", "craft-fair", "c_abc123", "music"], "Craft Fairs is restored as permanent built-in filter; retired History remains ignored");
   assert.deepEqual(normalizePrefs({ v: 1, selected: ["history"], custom: [] }).selected, [], "only history saved: no filter, so every event shows");
+  assert.equal(DEFAULT_CATEGORIES.find((c) => c.id === "craft-fair")?.name, "Craft Fairs");
+  assert.deepEqual(readSettings({ categories: ["Craft Fairs"] }).categories, new Set(["craft-fair"]));
   assert.deepEqual(readSettings({ area: "Austin", categories: ["history", "markets"] }).categories, new Set(["markets"]));
   assert.equal(readSettings({ area: "Austin", categories: ["History"] }).categories, undefined, "only history configured: all categories");
   assert.throws(() => readSettings({ area: "Austin", categories: ["nonsense"] }), /Unknown category/);
