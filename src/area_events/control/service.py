@@ -216,8 +216,8 @@ class LocalDiscoveryControl:
 
     def update_source(self, request: UpdateSourceRequest):
         expected = _revision(request.expected_revision)
-        if request.source_key in self._reserved_source_keys:
-            raise ValidationFailed("built-in source configuration is read-only")
+        # Built-in producer identity/type remains reserved and immutable. Operators can
+        # still tune the persisted instance; registration never overwrites those settings.
         current = self.get_source(request.source_key)
         name = current.name if request.name is None else _name(request.name)
         enabled = current.enabled if request.enabled is None else request.enabled
