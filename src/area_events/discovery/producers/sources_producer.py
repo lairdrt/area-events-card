@@ -143,7 +143,7 @@ def _ics_events(page, page_url, name, retrieved_at):
                 end = _ical_timestamp(current.get("DTEND"), current.get("DTEND_TZID"))
                 if title and start:
                     ident = current.get("UID") or f"{page_url}|{title}|{start}"
-                    local_id = hashlib.sha256(ident.encode("utf-8")).hexdigest()[:32]
+                    local_id = hashlib.sha256(f"{ident}|{start}".encode("utf-8")).hexdigest()[:32]
                     description = _clean(current.get("DESCRIPTION"), 4000)
                     venue = _clean(current.get("LOCATION"), 200)
                     link = current.get("URL")
