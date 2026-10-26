@@ -6,6 +6,7 @@ import ssl
 from pathlib import Path
 
 from homeassistant.components.frontend import add_extra_js_url
+from homeassistant.components import panel_custom
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
@@ -16,7 +17,7 @@ from homeassistant.helpers.typing import ConfigType
 from . import websocket_api
 from .const import (
     CARD_URL, CONF_CA_FILE, CONF_CONTROL_TOKEN, CONF_READ_TOKEN, CONF_SCAN_INTERVAL, CONF_URL,
-    DEFAULT_SCAN_INTERVAL, DOMAIN, PHOTOS_KEY, PRESENTATION_URL,
+    DEFAULT_SCAN_INTERVAL, DOMAIN, PHOTOS_KEY, PRESENTATION_URL, MANAGEMENT_URL, MANAGEMENT_PANEL_PATH,
 )
 from .coordinator import AreaEventsConfigEntry, DiscoveryCoordinator, RuntimeData
 from .discovery_client import DiscoveryAuthError, DiscoveryConnectionError, DiscoveryControlClient
@@ -25,6 +26,7 @@ from .media_view import AreaEventsMediaView
 from .photos import PHOTOS_URL, load_index
 
 CARD_FILE = Path(__file__).parent / "frontend" / "area-events-card.js"
+MANAGEMENT_FILE = Path(__file__).parent / "frontend" / "manager.js"
 PRESENTATION_FOLDER = Path(__file__).parent / "frontend" / "presentation"
 PHOTOS_FOLDER = Path(__file__).parent / "frontend" / "photos"  # optional, private, not in Git (see photos.py)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -51,11 +53,18 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.http.register_view(AreaEventsMediaView(hass))
     await hass.http.async_register_static_paths([
         StaticPathConfig(CARD_URL, str(CARD_FILE), cache_headers=False),
+        StaticPathConfig(MANAGEMENT_URL, str(MANAGEMENT_FILE), cache_headers=False),
         StaticPathConfig(PRESENTATION_URL, str(PRESENTATION_FOLDER), cache_headers=False),
     ])
     # The card loads on every dashboard without a Lovelace resource; the query changes with the file so browsers refetch it.
     version = await hass.async_add_executor_job(lambda: CARD_FILE.stat().st_mtime_ns)
     add_extra_js_url(hass, f"{CARD_URL}?v={version}")
+    manager_version = await hass.async_add_executor_job(lambda: MANAGEMENT_FILE.stat().st_mtime_ns)
+    await panel_custom.async_register_panel(
+        hass, webcomponent_name="area-events-manager", frontend_url_path=MANAGEMENT_PANEL_PATH,
+        sidebar_title="Area Events", sidebar_icon="mdi:calendar-search",
+        module_url=f"{MANAGEMENT_URL}?v={manager_version}", require_admin=True,
+    )
     # Category photographs exist only on installations that were given them; without them the card keeps its illustrations.
     index = await hass.async_add_executor_job(load_index, PHOTOS_FOLDER)
     hass.data[PHOTOS_KEY] = index
