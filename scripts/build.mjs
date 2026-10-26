@@ -8,9 +8,13 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
+// Git may check out text files as CRLF on Windows. Build and hash canonical LF bytes,
+// otherwise a successful -DryRun dirties the tracked HA bundle and blocks deployment.
+const readCanonical = (path) => readFileSync(path, "utf8").replace(/\r\n?/g, "\n");
+
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceDir = join(root, "src", "frontend");
-const source = readFileSync(join(sourceDir, "area-events-card.js"), "utf8");
+const source = readCanonical(join(sourceDir, "area-events-card.js"));
 if (!source.includes("__AREA_EVENTS_CARD_BUILD__")) {
   throw new Error("src/frontend/area-events-card.js is missing the __AREA_EVENTS_CARD_BUILD__ placeholder");
 }
@@ -18,7 +22,7 @@ const { version } = JSON.parse(readFileSync(join(root, "custom_components", "are
 const presentationDir = join(sourceDir, "presentation");
 const presentationFiles = readdirSync(presentationDir).filter((name) => name.endsWith(".js")).sort();
 if (!presentationFiles.length) throw new Error("src/frontend/presentation has no renderer modules");
-const moduleSource = presentationFiles.map((name) => `${name}\n${readFileSync(join(presentationDir, name), "utf8")}`).join("\n");
+const moduleSource = presentationFiles.map((name) => `${name}\n${readCanonical(join(presentationDir, name))}`).join("\n");
 const identifier = `AREA-EVENTS ${version}-${createHash("sha1").update(source).update(moduleSource).digest("hex").slice(0, 8)}`;
 const built = source.replaceAll("__AREA_EVENTS_CARD_BUILD__", identifier);
 
@@ -27,6 +31,6 @@ for (const folder of [join(root, "custom_components", "area_events", "frontend")
   writeFileSync(join(folder, "area-events-card.js"), built);
   const modules = join(folder, "presentation");
   mkdirSync(modules, { recursive: true });
-  for (const name of presentationFiles) writeFileSync(join(modules, name), readFileSync(join(presentationDir, name)));
+  for (const name of presentationFiles) writeFileSync(join(modules, name), readCanonical(join(presentationDir, name)));
   console.log(`Built ${join(folder, "area-events-card.js")} (${identifier})`);
 }
