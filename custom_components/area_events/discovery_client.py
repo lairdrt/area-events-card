@@ -98,6 +98,9 @@ class DiscoveryControlClient:
     async def area(self, area_key):
         return (await self._request("GET", f"/v1/areas/{quote(area_key, safe='')}"))["area"]
 
+    async def producer_types(self):
+        return await self._request("GET", "/v1/producer-types")
+
     async def sources(self):
         """Configured producer instances from the authoritative Discovery database."""
         return (await self._request("GET", "/v1/sources"))["sources"]
