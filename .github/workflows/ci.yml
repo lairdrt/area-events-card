@@ -31,6 +31,9 @@ jobs:
         run: python -m pip install --no-deps .
       - name: Run Python tests
         run: python -m unittest discover -s tests -t .
+      - name: Check resumable deployment decisions and PowerShell syntax
+        shell: pwsh
+        run: ./scripts/test-deployment-resume.ps1
       - name: Validate frontend build
         run: npm run build
       - name: Run JavaScript tests
