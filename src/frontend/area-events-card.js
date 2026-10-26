@@ -214,6 +214,7 @@ const DEFAULT_CATEGORIES = [
   ["education", "Education", "education, class, classes, workshop, lecture, seminar, course, lesson, learn, learning, library, training, tutorial"],
   ["theater", "Theater", "theater, theatre, broadway, drama, ballet, dance, cabaret, shakespeare, performing arts"],
   ["comedy", "Comedy", "comedy, comedian, stand up, standup, improv, open mic, humor"],
+  ["craft-fair", "Craft Fairs", "craft fair, craft fairs, craft show, craft shows, arts and crafts fair, artisan fair, artisan craft fair, makers market, maker market, makers fair, handmade market, handmade marketplace, holiday marketplace, holiday craft market, craft market, craft bazaar"],
   ["markets", "Markets", "market, markets, farmers, bazaar, swap meet, flea, vendor, artisan, artisans, mercato"],
 ].map(([id, name, words]) => ({ id, name, keywords: splitKeywords(words) }));
 DEFAULT_CATEGORIES.push({ id: OTHER_ID, name: "Other", keywords: [] });
