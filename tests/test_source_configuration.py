@@ -114,8 +114,15 @@ class SourceConfiguration(unittest.TestCase):
                 self.app.control.create_source(CreateSourceRequest(key, adapter, name, enabled, interval, options))
         with self.assertRaises(ValidationFailed):
             self._source("sandiego_gov", adapter="sandiego_gov", options={"url": CITY_URL})
-        with self.assertRaises(ValidationFailed):
-            self.app.control.update_source(UpdateSourceRequest("sandiego_gov", 1, name="changed"))
+        changed_builtin = self.app.control.update_source(
+            UpdateSourceRequest("sandiego_gov", 1, name="City Calendar", interval_minutes=75)
+        )
+        self.assertEqual((changed_builtin.source.source_key, changed_builtin.source.adapter,
+                          changed_builtin.source.name, changed_builtin.source.interval_minutes),
+                         ("sandiego_gov", "sandiego_gov", "City Calendar", 75))
+        self.app.register_known_sources()
+        self.assertEqual(self.app.control.get_source("sandiego_gov").name, "City Calendar",
+                         "built-in startup registration must preserve operator changes")
         with self.assertRaises(NotFound):
             self.app.control.get_source("not-present")
         self.assertEqual({source.source_key for source in self.app.control.list_sources()}, {"sandiego_gov", "ut_austin", "calendar-one"})
