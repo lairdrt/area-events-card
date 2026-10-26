@@ -433,12 +433,18 @@ for rel in ('src/area_events','pyproject.toml'):
 unit=os.path.expanduser('~/.config/systemd/user/area-events-discovery.service')
 with open(unit,encoding='utf-8') as f: unit_text=f.read()
 entry=r'(?:scripts/discovery\.py|'+re.escape(root+'/scripts/discovery.py')+r')'
-updated=re.sub(r'(?m)^(ExecStart=\S+)\s+'+entry+r'(?=\s|$)',r'\1 -m area_events',unit_text,count=1)
-if legacy and updated==unit_text: raise RuntimeError('systemd unit does not use a supported legacy Python discovery entry point')
-if modern and updated!=unit_text: raise RuntimeError('modern systemd ExecStart unexpectedly references the legacy entry point')
+venv=os.path.join(root,'.venv')
+if os.path.islink(venv): raise RuntimeError('refusing symlink at virtual environment path')
+venv_python=os.path.join(venv,'bin','python')
+if legacy:
+ updated,matches=re.subn(r'(?m)^ExecStart=\S+\s+'+entry+r'(?=\s|$)','ExecStart='+venv_python+' -m area_events',unit_text,count=1)
+else:
+ updated,matches=re.subn(r'(?m)^ExecStart=\S+\s+-m\s+area_events(?=\s|$)','ExecStart='+venv_python+' -m area_events',unit_text,count=1)
+if matches!=1: raise RuntimeError('systemd unit does not have a supported Python entry point')
+subprocess.run(['python3','-m','venv',venv],timeout=90,check=True,capture_output=True,text=True)
+subprocess.run([venv_python,'-m','pip','install','--no-deps','--force-reinstall',root],timeout=150,check=True,capture_output=True,text=True)
 with open(unit,'w',encoding='utf-8') as f: f.write(updated)
-r=subprocess.run(['python3','-m','pip','install','--user','--no-deps','--force-reinstall',root],timeout=120,check=True,capture_output=True,text=True)
-r=subprocess.run(['python3','-m','area_events','status','--db',root+'/data/discovery/discovery.db'],cwd=root,timeout=120,capture_output=True,text=True)
+r=subprocess.run([venv_python,'-m','area_events','status','--db',root+'/data/discovery/discovery.db'],cwd=root,timeout=120,capture_output=True,text=True)
 if r.returncode: raise RuntimeError('migration failed: '+r.stderr[-1000:])
 a=sqlite3.connect('file:'+root+'/data/discovery/discovery.db?mode=ro',uri=True); b=sqlite3.connect('file:'+os.environ['AE_BACKUP']+'/discovery.db?mode=ro',uri=True)
 try:
@@ -741,7 +747,10 @@ for rel in ('src/area_events','pyproject.toml'):
  archived=t+'/'+rel
  if os.path.exists(archived): os.makedirs(os.path.dirname(current),exist_ok=True); shutil.move(archived,current)
 if os.path.isdir(root+'/src/area_events'):
- subprocess.run(['python3','-m','pip','install','--user','--no-deps','--force-reinstall',root],timeout=120,check=True,capture_output=True,text=True)
+ venv=os.path.join(root,'.venv')
+ if os.path.islink(venv): raise RuntimeError('refusing symlink at virtual environment path during recovery')
+ subprocess.run(['python3','-m','venv',venv],timeout=90,check=True,capture_output=True,text=True)
+ subprocess.run([os.path.join(venv,'bin','python'),'-m','pip','install','--no-deps','--force-reinstall',root],timeout=150,check=True,capture_output=True,text=True)
 unit=os.path.expanduser('~/.config/systemd/user/area-events-discovery.service')
 archived_unit=t+'/systemd/area-events-discovery.service'
 if os.path.isfile(archived_unit):
@@ -769,7 +778,7 @@ status_data=status.get('status',status) if isinstance(status,dict) else {}
 state=status_data.get('state') or status_data.get('runtime',{}).get('state')
 if state!='running': raise RuntimeError('accepted Cubi service failed rollback health check')
 '@
-    $null=Invoke-CubiPython $py @{AE_BACKUP=$script:RemoteBackup;AE_TRANSITION=$script:CubiTransitionId} 120
+    $null=Invoke-CubiPython $py @{AE_BACKUP=$script:RemoteBackup;AE_TRANSITION=$script:CubiTransitionId} 300
   } elseif ($phase -eq 'Home Assistant installation') {
     Write-Warning 'Restoring the backed-up HA integration and requesting one bounded HA restart.'
     Restore-HaBackup $state
