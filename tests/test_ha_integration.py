@@ -922,7 +922,7 @@ class ProducerOptions(Service):
         flow._source_action = "edit"
         self.with_client_session(flow.async_step_source_select({"source_id": "calendar-one"}))
         form = self.with_client_session(flow.async_step_source_edit())
-        self.assertNotIn("options", [key.schema for key in form["data_schema"].schema],
+        self.assertNotIn("options", [getattr(key, "schema", key) for key in form["data_schema"].schema],
                          "regular producer edits must not expose JSON")
         edited = self.with_client_session(flow.async_step_source_edit({
             "name": "Calendar One Updated", "interval_minutes": 90,
@@ -952,7 +952,7 @@ class ProducerOptions(Service):
             self.with_client_session(flow.async_step_source_select({"source_id": "calendar-one"}))
             preview = self.with_client_session(flow.async_step_source_toggle())
             self.assertEqual(preview["step_id"], "source_toggle")
-            self.assertIn("confirm", [key.schema for key in preview["data_schema"].schema])
+            self.assertIn("confirm", [getattr(key, "schema", key) for key in preview["data_schema"].schema])
             self.with_client_session(flow.async_step_source_toggle({"confirm": True}))
             source = self.with_client_session(self.api_client().source("calendar-one"))
             self.assertEqual(source["enabled"], enabled)
