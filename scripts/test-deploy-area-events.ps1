@@ -135,7 +135,8 @@ Check 'systemd conversion changes only legacy entrypoint and preserves service a
   $rejected=$false; try { Convert-AreaEventsSystemdExecStart -UnitText $modern -Root $root | Out-Null } catch { $rejected=$true }
   if (-not $rejected) { throw 'modern ExecStart was incorrectly treated as a legacy conversion' }
   $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
-  if ($text -notmatch "if legacy and updated==unit_text" -or $text -notmatch "if modern and updated!=unit_text") { throw 'remote deployment does not preserve modern module startup' }
+  if ($text -notmatch 'if matches!=1:' -or $text -notmatch 'venv_python' -or $text -notmatch 'ExecStart=')
+    { throw 'remote deployment does not preserve modern module startup through its virtual environment' }
 }
 Check 'legacy cleanup occurs only after API verification and retains verified backups' {
   $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
