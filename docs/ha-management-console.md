@@ -33,7 +33,7 @@ No new API, database, timer or per-source downstream path is introduced.
 `America/Los_Angeles`, it must emit exactly **two 2026 Holiday Marketplace occurrences**
 (November 14 and 15, 9:00 a.m.–3:00 p.m., Mission Trails Regional Park Visitor Center),
 not vendors, parking instructions or Visitor Center hours. Live site access is tested
-separately after deployment because CI should not depend on public-site availability.
+separately (with `AREA_EVENTS_LIVE_MTRP=1 python -m unittest tests.test_sources_producer.GenericProducer.test_mtrp_marketplace_live_public_page`) because CI should not depend on public-site availability. The live smoke test is explicit opt-in and honors the shared SafeFetcher network/robots policy.
 
 ## Architecture and security
 
