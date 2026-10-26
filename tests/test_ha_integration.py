@@ -147,6 +147,7 @@ def install_stand_ins():
     )
     module("homeassistant")
     components = module("homeassistant.components", websocket_api=websocket_api)
+    components.panel_custom = module("homeassistant.components.panel_custom", async_register_panel=mock.AsyncMock())
     components.frontend = module("homeassistant.components.frontend", add_extra_js_url=mock.Mock())
     components.http = module("homeassistant.components.http", StaticPathConfig=lambda *args, **kwargs: (args, kwargs), HomeAssistantView=type("HomeAssistantView", (), {}))
 
@@ -1122,11 +1123,46 @@ class WebSocket(Service):
         websocket_module.async_register(self.hass)
         names = {h.schema["type"] for h in REGISTERED[before:]}
         self.assertEqual(names, {"area_events/areas", "area_events/status", "area_events/events", "area_events/event", "area_events/subscribe", "area_events/area_create",
-                                 "area_events/area_update", "area_events/settings", "area_events/pause", "area_events/resume"})
-        for handler in (websocket_module.ws_area_create, websocket_module.ws_area_update, websocket_module.ws_settings, websocket_module.ws_pause, websocket_module.ws_resume):
+                                 "area_events/area_update", "area_events/settings", "area_events/pause", "area_events/resume",
+                                 "area_events/management", "area_events/source_command"})
+        for handler in (websocket_module.ws_area_create, websocket_module.ws_area_update, websocket_module.ws_settings, websocket_module.ws_pause,
+                        websocket_module.ws_resume, websocket_module.ws_management, websocket_module.ws_source_command):
             denied = self.call(handler, {"area_key": "abcdefgh", "expected_revision": 1, "name": "x", "latitude": 1, "longitude": 1, "radius": 1}, admin=False)
             self.assertEqual(denied.sent[0][:3], ("error", 5, "unauthorized"), handler)
         self.assertFalse(self.built.control.get_status().settings.paused, "a non-administrator changed nothing")
+
+    def test_management_panel_returns_contracts_and_requires_admin(self):
+        denied = self.call(websocket_module.ws_management, {}, admin=False)
+        self.assertEqual(denied.sent[0][2], "unauthorized")
+        result = self.call(websocket_module.ws_management, {}, admin=True).sent[0]
+        self.assertEqual(result[0], "result")
+        snapshot = result[2]
+        self.assertEqual(snapshot["schema"], "area_events.management.v1")
+        self.assertIn("sandiego_gov", {s["id"] for s in snapshot["sources"]})
+        self.assertEqual(snapshot["producer_types"]["schema"], "area_events.producer_forms.v1")
+        types_by_id = {item["id"]: item for item in snapshot["producer_types"]["types"]}
+        self.assertIn("localist", types_by_id)
+        self.assertIn("days", {f["name"] for f in types_by_id["localist"]["fields"]})
+        self.assertNotIn(CONTROL_TOKEN, json.dumps(snapshot))
+        self.assertNotIn(READ_TOKEN, json.dumps(snapshot))
+
+    def test_administrator_can_manage_sources_without_exposing_control_tokens(self):
+        create = {"action": "create", "source_id": "new-campus", "producer_type": "localist",
+                  "name": "New Campus", "enabled": False, "interval_minutes": 30,
+                  "options": {"url": "https://calendar.example"}}
+        self.assertEqual(self.call(websocket_module.ws_source_command, create, admin=False).sent[0][2], "unauthorized")
+        made = self.call(websocket_module.ws_source_command, create, admin=True).sent[0]
+        self.assertEqual(made[0], "result")
+        source = made[2]["source"]
+        self.assertFalse(source["enabled"])
+        bad = self.call(websocket_module.ws_source_command, {"action": "toggle", "source_id": "new-campus",
+                        "expected_revision": 1, "enabled": True}, admin=True).sent[0]
+        self.assertEqual(bad[0], "result")
+        self.assertTrue(bad[2]["source"]["enabled"])
+        stale = self.call(websocket_module.ws_source_command, {"action": "toggle", "source_id": "new-campus",
+                          "expected_revision": 1, "enabled": False}, admin=True).sent[0]
+        self.assertEqual(stale[2], "revision_conflict")
+        self.assertNotIn(CONTROL_TOKEN, json.dumps([made, bad, stale]))
 
     def test_reads_are_open_to_any_signed_in_user(self):
         areas = self.call(websocket_module.ws_areas, {}).sent[0]
@@ -1214,15 +1250,16 @@ class WebSocket(Service):
         hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=register, register_view=lambda view: None), async_add_executor_job=lambda func, *a: asyncio.sleep(0, func(*a)), data={})
         before = len(REGISTERED)
         self.assertTrue(run(init.async_setup(hass, {})))
-        self.assertEqual(len(REGISTERED) - before, 10)
+        self.assertEqual(len(REGISTERED) - before, 12)
         self.assertEqual(paths[0][0][0], "/area_events/area-events-card.js")
+        self.assertEqual(paths[1][0][0], "/area_events/manager.js")
         self.assertEqual(paths[1][0][0], "/area_events/presentation")
         self.assertTrue(os.path.isfile(os.path.join(ROOT, "frontend", "presentation", "registry.js")))
         served = open(os.path.join(ROOT, "frontend", "area-events-card.js"), encoding="utf-8").read()
         self.assertIn("area_events/subscribe", served)
         self.assertNotIn("area_events/events", served)
         manifest = json.load(open(os.path.join(ROOT, "manifest.json"), encoding="utf-8"))
-        self.assertTrue({"frontend", "http", "websocket_api"} <= set(manifest["dependencies"]))
+        self.assertTrue({"frontend", "http", "websocket_api", "panel_custom"} <= set(manifest["dependencies"]))
         strings = json.load(open(os.path.join(ROOT, "strings.json"), encoding="utf-8"))
         self.assertEqual(strings, json.load(open(os.path.join(ROOT, "translations", "en.json"), encoding="utf-8")))
         self.assertTrue({"read_token", "control_token", "url"} <= set(strings["config"]["step"]["user"]["data"]))
