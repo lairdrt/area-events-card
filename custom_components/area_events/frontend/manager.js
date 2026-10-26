@@ -245,11 +245,12 @@ class AreaEventsManager extends HTMLElement {
     const list = sources.map((source) => {
       const state = states.get(source.id);
       const installed = this.sourceTypes().some((item) => item.id === source.type);
-      const status = !installed ? "Retired adapter" : !source.enabled ? "Disabled" : state?.eligible ? "Ready" : "Idle";
+      const status = !installed ? (source.enabled ? "Enabled · Retired adapter" : "Disabled · Retired adapter")
+        : !source.enabled ? "Disabled" : state?.eligible ? "Ready" : "Idle";
       return "<button class='source-row " + (source.id === this._selectedSource && !this._creating ? "selected" : "") +
         "' data-action='source' data-value='" + escapeHtml(source.id) + "'><span><span class='source-name'>" +
         escapeHtml(source.name) + "</span><span class='small'>" + escapeHtml(source.type) + "</span></span>" +
-        "<span class='state " + (status === "Ready" ? "good" : status === "Retired adapter" ? "warn" : "") + "'>" +
+        "<span class='state " + (status === "Ready" ? "good" : !installed ? "warn" : "") + "'>" +
         escapeHtml(status) + "</span><span class='small'>" + escapeHtml(source.interval_minutes) + " min</span></button>";
     }).join("");
     const source = sources.find((item) => item.id === this._selectedSource);
