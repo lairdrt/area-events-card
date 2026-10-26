@@ -218,7 +218,7 @@ class AreaEventsManager extends HTMLElement {
     const s = this._snapshot;
     const isReady = !!s;
     const status = s?.status || {};
-    const events = status.events ?? "—";
+    const readyJobs = status.jobs?.ready ?? "—";
     const count = s?.sources?.length ?? "—";
     const areas = s?.areas?.length ?? "—";
     return [
@@ -229,7 +229,7 @@ class AreaEventsManager extends HTMLElement {
       "<div class='stats'>",
       this.stat("Producers", count, "Configured instances"),
       this.stat("Discovery areas", areas, "Assigned collections"),
-      this.stat("Events", events, "Stored events"),
+      this.stat("Queued jobs", readyJobs, "Ready for discovery"),
       this.stat("Control", s?.can_control ? "Ready" : "Read-only", "Administrator access"),
       "</div>"
     ].join("");
@@ -333,8 +333,8 @@ class AreaEventsManager extends HTMLElement {
     const status = s.status || {};
     return "<div class='pane'><h2>Service overview</h2><p class='section-note'>This panel reads the authoritative Cubi service " +
       "through Home Assistant. Producer and area configuration is not duplicated in HA.</p>" +
-      "<p>Discovery: <strong>" + escapeHtml(status.state || "Unknown") + "</strong></p>" +
-      "<p>Data schema: <strong>" + escapeHtml(status.schema_version || "—") + "</strong></p>" +
+      "<p>Discovery: <strong>" + escapeHtml(status.runtime?.state || "Unknown") + "</strong></p>" +
+      "<p>Data schema: <strong>" + escapeHtml(status.schema || "—") + "</strong></p>" +
       "<p>Control access: <strong>" + (s.can_control ? "Available" : "Read-only") + "</strong></p></div>";
   }
   render() {
