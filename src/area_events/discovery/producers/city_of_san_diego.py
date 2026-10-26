@@ -178,6 +178,12 @@ class DetailQueue:
 
 class CityOfSanDiegoProducer:
     adapter = "sandiego_gov"
+    configuration_fields = (
+        {"name": "url", "label": "City events page", "kind": "url", "default": LISTING_URL},
+        {"name": "pages", "label": "Listing pages per scan", "kind": "integer", "default": 2, "min": 1, "max": 20},
+        {"name": "max_details_per_run", "label": "Event detail pages per scan", "kind": "integer", "default": 10, "min": 0, "max": 100},
+    )
+    display_name = "City of San Diego events"
     extractor = f"producers/city_of_san_diego@v{DETAIL_VERSION}"
     method = "adapter"
 
