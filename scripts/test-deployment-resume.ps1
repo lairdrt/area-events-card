@@ -31,6 +31,14 @@ foreach ($file in @('deploy-area-events.ps1','area-events-deploy-hardening.psm1'
   if ($errors.Count) { throw ("PowerShell parse failure in {0}: {1}" -f $file,$errors[0].Message) }
 }
 $source = Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
+# Regression: deployment must require the production branch AND a clean tree.
+$preflightStart = $source.IndexOf('function Invoke-Preflight {')
+$preflightEnd = $source.IndexOf('function Test-CubiInstalledSource', $preflightStart)
+if ($preflightStart -lt 0 -or $preflightEnd -le $preflightStart) { throw 'Deployment preflight boundaries missing' }
+$preflight = $source.Substring($preflightStart, $preflightEnd - $preflightStart)
+if ($preflight -notmatch [regex]::Escape('if ($branch -ne ''main'')') -or $preflight -notmatch "'status','--porcelain'") {
+  throw 'Deployment must require main and a clean working tree'
+}
 $start = $source.IndexOf('function Invoke-DeploymentPlan(')
 $end = $source.IndexOf('function Invoke-Backups(', $start)
 if ($start -lt 0 -or $end -le $start) { throw 'Planner boundaries missing' }
