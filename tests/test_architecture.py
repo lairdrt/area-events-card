@@ -54,6 +54,7 @@ ALLOWED = {
     "discovery": set(), "discovery.fetching": {"discovery.safe"}, "discovery.host": set(), "discovery.producer": set(), "discovery.producers": set(),
     "discovery.producers.city_of_san_diego": {"discovery.producer", "discovery.safe", "common.textutil", "common.timeutil", "geolocation.textloc"},
     "discovery.producers.localist": {"discovery.producer", "discovery.safe"},
+    "discovery.producers.sources_producer": {"discovery.producer", "discovery.safe", "discovery.urls"},
     "discovery.safe": set(), "discovery.scheduler": {PORTS}, "discovery.service": {"contracts.evidence", "discovery.safe", "discovery.producer", "contracts.models", "discovery.fetching", PORTS}, "discovery.urls": set(),
     "enrichment": set(), "enrichment.images": set(), "enrichment.maps": set(), "enrichment.media": {"enrichment.maps", "geolocation.textloc", "discovery.safe"},
     "enrichment.service": {"classification.classifiers", "enrichment.images", "discovery.safe", "enrichment.media", "contracts.models", PORTS, "extraction.text"},
