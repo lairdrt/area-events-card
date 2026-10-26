@@ -74,9 +74,18 @@ test("retired producers have disable-only controls and cannot be re-enabled", ()
   const manager = setup();
   manager._snapshot.sources[0].type = "uninstalled_adapter";
   const html = manager.renderSources();
-  assert.match(html, /Retired adapter/);
+  assert.match(html, /Enabled · Retired adapter/);
   assert.match(html, /Disable source/);
   assert.doesNotMatch(html, /Save changes/);
+});
+
+test("retired producer status explicitly shows disabled state after save", () => {
+  const manager = setup();
+  manager._snapshot.sources[0].type = "uninstalled_adapter";
+  manager._snapshot.sources[0].enabled = false;
+  manager.render();
+  assert.match(manager.shadowRoot.innerHTML, /Disabled · Retired adapter/);
+  assert.match(manager.shadowRoot.innerHTML, /data-action='toggle' disabled/);
 });
 
 test("producer options are assembled from adapter contracts with correct numeric types", () => {
