@@ -72,9 +72,19 @@ class SourceCleanupTests(unittest.TestCase):
     def _cubi_guards():
         return (
             {"source_id": 3, "source_key": "sd_craft_fairs", "adapter": "craft_fairs", "enabled": False},
-            {"candidates": 0, "events_owned": 0, "area_assignments": 0, "leased_jobs": 0,
-             "processing_work": 0, "leased_processing_work": 0},
+            {"candidates": 0, "events_owned": 0, "area_assignments": 0, "jobs": 1,
+             "source_change_records": 1, "leased_jobs": 0, "processing_work": 0,
+             "leased_processing_work": 0},
         )
+
+    @staticmethod
+    def _current_guards(cleanup, source_key):
+        plan = cleanup.preview(source_key)
+        identity = {key: plan["source"][key] for key in ("source_id", "source_key", "adapter", "enabled")}
+        counts = {key: plan["counts"][key] for key in (
+            "candidates", "events_owned", "area_assignments", "jobs", "source_change_records",
+            "leased_jobs", "processing_work", "leased_processing_work")}
+        return identity, counts
 
     def test_cubi_shaped_cleanup_removes_only_source_job_and_history(self):
         temp, app, db = self._cubi_fixture()
@@ -152,11 +162,74 @@ class SourceCleanupTests(unittest.TestCase):
                                 ("c" * 64,))
                         else:
                             tx.execute("INSERT INTO area_sources(area_id,source_id,added_at) VALUES(1,3,1)")
-                    with self.assertRaisesRegex(SourceCleanupError, "ownership/work"):
+                    with self.assertRaisesRegex(SourceCleanupError, "hard safety invariants"):
                         app.persistence.source_cleanup.remove("sd_craft_fairs", identity, counts)
                     with db.read() as tx:
                         self.assertIsNotNone(tx.execute("SELECT 1 FROM sources WHERE source_id=3").fetchone())
                         self.assertIsNotNone(tx.execute("SELECT 1 FROM jobs WHERE job_id=3").fetchone())
+                        self.assertEqual(tx.execute("PRAGMA foreign_key_check").fetchall(), [])
+                finally:
+                    app.close()
+                    temp.cleanup()
+
+    def test_hard_invariants_refuse_unsafe_states_even_when_expectations_match(self):
+        invariant_for = {"enabled": "enabled", "candidate": "candidates", "event": "events_owned",
+                         "area": "area_assignments", "leased-job": "leased_jobs", "processing": "processing_work"}
+        for case in invariant_for:
+            with self.subTest(case=case):
+                temp, app, db = self._cubi_fixture()
+                try:
+                    with db.write() as tx:
+                        if case == "enabled":
+                            tx.execute("UPDATE sources SET enabled=1 WHERE source_id=3")
+                        elif case == "area":
+                            tx.execute("INSERT INTO area_sources(area_id,source_id,added_at) VALUES(1,3,1)")
+                        elif case == "leased-job":
+                            tx.execute("UPDATE jobs SET state='leased',lease_token='token',lease_until=10 WHERE source_id=3")
+                        else:
+                            candidate_id = tx.execute("""INSERT INTO candidates(candidate_key,source_id,method,extractor,title,starts_at,payload_json,
+                                payload_hash,first_seen_at,last_seen_at,updated_at) VALUES('sd_craft_fairs:owned',3,'adapter','test','Owned',1000,'{}',?,1,1,1)
+                                RETURNING candidate_id""", ("d" * 64,)).fetchone()[0]
+                            if case == "event":
+                                event_id = tx.execute("""INSERT INTO events(event_key,title,starts_at,location_status,status,first_extracted_at,updated_at)
+                                    VALUES('sd-owned-event','Owned event',1000,'unknown','complete',1,1) RETURNING event_id""").fetchone()[0]
+                                tx.execute("INSERT INTO event_candidates(candidate_id,event_id,role,linked_at) VALUES(?,?,'primary',1)",
+                                           (candidate_id, event_id))
+                            elif case == "processing":
+                                tx.execute("INSERT INTO processing_work(candidate_id,extractor,state,updated_at) VALUES(?,'test','ready',1)",
+                                           (candidate_id,))
+                    identity, counts = self._current_guards(app.persistence.source_cleanup, "sd_craft_fairs")
+                    with self.assertRaisesRegex(SourceCleanupError, "hard safety invariants") as raised:
+                        app.persistence.source_cleanup.remove("sd_craft_fairs", identity, counts)
+                    self.assertIn(invariant_for[case], str(raised.exception))
+                    with db.read() as tx:
+                        self.assertIsNotNone(tx.execute("SELECT 1 FROM sources WHERE source_id=3").fetchone())
+                        self.assertEqual(tx.execute("PRAGMA foreign_key_check").fetchall(), [])
+                finally:
+                    app.close()
+                    temp.cleanup()
+
+    def test_extra_jobs_or_source_history_fail_expected_count_guards(self):
+        identity, counts = self._cubi_guards()
+        for extra in ("job", "history"):
+            with self.subTest(extra=extra):
+                temp, app, db = self._cubi_fixture()
+                try:
+                    with db.write() as tx:
+                        if extra == "job":
+                            tx.execute("""INSERT INTO jobs(job_key,kind,source_id,state,next_run_at,created_at,updated_at)
+                                VALUES('crawl_source:sd_craft_fairs:extra','crawl_source',3,'ready',2,1,1)""")
+                        else:
+                            tx.execute("""INSERT INTO changes(entity,entity_key,op,kind,payload_hash,created_at)
+                                VALUES('source','sd_craft_fairs','upsert','source.configuration_changed',?,2)""", ("e" * 64,))
+                    with self.assertRaisesRegex(SourceCleanupError, "expected guard"):
+                        app.persistence.source_cleanup.remove("sd_craft_fairs", identity, counts)
+                    with db.read() as tx:
+                        self.assertIsNotNone(tx.execute("SELECT 1 FROM sources WHERE source_id=3").fetchone())
+                        self.assertEqual(tx.execute("SELECT COUNT(*) FROM jobs WHERE source_id=3").fetchone()[0],
+                                         2 if extra == "job" else 1)
+                        self.assertEqual(tx.execute("SELECT COUNT(*) FROM changes WHERE entity='source' AND entity_key='sd_craft_fairs'").fetchone()[0],
+                                         2 if extra == "history" else 1)
                         self.assertEqual(tx.execute("PRAGMA foreign_key_check").fetchall(), [])
                 finally:
                     app.close()
@@ -192,7 +265,7 @@ class SourceCleanupTests(unittest.TestCase):
                        (candidate_ids["retired:exclusive"], page_ids[0]))
             tx.execute("INSERT INTO processing_work(candidate_id,extractor,state,updated_at) VALUES(?,'test','ready',1)",
                        (candidate_ids["retired:exclusive"],))
-    def test_cleanup_preserves_shared_event_and_page_and_removes_owned_graph(self):
+    def test_cleanup_refuses_any_source_with_candidates_and_preserves_shared_graph(self):
         cleanup = self.app.persistence.source_cleanup
         plan = cleanup.preview("retired-calendar")
         self.assertEqual(plan["counts"]["candidates"], 2)
@@ -201,34 +274,32 @@ class SourceCleanupTests(unittest.TestCase):
         self.assertEqual(plan["counts"]["pages_exclusive"], 1)
         self.assertEqual(len(plan["shared_events"]), 1)
 
-        removed = cleanup.remove("retired-calendar")
-        self.assertEqual(removed["candidates"], 2)
+        guards = self._current_guards(cleanup, "retired-calendar")
+        with self.assertRaisesRegex(SourceCleanupError, "hard safety invariants"):
+            cleanup.remove("retired-calendar", *guards)
         with database(self.app).read() as db:
-            self.assertIsNone(db.execute("SELECT 1 FROM sources WHERE source_key='retired-calendar'").fetchone())
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM candidates WHERE candidate_key LIKE 'retired:%'").fetchone()[0], 0)
-            self.assertIsNone(db.execute("SELECT 1 FROM events WHERE event_key='event-exclusive'").fetchone())
+            self.assertIsNotNone(db.execute("SELECT 1 FROM sources WHERE source_key='retired-calendar'").fetchone())
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM candidates WHERE candidate_key LIKE 'retired:%'").fetchone()[0], 2)
+            self.assertIsNotNone(db.execute("SELECT 1 FROM events WHERE event_key='event-exclusive'").fetchone())
             self.assertIsNotNone(db.execute("SELECT 1 FROM events WHERE event_key='event-shared'").fetchone())
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM event_candidates WHERE event_id=(SELECT event_id FROM events WHERE event_key='event-shared')").fetchone()[0], 1)
-            self.assertIsNone(db.execute("SELECT 1 FROM pages WHERE url='https://example.com/0'").fetchone())
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM event_candidates WHERE event_id=(SELECT event_id FROM events WHERE event_key='event-shared')").fetchone()[0], 2)
+            self.assertIsNotNone(db.execute("SELECT 1 FROM pages WHERE url='https://example.com/0'").fetchone())
             self.assertIsNotNone(db.execute("SELECT 1 FROM pages WHERE url='https://example.com/1'").fetchone())
             self.assertEqual(db.execute("SELECT COUNT(*) FROM source_pages WHERE source_id=(SELECT source_id FROM sources WHERE source_key='other-calendar')").fetchone()[0], 1)
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM evidence WHERE candidate_id IN (SELECT candidate_id FROM candidates WHERE candidate_key LIKE 'retired:%')").fetchone()[0], 0)
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM processing_work WHERE candidate_id NOT IN (SELECT candidate_id FROM candidates)").fetchone()[0], 0)
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM changes WHERE entity='source' AND entity_key='retired-calendar'").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM evidence WHERE candidate_id IN (SELECT candidate_id FROM candidates WHERE candidate_key LIKE 'retired:%')").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM processing_work WHERE candidate_id IN (SELECT candidate_id FROM candidates WHERE candidate_key LIKE 'retired:%')").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM changes WHERE entity='source' AND entity_key='retired-calendar'").fetchone()[0], 1)
             self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
             area_id = db.execute("SELECT area_id FROM areas WHERE area_key=?", (self.area.area_key,)).fetchone()[0]
             attached = db.execute("SELECT source_id FROM area_sources WHERE area_id=?", (area_id,)).fetchall()
-            self.assertEqual([r[0] for r in attached], [db.execute("SELECT source_id FROM sources WHERE source_key='other-calendar'").fetchone()[0]])
+            expected_sources = [r[0] for r in db.execute("SELECT source_id FROM sources WHERE source_key IN ('retired-calendar','other-calendar')")]
+            self.assertCountEqual([r[0] for r in attached], expected_sources)
 
-    def test_cleanup_refuses_builtin_leased_and_ambiguous_shared_history(self):
+    def test_cleanup_refuses_builtin_sources_and_owned_candidate_history(self):
+        cleanup = self.app.persistence.source_cleanup
+        guards = self._current_guards(cleanup, "sandiego_gov")
         with self.assertRaisesRegex(SourceCleanupError, "built-in"):
-            self.app.persistence.source_cleanup.remove("sandiego_gov")
-        with database(self.app).write() as tx:
-            tx.execute("UPDATE jobs SET state='leased',lease_token='token',lease_until=10 WHERE source_id=(SELECT source_id FROM sources WHERE source_key='retired-calendar')")
-        with self.assertRaisesRegex(SourceCleanupError, "leased"):
-            self.app.persistence.source_cleanup.remove("retired-calendar")
-        with database(self.app).write() as tx:
-            tx.execute("UPDATE jobs SET state='ready',lease_token=NULL,lease_until=NULL WHERE source_id=(SELECT source_id FROM sources WHERE source_key='retired-calendar')")
+            cleanup.remove("sandiego_gov", *guards)
         with database(self.app).write() as tx:
             candidate_id = tx.execute("SELECT candidate_id FROM candidates WHERE candidate_key='retired:shared'").fetchone()[0]
             event_id = tx.execute("SELECT event_id FROM events WHERE event_key='event-shared'").fetchone()[0]
@@ -237,8 +308,8 @@ class SourceCleanupTests(unittest.TestCase):
                 (candidate_id, event_id, "a" * 64, "b" * 64)).fetchone()[0]
             tx.execute("INSERT INTO event_revisions(event_id,revision,extraction_id,changed_json,created_at) VALUES(?,1,?,'{}',1)",
                        (event_id, extraction_id))
-        with self.assertRaisesRegex(SourceCleanupError, "shared event revision"):
-            self.app.persistence.source_cleanup.remove("retired-calendar")
+        with self.assertRaisesRegex(SourceCleanupError, "hard safety invariants"):
+            cleanup.remove("retired-calendar", *self._current_guards(cleanup, "retired-calendar"))
         with database(self.app).read() as db:
             self.assertIsNotNone(db.execute("SELECT 1 FROM sources WHERE source_key='retired-calendar'").fetchone())
 
@@ -246,12 +317,13 @@ class SourceCleanupTests(unittest.TestCase):
         with database(self.app).write() as tx:
             tx.execute("UPDATE event_candidates SET role='primary' WHERE candidate_id=(SELECT candidate_id FROM candidates WHERE candidate_key='retired:shared')")
             tx.execute("UPDATE event_candidates SET role='duplicate' WHERE candidate_id=(SELECT candidate_id FROM candidates WHERE candidate_key='other:shared')")
-        with self.assertRaisesRegex(SourceCleanupError, "primarily owned"):
-            self.app.persistence.source_cleanup.remove("retired-calendar")
+        with self.assertRaisesRegex(SourceCleanupError, "hard safety invariants"):
+            cleanup = self.app.persistence.source_cleanup
+            cleanup.remove("retired-calendar", *self._current_guards(cleanup, "retired-calendar"))
         with database(self.app).read() as db:
             self.assertIsNotNone(db.execute("SELECT 1 FROM events WHERE event_key='event-shared'").fetchone())
 
-    def test_cleanup_preserves_page_with_unattributed_fetch_or_page_history(self):
+    def test_cleanup_refuses_owned_candidates_and_preserves_ambiguous_pages(self):
         with database(self.app).write() as tx:
             page_id, url_key = tx.execute("SELECT page_id,url_key FROM pages WHERE url='https://example.com/0'").fetchone()
             tx.execute("INSERT INTO fetches(page_id,job_id,fetched_at,outcome) VALUES(?,NULL,1,'network')", (page_id,))
@@ -260,7 +332,9 @@ class SourceCleanupTests(unittest.TestCase):
         plan = self.app.persistence.source_cleanup.preview("retired-calendar")
         self.assertEqual(plan["counts"]["pages_exclusive"], 0)
         self.assertEqual(plan["counts"]["pages_shared_or_ambiguous"], 2)
-        self.app.persistence.source_cleanup.remove("retired-calendar")
+        cleanup = self.app.persistence.source_cleanup
+        with self.assertRaisesRegex(SourceCleanupError, "hard safety invariants"):
+            cleanup.remove("retired-calendar", *self._current_guards(cleanup, "retired-calendar"))
         with database(self.app).read() as db:
             self.assertIsNotNone(db.execute("SELECT 1 FROM pages WHERE url='https://example.com/0'").fetchone())
             self.assertEqual(db.execute("SELECT COUNT(*) FROM source_pages WHERE source_id=(SELECT source_id FROM sources WHERE source_key='other-calendar')").fetchone()[0], 1)

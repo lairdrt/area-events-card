@@ -398,7 +398,8 @@ def cmd_source_cleanup(args):
             return 2
         required_guards = (args.expect_source_id, args.expect_source_key, args.expect_adapter,
                            args.expect_enabled, args.expect_candidates, args.expect_events_owned,
-                           args.expect_area_assignments, args.expect_leased_jobs,
+                           args.expect_area_assignments, args.expect_jobs, args.expect_source_change_records,
+                           args.expect_leased_jobs,
                            args.expect_processing_work, args.expect_leased_processing_work)
         if any(value is None for value in required_guards):
             print("--apply requires explicit --expect-* identity, state, and ownership guards", file=sys.stderr)
@@ -427,6 +428,8 @@ def cmd_source_cleanup(args):
                 "candidates": args.expect_candidates,
                 "events_owned": args.expect_events_owned,
                 "area_assignments": args.expect_area_assignments,
+                "jobs": args.expect_jobs,
+                "source_change_records": args.expect_source_change_records,
                 "leased_jobs": args.expect_leased_jobs,
                 "processing_work": args.expect_processing_work,
                 "leased_processing_work": args.expect_leased_processing_work,
@@ -540,6 +543,8 @@ def main(argv=None):
     cleanup.add_argument("--expect-candidates", type=int, help="required for --apply; expected source-owned candidate count")
     cleanup.add_argument("--expect-events-owned", type=int, help="required for --apply; expected source-owned event count")
     cleanup.add_argument("--expect-area-assignments", type=int, help="required for --apply; expected area assignment count")
+    cleanup.add_argument("--expect-jobs", type=int, help="required for --apply; expected total source job count")
+    cleanup.add_argument("--expect-source-change-records", type=int, help="required for --apply; expected historical source change count")
     cleanup.add_argument("--expect-leased-jobs", type=int, help="required for --apply; expected leased crawl job count")
     cleanup.add_argument("--expect-processing-work", type=int, help="required for --apply; expected processing work count")
     cleanup.add_argument("--expect-leased-processing-work", type=int, help="required for --apply; expected leased processing work count")

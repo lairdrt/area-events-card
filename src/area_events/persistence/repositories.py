@@ -37,13 +37,19 @@ class SourceCleanup:
         source_id = source["source_id"]
         candidate_ids = [r[0] for r in connection.execute("SELECT candidate_id FROM candidates WHERE source_id=?", (source_id,))]
         candidate_keys = [r[0] for r in connection.execute("SELECT candidate_key FROM candidates WHERE source_id=?", (source_id,))]
-        event_rows = connection.execute("""SELECT e.event_id, e.event_key,
-            SUM(CASE WHEN c.source_id=? THEN 1 ELSE 0 END) owned,
-            SUM(CASE WHEN c.source_id<>? THEN 1 ELSE 0 END) shared
-            FROM events e JOIN event_candidates ec USING(event_id) JOIN candidates c USING(candidate_id)
-            WHERE c.source_id=? OR e.event_id IN (
-              SELECT ec2.event_id FROM event_candidates ec2 JOIN candidates c2 USING(candidate_id) WHERE c2.source_id=?)
-            GROUP BY e.event_id, e.event_key""", (source_id, source_id, source_id, source_id)).fetchall()
+        event_rows = connection.execute("""WITH owners AS (
+              SELECT ec.event_id, c.source_id FROM event_candidates ec JOIN candidates c USING(candidate_id)
+              UNION
+              SELECT e.event_id, c.source_id FROM events e
+                JOIN extractions x ON x.extraction_id=e.extraction_id
+                JOIN candidates c ON c.candidate_id=x.candidate_id
+            )
+            SELECT e.event_id, e.event_key,
+              MAX(CASE WHEN o.source_id=? THEN 1 ELSE 0 END) owned,
+              MAX(CASE WHEN o.source_id<>? THEN 1 ELSE 0 END) shared
+            FROM events e JOIN owners o USING(event_id)
+            WHERE EXISTS (SELECT 1 FROM owners target WHERE target.event_id=e.event_id AND target.source_id=?)
+            GROUP BY e.event_id, e.event_key""", (source_id, source_id, source_id)).fetchall()
         exclusive_events = [r["event_key"] for r in event_rows if r["owned"] and not r["shared"]]
         shared_events = [r["event_key"] for r in event_rows if r["owned"] and r["shared"]]
         protected_shared_events = connection.execute("""SELECT COUNT(*) FROM event_candidates ec JOIN candidates c USING(candidate_id)
@@ -111,22 +117,35 @@ class SourceCleanup:
             return self._inventory(connection, source_key)
 
     def remove(self, source_key, expected_identity=None, expected_counts=None):
-        if source_key in self._reserved:
-            raise SourceCleanupError(f"built-in source {source_key!r} is protected")
         with self._store.write() as tx:
+            if source_key in self._reserved:
+                raise SourceCleanupError(f"built-in source {source_key!r} is protected")
             plan = self._inventory(tx, source_key)
-            if expected_identity is not None:
-                identity_keys = ("source_id", "source_key", "adapter", "enabled")
-                actual_identity = {key: plan["source"][key] for key in identity_keys}
-                if actual_identity != expected_identity:
-                    raise SourceCleanupError(f"source identity/state differs from expected guard: {actual_identity!r}")
-            if expected_counts is not None:
-                unknown_counts = set(expected_counts) - set(plan["counts"])
-                if unknown_counts:
-                    raise SourceCleanupError(f"unknown expected source counts: {sorted(unknown_counts)!r}")
-                actual_counts = {key: plan["counts"][key] for key in expected_counts}
-                if actual_counts != expected_counts:
-                    raise SourceCleanupError(f"source ownership/work differs from expected guard: {actual_counts!r}")
+            identity_keys = ("source_id", "source_key", "adapter", "enabled")
+            count_keys = ("candidates", "events_owned", "area_assignments", "jobs", "source_change_records",
+                          "leased_jobs", "processing_work", "leased_processing_work")
+            if not isinstance(expected_identity, dict) or set(expected_identity) != set(identity_keys):
+                raise SourceCleanupError("all expected source identity/state guards are required")
+            if not isinstance(expected_counts, dict) or set(expected_counts) != set(count_keys):
+                raise SourceCleanupError("all expected source count guards are required")
+            actual_identity = {key: plan["source"][key] for key in identity_keys}
+            if actual_identity != expected_identity:
+                raise SourceCleanupError(f"source identity/state differs from expected guard: {actual_identity!r}")
+            # These are absolute safety constraints, independent of operator expectations.
+            unsafe = {
+                "enabled": plan["source"]["enabled"] != 0,
+                "candidates": plan["counts"]["candidates"] != 0,
+                "events_owned": plan["counts"]["events_owned"] != 0,
+                "area_assignments": plan["counts"]["area_assignments"] != 0,
+                "leased_jobs": plan["counts"]["leased_jobs"] != 0,
+                "processing_work": plan["counts"]["processing_work"] != 0,
+            }
+            failed_invariants = [key for key, failed in unsafe.items() if failed]
+            if failed_invariants:
+                raise SourceCleanupError(f"hard safety invariants failed: {', '.join(failed_invariants)}")
+            actual_counts = {key: plan["counts"][key] for key in count_keys}
+            if actual_counts != expected_counts:
+                raise SourceCleanupError(f"source ownership/work differs from expected guard: {actual_counts!r}")
             if plan["leased_jobs"]:
                 raise SourceCleanupError("source has a leased crawl job; stop discovery and retry")
             if plan["leased_processing_work"]:

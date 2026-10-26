@@ -9,7 +9,7 @@ This console is **part of the existing Area Events Home Assistant integration**.
 - **Areas** — creates areas, edits area geography and enabled state, and assigns multiple producer instances. Updates carry the current area revision.
 - Producer form fields are supplied by the installed Cubi adapters as a *versioned* metadata contract, not hardcoded in HA.
 - Retired source adapters appear as retired. They can be disabled without reviving the removed adapter; enabling or editing them is blocked. Existing events are retained.
-- The UI does not perform SQL operations or delete sources. Operators can use the Discovery Service's `area-events sources cleanup SOURCE_KEY` command for an audited, transactional removal; it previews by default and `--apply` requires a verified SQLite backup outside the application tree plus explicit `--expect-*` identity, state, and ownership guards. Guards are rechecked inside the deletion transaction. The command refuses built-in sources, leased work, and shared-event history it cannot safely preserve.
+- The UI does not perform SQL operations or delete sources. Operators can use the Discovery Service's `area-events sources cleanup SOURCE_KEY` command for an audited, transactional removal; it previews by default and `--apply` requires a verified SQLite backup outside the application tree plus explicit `--expect-*` identity, state, ownership, job, and source-history guards. The deletion transaction rechecks those expectations and independently refuses enabled sources, source-owned candidates or events, area assignments, leased jobs, and processing work.
 
 ## Generic website SourcesProducer (AE-10B4)
 
