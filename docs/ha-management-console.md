@@ -18,16 +18,22 @@ It is an ordinary configured instance of the replaceable adapter in
 `src/area_events/discovery/producers/sources_producer.py`:
 
 - Enter 1–12 public HTTP(S) **website URLs, one per line**.
-- Configure the scan interval, maximum pages (1–24), link depth (0–2) and maximum events (1–150).
+- Configure the scan interval, maximum pages (1–24), link depth (0–2), maximum events (1–150), and **IANA timezone** (e.g., `America/Los_Angeles`) for websites displaying local clock times without offsets.
 - Newly created producers are disabled until deliberately enabled and assigned to an area.
 - The existing scheduler handles repeat discovery; the shared SafeFetcher applies URL validation, robots.txt, private-network blocking, request budgets and host pacing.
-- Reads structured **JSON-LD Event** data and **iCalendar (.ics)** VEVENT calendars. Visits bounded same-host links relevant to event calendars, and uses RSS/Atom entry links as leads when encountered.
-- Events without an actual stated time zone or UTC offset are **not emitted**. Non-structured websites may yield no events; this is not evidence that the area has no events.
+- **The same SourcesProducer module** reads structured **JSON-LD Event**, **iCalendar (.ics)**, and unstructured HTML text. It finds dated events across headings, event detail pages, lists, and cards; links are followed through the bounded same-host crawl. It never delegates text extraction to an extra producer.
+- Unstructured text events require a visible event name, explicit calendar date, actual event clock time and configured site timezone; missing evidence leads to **no candidate**. That avoids mistaking operating hours, news publication dates, vendor names and schedules without dates for individual events. Configured timezone supplies the local offset rather than inventing one.
 - Every event uses the standard candidate contract; leads, fetched pages, candidate records and event results use the same shared persistence and processing interfaces as other producers.
 
-The generic producer is **not an unconstrained web spider, JavaScript browser,
-arbitrary natural-language event extractor or scraper for authenticated sites**.
+The generic producer **does use conservative text heuristics**, but is not a general-purpose AI browser or a guarantee for every arbitrary website layout. JavaScript-only, authenticated, CAPTCHA-restricted, and robot-blocked pages may remain unreadable. Structured and ordinary text paths share the identical candidate output and downstream processing.
 No new API, database, timer or per-source downstream path is introduced.
+
+**Offline acceptance fixture:** `tests/test_sources_producer.py` uses the currently published
+`https://mtrp.org/marketplace/` event details. With the producer timezone set to
+`America/Los_Angeles`, it must emit exactly **two 2026 Holiday Marketplace occurrences**
+(November 14 and 15, 9:00 a.m.–3:00 p.m., Mission Trails Regional Park Visitor Center),
+not vendors, parking instructions or Visitor Center hours. Live site access is tested
+separately after deployment because CI should not depend on public-site availability.
 
 ## Architecture and security
 
