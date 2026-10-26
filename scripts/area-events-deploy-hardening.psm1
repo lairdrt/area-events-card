@@ -142,4 +142,15 @@ function Convert-AreaEventsSystemdExecStart {
   return $updated
 }
 
-Export-ModuleMember -Function Import-AreaEventsDpapiCredential, New-AreaEventsRemotePythonCommand, Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsRequiredFrontendAssets, Assert-AreaEventsFeedResponse, Test-AreaEventsCodeBackupMembers, Resolve-AreaEventsSystemdLayout, Convert-AreaEventsSystemdExecStart
+function Resolve-AreaEventsComponentPlan {
+  [CmdletBinding()]
+  param([int]$CurrentSchema,[int]$TargetSchema,[bool]$CubiSourceMatches,[bool]$HaFilesMatch,[bool]$HaRuntimeMatches)
+  if ($CurrentSchema -gt $TargetSchema) { throw 'Production schema is newer than the checked-out source.' }
+  # Real installed state is authoritative, not the last all-or-nothing deployment receipt.
+  return [pscustomobject]@{
+    CubiNeeded=($CurrentSchema -ne $TargetSchema -or -not $CubiSourceMatches)
+    HANeeded=(-not $HaFilesMatch -or -not $HaRuntimeMatches)
+  }
+}
+
+Export-ModuleMember -Function Import-AreaEventsDpapiCredential, New-AreaEventsRemotePythonCommand, Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsRequiredFrontendAssets, Assert-AreaEventsFeedResponse, Test-AreaEventsCodeBackupMembers, Resolve-AreaEventsSystemdLayout, Convert-AreaEventsSystemdExecStart, Resolve-AreaEventsComponentPlan
