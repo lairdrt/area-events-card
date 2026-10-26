@@ -4,13 +4,27 @@
 // The identifier is "AREA-EVENTS <integration version>-<hash of the source>", shown in the card footer and
 // logged to the browser console. The source keeps the __AREA_EVENTS_CARD_BUILD__ placeholder.
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-// Git may check out text files as CRLF on Windows. Build and hash canonical LF bytes,
-// otherwise a successful -DryRun dirties the tracked HA bundle and blocks deployment.
-const readCanonical = (path) => readFileSync(path, "utf8").replace(/\r\n?/g, "\n");
+// The source hash must be platform-independent, but the checked-out, TRACKED HA
+// assets must retain their existing line endings. Git text=auto checks these files
+// out as CRLF on Windows and LF on Linux; overwriting CRLF with LF dirties Git.
+const canonical = (text) => text.replace(/\r\n?/g, "\n");
+const readCanonical = (path) => canonical(readFileSync(path, "utf8"));
+
+function writeTracked(path, generatedLF) {
+  if (existsSync(path)) {
+    const existing = readFileSync(path, "utf8");
+    if (canonical(existing) === generatedLF) return; // Crucial: do not touch clean tracked files.
+    const eol = existing.includes("\r\n") ? "\r\n" : "\n";
+    writeFileSync(path, generatedLF.replace(/\n/g, eol));
+  } else {
+    const eol = process.platform === "win32" ? "\r\n" : "\n";
+    writeFileSync(path, generatedLF.replace(/\n/g, eol));
+  }
+}
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceDir = join(root, "src", "frontend");
@@ -26,11 +40,23 @@ const moduleSource = presentationFiles.map((name) => `${name}\n${readCanonical(j
 const identifier = `AREA-EVENTS ${version}-${createHash("sha1").update(source).update(moduleSource).digest("hex").slice(0, 8)}`;
 const built = source.replaceAll("__AREA_EVENTS_CARD_BUILD__", identifier);
 
-for (const folder of [join(root, "custom_components", "area_events", "frontend"), join(root, "dist")]) {
-  mkdirSync(folder, { recursive: true });
-  writeFileSync(join(folder, "area-events-card.js"), built);
-  const modules = join(folder, "presentation");
-  mkdirSync(modules, { recursive: true });
-  for (const name of presentationFiles) writeFileSync(join(modules, name), readCanonical(join(presentationDir, name)));
-  console.log(`Built ${join(folder, "area-events-card.js")} (${identifier})`);
+// The tracked integration bundle is committed for installation without a build.
+// Do NOT rewrite it when only the working tree's line endings differ.
+const tracked = join(root, "custom_components", "area_events", "frontend");
+mkdirSync(tracked, { recursive: true });
+writeTracked(join(tracked, "area-events-card.js"), built);
+mkdirSync(join(tracked, "presentation"), { recursive: true });
+for (const name of presentationFiles) {
+  writeTracked(join(tracked, "presentation", name), readCanonical(join(presentationDir, name)));
 }
+
+// dist is untracked and can always use canonical LF bytes.
+const dist = join(root, "dist");
+mkdirSync(dist, { recursive: true });
+writeFileSync(join(dist, "area-events-card.js"), built);
+mkdirSync(join(dist, "presentation"), { recursive: true });
+for (const name of presentationFiles) {
+  writeFileSync(join(dist, "presentation", name), readCanonical(join(presentationDir, name)));
+}
+console.log(`Built ${join(tracked, "area-events-card.js")} (${identifier})`);
+console.log(`Built ${join(dist, "area-events-card.js")} (${identifier})`);
