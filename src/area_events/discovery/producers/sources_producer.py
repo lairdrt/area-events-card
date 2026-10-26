@@ -394,6 +394,8 @@ class SourcesProducer:
             "max_depth": _integer(options.get("max_depth"), "max_depth", 1, 0, MAX_DEPTH),
             "max_events": _integer(options.get("max_events"), "max_events", 75, 1, MAX_EVENTS),
         }
+        if values["max_pages"] < len(urls):
+            raise ValueError("max_pages must be at least the number of website URLs, so every site can be checked")
         return urls[0], values
 
     @staticmethod
