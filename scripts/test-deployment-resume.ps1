@@ -36,7 +36,7 @@ $preflightStart = $source.IndexOf('function Invoke-Preflight {')
 $preflightEnd = $source.IndexOf('function Test-CubiInstalledSource', $preflightStart)
 if ($preflightStart -lt 0 -or $preflightEnd -le $preflightStart) { throw 'Deployment preflight boundaries missing' }
 $preflight = $source.Substring($preflightStart, $preflightEnd - $preflightStart)
-if ($preflight -notmatch "if \(\$branch -ne 'main'\)" -or $preflight -notmatch "'status','--porcelain'") {
+if ($preflight -notmatch [regex]::Escape('if ($branch -ne ''main'')') -or $preflight -notmatch "'status','--porcelain'") {
   throw 'Deployment must require main and a clean working tree'
 }
 $start = $source.IndexOf('function Invoke-DeploymentPlan(')
