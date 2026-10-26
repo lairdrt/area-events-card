@@ -46,6 +46,39 @@ END:VCALENDAR
 """
 
 
+# Representative text and hierarchy from https://mtrp.org/marketplace/
+# As checked 2026-10-26; offline fixture deliberately avoids website/network flakiness.
+MTRP_MARKETPLACE = "https://mtrp.org/marketplace/"
+MTRP_HTML = """
+<main><h1>Holiday Marketplace at Mission Trails Regional Park</h1>
+<p>Shop local this holiday season at Mission Trails Regional Park!</p>
+<h2>2026 HOLIDAY MARKETPLACE</h2>
+<p>Dates: Saturday, November 14 and Sunday, November 15, 2026</p>
+<p>Time: 9 a.m.–3 p.m. both days</p>
+<p>Location: Mission Trails Regional Park Visitor Center<br>
+One Father Junipero Serra Trail<br>San Diego, CA 92119</p>
+<p>The event is free but please register in advance.</p>
+<h2>2026 VENDORS</h2>
+<ul><li>Bradbury-Bennett</li><li>Candlefy</li><li>Chrysanthemum Art</li></ul>
+<h2>PARKING + SHUTTLE</h2>
+<p>Parking will be available near the visitor center.</p>
+<footer><p>Visitor Center<br>Daily Hours: 9 AM – 5 PM</p></footer>
+</main>
+"""
+MULTI_EVENT_HTML = """
+<main><h1>Upcoming Events</h1>
+<article><h2>Harvest Craft Fair</h2><p>Saturday, November 14, 2026</p>
+<p>10 am to 2 pm</p><p>Location: Town Hall</p></article>
+<article><h2>Moonlight Lecture</h2><p>Friday, November 20, 2026</p>
+<p>6:30pm – 8pm</p><p>Location: Science Museum</p></article>
+<h2>Hours</h2><p>Visitor Center open daily 9am to 5pm.</p></main>
+"""
+LISTING_HTML = """<main><h1>Events</h1><ul>
+<li>Open Studio Art Fair — November 18, 2026 at 11 am–4 pm</li>
+<li>Community Concert — December 2, 2026 at 7pm–9pm</li>
+<li>Visitor Center open 9am–5pm daily</li></ul></main>"""
+
+
 class FakeClient:
     def __init__(self, pages):
         self.pages, self.requests = pages, []
@@ -157,6 +190,107 @@ END:VCALENDAR"""
         self.assertEqual(result.notes["invalid_or_ambiguous_event_dates"], 1)
         self.assertIsNone(_timestamp("2026-11-05"))
         self.assertIsNone(_timestamp("2026-11-01T01:30:00", "America/Los_Angeles"))
+
+    def test_mtrp_marketplace_actual_webpage_copy_two_events_without_structured_data(self):
+        result, client = run_crawl(
+            {MTRP_MARKETPLACE: MTRP_HTML}, urls=(MTRP_MARKETPLACE,),
+            timezone="America/Los_Angeles", max_depth=0
+        )
+        self.assertEqual(client.requests, [MTRP_MARKETPLACE])
+        self.assertEqual(len(result.candidates), 2, result.candidates)
+        self.assertEqual([e.title for e in result.candidates], ["Holiday Marketplace"] * 2)
+        self.assertEqual(
+            [e.starts_at for e in result.candidates],
+            ["2026-11-14T09:00:00-08:00", "2026-11-15T09:00:00-08:00"]
+        )
+        self.assertEqual(
+            [e.ends_at for e in result.candidates],
+            ["2026-11-14T15:00:00-08:00", "2026-11-15T15:00:00-08:00"]
+        )
+        self.assertTrue(all(e.venue == "Mission Trails Regional Park Visitor Center" for e in result.candidates))
+        self.assertTrue(all("San Diego, CA 92119" in (e.address or "") for e in result.candidates))
+        self.assertEqual(result.notes["unstructured_candidates"], 2)
+        self.assertEqual(len(producer.accept(result).candidates), 2)
+
+    @unittest.skipUnless(os.getenv("AREA_EVENTS_LIVE_MTRP") == "1",
+                         "live MTRP site smoke test requires explicit network opt-in")
+    def test_mtrp_marketplace_live_public_page(self):
+        """An opt-in real-site acceptance test; default CI uses the stable offline fixture."""
+        from area_events.discovery.safe import SafeFetcher, HostPolicy
+        actual = SafeFetcher(request_interval=2.0, state=HostPolicy())
+        source = SourcesProducer()
+        base, options = source.validate_options({
+            "urls": [MTRP_MARKETPLACE], "timezone": "America/Los_Angeles",
+            "max_pages": 1, "max_depth": 0,
+        })
+        observed = source.crawl(
+            RecordingFetcher(actual, 4, 120), (),
+            {**options, "url": base, "source_key": "mtrp", "name": "Mission Trails"}
+        )
+        self.assertEqual(
+            {e.starts_at for e in producer.accept(observed).candidates},
+            {"2026-11-14T09:00:00-08:00", "2026-11-15T09:00:00-08:00"}
+        )
+        self.assertTrue(all(e.venue == "Mission Trails Regional Park Visitor Center"
+                            for e in observed.candidates))
+
+    def test_unstructured_multiple_independent_event_headings(self):
+        result, _ = run_crawl({SEED: MULTI_EVENT_HTML},
+                              timezone="America/Los_Angeles", max_depth=0)
+        self.assertEqual(
+            [(e.title, e.starts_at) for e in result.candidates],
+            [("Harvest Craft Fair", "2026-11-14T10:00:00-08:00"),
+             ("Moonlight Lecture", "2026-11-20T18:30:00-08:00")]
+        )
+
+    def test_unstructured_list_items_and_no_visitor_hours_false_event(self):
+        result, _ = run_crawl({SEED: LISTING_HTML},
+                              timezone="America/Los_Angeles", max_depth=0)
+        self.assertEqual({e.title for e in result.candidates},
+                         {"Open Studio Art Fair", "Community Concert"})
+        self.assertEqual(len(result.candidates), 2)
+
+    def test_ordinary_narrative_paragraph_needs_no_special_site_template(self):
+        page = """<h1>Evening Astronomy</h1>
+<p>Join us November 22, 2026 from 6pm to 8pm at the observatory.</p>"""
+        result, _ = run_crawl({SEED: page}, timezone="America/Los_Angeles")
+        self.assertEqual([(v.title, v.starts_at, v.ends_at) for v in result.candidates],
+                         [("Evening Astronomy", "2026-11-22T18:00:00-08:00",
+                           "2026-11-22T20:00:00-08:00")])
+
+    def test_generic_html_event_table_rows_are_separate_events(self):
+        page = """<h1>Event Calendar</h1>
+<table><tr><th>Event</th><th>Date</th><th>Time</th></tr>
+<tr><td>Garden Workshop</td><td>November 22, 2026</td><td>10am–12pm</td></tr>
+<tr><td>Star Party</td><td>November 25, 2026</td><td>7pm–9pm</td></tr></table>"""
+        result, _ = run_crawl({SEED: page}, timezone="America/Los_Angeles")
+        self.assertEqual({v.title for v in result.candidates}, {"Garden Workshop", "Star Party"})
+
+    def test_publication_date_and_business_hours_do_not_fabricate_events(self):
+        page = """<h1>Visitor Center News</h1><p>Published November 22, 2026</p>
+<p>Staff meeting at 6pm, Visitor Center open daily 9am to 5pm.</p>"""
+        result, _ = run_crawl({SEED: page}, timezone="America/Los_Angeles")
+        self.assertEqual(result.candidates, ())
+
+    def test_text_events_need_explicit_configured_timezone_and_event_time(self):
+        no_zone, _ = run_crawl({MTRP_MARKETPLACE: MTRP_HTML},
+                               urls=(MTRP_MARKETPLACE,), max_depth=0)
+        self.assertEqual(no_zone.candidates, ())
+        date_only = "<h1>Farmers Market</h1><p>Dates: November 14, 2026</p><p>Location: Village Green</p>"
+        no_time, _ = run_crawl({SEED: date_only}, timezone="America/Los_Angeles")
+        self.assertEqual(no_time.candidates, ())
+
+    def test_local_text_occurrence_ids_remain_stable_across_scans(self):
+        a, _ = run_crawl({MTRP_MARKETPLACE: MTRP_HTML},
+                          urls=(MTRP_MARKETPLACE,), timezone="America/Los_Angeles")
+        b, _ = run_crawl({MTRP_MARKETPLACE: MTRP_HTML},
+                          urls=(MTRP_MARKETPLACE,), timezone="America/Los_Angeles")
+        self.assertEqual([c.local_id for c in a.candidates],
+                         [c.local_id for c in b.candidates])
+
+    def test_bad_timezone_option_is_rejected(self):
+        with self.assertRaises(ValueError):
+            SourcesProducer.validate_options({"urls": [SEED], "timezone": "Somewhere/Nowhere"})
 
     def test_all_inaccessible_pages_report_failure_without_faking_success(self):
         with self.assertRaises(FetchError):
