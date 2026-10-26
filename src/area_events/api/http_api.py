@@ -190,6 +190,8 @@ class DiscoveryApi:
             return 200, {"schema": CONTROL_SCHEMA, "status": to_jsonable(self._control.get_status())}
         if method == "GET" and path == "/v1/areas":
             return 200, {"schema": CONTROL_SCHEMA, "areas": to_jsonable(self._control.list_areas())}
+        if method == "GET" and path == "/v1/producer-types":
+            return 200, self._control.list_producer_types()
         if method == "GET" and path == "/v1/sources":
             return 200, {"schema": CONTROL_SCHEMA, "sources": [self._source_json(source) for source in self._control.list_sources()]}
         source_match = SOURCE_PATH.match(path)
