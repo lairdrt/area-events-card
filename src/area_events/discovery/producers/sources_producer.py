@@ -429,8 +429,10 @@ class _VisibleEventText(HTMLParser):
             self._section.append("\n")
         elif tag in self.BLOCKS:
             self._section.append("\n")
-        if tag in ("li", "article"):
+        if tag in ("li", "article", "tr"):
             self._cards.append([tag, []])
+        elif tag in ("td", "th") and self._cards and self._cards[-1][0] == "tr":
+            self._cards[-1][1].append(" — ")
 
     def handle_data(self, data):
         if self._ignored:
@@ -454,7 +456,7 @@ class _VisibleEventText(HTMLParser):
             self._section.append("\n")
         elif tag in self.BLOCKS:
             self._section.append("\n")
-        if tag in ("li", "article") and self._cards and self._cards[-1][0] == tag:
+        if tag in ("li", "article", "tr") and self._cards and self._cards[-1][0] == tag:
             card = self._cards.pop()
             lines = _visible_lines(" ".join(card[1]))
             if lines:
@@ -628,8 +630,13 @@ def _plain_text_events(html, page_url, source_name, retrieved_at, zone):
         row = " ".join(card)
         if not (_TEXT_DATE.search(row) or _TEXT_DATES_ISO.search(row) or _TEXT_DATES_NUMERIC.search(row)):
             continue
-        title = row.split(" – ", 1)[0].split(" — ", 1)[0].split(" - ", 1)[0]
-        if _TEXT_DATE.search(title) or _TEXT_DATES_ISO.search(title) or _TEXT_DATES_NUMERIC.search(title):
+        date_match = _TEXT_DATE.search(row) or _TEXT_DATES_ISO.search(row) or _TEXT_DATES_NUMERIC.search(row)
+        title = row[:date_match.start()].rstrip(" ,-–—|:")
+        title = re.sub(r"(?:\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday))\s*,?$",
+                       "", title, flags=re.I).strip(" ,-–—|:")
+        if " — " in title:
+            title = title.split(" — ", 1)[0].strip()
+        if not title or _UNHELPFUL_HEADINGS.fullmatch(title):
             continue
         extracted, skipped = _text_event_group(title[:120], [row], page_title,
                                                page_url, source_name, retrieved_at, zone)
