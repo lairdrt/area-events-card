@@ -273,6 +273,9 @@ def fail(reason):
  return False
 def blob_sha(path):
  with open(path,'rb') as f: data=f.read()
+ # Git stores tracked .py/.toml text with LF; accept Windows CRLF in deployed copies.
+ # Nothing else is normalized: any actual code or metadata change still fails.
+ if path.endswith(('.py','.toml')): data=data.replace(b'\r\n',b'\n')
  return hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
 def verify(base,prefix):
  if not os.path.isdir(base): return fail(prefix+' directory missing')
