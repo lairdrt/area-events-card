@@ -1,6 +1,6 @@
 # Area Events Home Assistant management console — first slice
 
-This console is **part of the existing Area Events Home Assistant integration**. It is a native administrator-only custom HA panel at \`/area-events-manage\`, with an entry in HA's sidebar. The standard integration Configure form remains for Cubi connection credentials and HA refresh interval.
+This console is **part of the existing Area Events Home Assistant integration**. It is a native administrator-only custom HA panel at `/area-events-manage`, with an entry in HA's sidebar. The standard integration Configure form remains for Cubi connection credentials and HA refresh interval.
 
 ## Current functions
 
@@ -13,7 +13,7 @@ This console is **part of the existing Area Events Home Assistant integration**.
 
 ## Architecture and security
 
-\`\`\`text
+```text
 HA management panel (presentation only, admin sidebar)
          |
 HA admin-only, validated WebSocket commands
@@ -26,19 +26,19 @@ Cubi versioned HTTPS API -> Control Service -> ControlStorage port
                          Scheduler -> independent producer instances -> standard
                          candidates -> extraction/normalization/validation ->
                          separate deduplication <-> persistence
-\`\`\`
+```
 
 No direct browser-to-Cubi request, HA-to-SQLite request, source-specific processing bypass, additional database, or new service is introduced. The original event cards and processing pipeline remain unchanged.
 
 ## Supported management APIs
 
-- HA WebSocket \`area_events/management\`: admin-only read snapshot with
-  \`area_events.management.v1\` schema and \`producer_types.schema = area_events.producer_forms.v1\`.
-- HA WebSocket \`area_events/source_command\`: admin-only \`create\`, \`update\`, \`toggle\`; writes use expected source revisions where applicable.
-- Existing HA WebSocket \`area_events/area_create\`, \`area_events/area_update\` are reused.
-- Cubi GET \`/v1/producer-types\`: producer-defined form fields.
+- HA WebSocket `area_events/management`: admin-only read snapshot with
+  `area_events.management.v1` schema and `producer_types.schema = area_events.producer_forms.v1`.
+- HA WebSocket `area_events/source_command`: admin-only `create`, `update`, `toggle`; writes use expected source revisions where applicable.
+- Existing HA WebSocket `area_events/area_create`, `area_events/area_update` are reused.
+- Cubi GET `/v1/producer-types`: producer-defined form fields.
 - Existing Cubi source and area endpoints: create/edit and state transitions.
-- Cubi \`ControlStorage.set_source_enabled\` is a state-only operation, allowing *disable* of a retired adapter while rejecting unsafe enable. Other producer edits continue to use validation.
+- Cubi `ControlStorage.set_source_enabled` is a state-only operation, allowing *disable* of a retired adapter while rejecting unsafe enable. Other producer edits continue to use validation.
 
 ## Acceptance test (on a test installation, after CI and review)
 
