@@ -22,6 +22,12 @@ WS_SETTINGS = f"{DOMAIN}/settings"
 WS_PAUSE = f"{DOMAIN}/pause"
 WS_RESUME = f"{DOMAIN}/resume"
 
+WS_MANAGEMENT = f"{DOMAIN}/management"
+WS_SOURCE_COMMAND = f"{DOMAIN}/source_command"
+
+MANAGEMENT_URL = "/area_events/manager.js"
+MANAGEMENT_PANEL_PATH = "area-events-manage"
+
 CARD_URL = "/area_events/area-events-card.js"
 PRESENTATION_URL = "/area_events/presentation"
 PHOTOS_KEY = f"{DOMAIN}_photos"  # hass.data: the validated category-photograph index, or None

@@ -324,6 +324,7 @@ Check 'manifest-driven assets include an added renderer' {
   $presentation=Join-Path $root 'presentation'; New-Item -ItemType Directory -Path $presentation | Out-Null
   try {
     Set-Content (Join-Path $root 'area-events-card.js') 'card'
+    Set-Content (Join-Path $root 'manager.js') 'manager'
     $names=@('manifest.js','registry.js','community.js','generic.js','nasa-mission.js','new-renderer.js')
     foreach($name in $names) { Set-Content (Join-Path $presentation $name) 'module' }
     Set-Content (Join-Path $presentation 'manifest.js') @'
@@ -331,7 +332,7 @@ import { communityRenderer } from "./community.js";
 import { newRenderer } from "./new-renderer.js";
 '@
     $assets=@(Get-AreaEventsRequiredFrontendAssets $root)
-    if ($assets.Count -ne 4 -or $assets -notcontains (Join-Path $presentation 'new-renderer.js')) { throw "new renderer not represented in required assets: $($assets.Count)" }
+    if ($assets.Count -ne 5 -or $assets -notcontains (Join-Path $root 'manager.js') -or $assets -notcontains (Join-Path $presentation 'new-renderer.js')) { throw "new renderer not represented in required assets: $($assets.Count)" }
   } finally { Remove-Item -LiteralPath $root -Recurse -Force }
 }
 Check 'valid empty event feeds pass and malformed feeds fail' {

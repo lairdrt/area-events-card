@@ -349,6 +349,24 @@ class DiscoveryHub:
     async def update_area(self, area_key, expected_revision, **changes):
         return await self._changed(self._controller().update_area(area_key, expected_revision, **changes))
 
+    async def management_snapshot(self):
+        """Administrator management view; configurations remain owned by Cubi."""
+        sources = await self._read.sources()
+        areas = await self._read.areas()
+        status = await self._read.status()
+        producer_types = await self._read.producer_types()
+        return {"schema": "area_events.management.v1", "sources": sources, "areas": areas,
+                "status": status, "producer_types": producer_types, "can_control": self.can_control}
+
+    async def create_source(self, source_key, adapter, name, enabled, interval_minutes, options):
+        return await self._changed(self._controller().create_source(source_key, adapter, name, enabled, interval_minutes, options))
+
+    async def update_source(self, source_key, expected_revision, **changes):
+        return await self._changed(self._controller().update_source(source_key, expected_revision, **changes))
+
+    async def set_source_enabled(self, source_key, expected_revision, enabled):
+        return await self._changed(self._controller().set_source_enabled(source_key, expected_revision, enabled))
+
     async def set_settings(self, expected_revision, mode=None, intensity=None):
         return await self._changed(self._controller().set_settings(expected_revision, mode=mode, intensity=intensity))
 

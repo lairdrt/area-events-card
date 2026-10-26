@@ -40,6 +40,11 @@ class SourceRepository:
                       WHERE source_id=?""",
                    (spec.name, spec.base_url, json.dumps(spec.options_dict(), sort_keys=True), int(enabled), int(spec.interval_s), now, source_id))
 
+    def set_enabled(self, tx, source_id, enabled, now):
+        """State-only transition: a retired adapter need not be installed to stop it."""
+        tx.execute("""UPDATE sources SET enabled=?, revision=revision+1, updated_at=?
+                      WHERE source_id=?""", (int(enabled), now, source_id))
+
     def by_id(self, connection, source_id):
         return connection.execute("SELECT * FROM sources WHERE source_id=?", (source_id,)).fetchone()
 

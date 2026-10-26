@@ -127,15 +127,20 @@ def _revision(value):
 class LocalDiscoveryControl:
     """The control contract: validates a command and asks Persistence to carry it out. `runtime` is a callable returning the host's operating state (loop, uptime) for status."""
 
-    def __init__(self, storage: ControlStorage, runtime=lambda: {}, new_key=lambda: uuid.uuid4().hex[:16], adapters=(), source_validators=None, reserved_source_keys=()):
+    def __init__(self, storage: ControlStorage, runtime=lambda: {}, new_key=lambda: uuid.uuid4().hex[:16], adapters=(), source_validators=None, reserved_source_keys=(), producer_definitions=None):
         self._storage, self._runtime, self._new_key = storage, runtime, new_key
         self._adapters, self._source_validators = frozenset(adapters), dict(source_validators or {})
         self._reserved_source_keys = frozenset(reserved_source_keys)
+        self._producer_definitions = tuple(producer_definitions or ())
 
     # --- reads -----------------------------------------------------------------------------------------------------
 
     def list_areas(self):
         return self._storage.list_areas()
+
+    def list_producer_types(self):
+        """Versioned form metadata defined by replaceable producer adapters."""
+        return {"schema": "area_events.producer_forms.v1", "types": list(self._producer_definitions)}
 
     def list_sources(self):
         return self._storage.list_sources()
@@ -211,8 +216,8 @@ class LocalDiscoveryControl:
 
     def update_source(self, request: UpdateSourceRequest):
         expected = _revision(request.expected_revision)
-        if request.source_key in self._reserved_source_keys:
-            raise ValidationFailed("built-in source configuration is read-only")
+        # Built-in producer identity/type remains reserved and immutable. Operators can
+        # still tune the persisted instance; registration never overwrites those settings.
         current = self.get_source(request.source_key)
         name = current.name if request.name is None else _name(request.name)
         enabled = current.enabled if request.enabled is None else request.enabled
@@ -226,7 +231,16 @@ class LocalDiscoveryControl:
     def set_source_enabled(self, source_key, enabled, expected_revision):
         if not isinstance(enabled, bool):
             raise ValidationFailed("enabled must be true or false")
-        return self.update_source(UpdateSourceRequest(source_key, expected_revision, enabled=enabled))
+        expected = _revision(expected_revision)
+        # Enabling an unavailable producer is unsafe, but disabling must still work.
+        if enabled:
+            current = self.get_source(source_key)
+            if current.revision != expected:
+                raise RevisionConflict(f"the source is at revision {current.revision}, not {expected}", current.revision)
+            if current.adapter not in self._adapters:
+                raise ValidationFailed("cannot enable a producer whose adapter is not installed")
+            self._source_spec(current.source_key, current.adapter, current.name, current.interval_minutes, current.options_dict())
+        return self._storage.set_source_enabled(source_key, expected, enabled)
 
     def set_area_enabled(self, area_key, enabled, expected_revision=None):
         if not isinstance(enabled, bool):

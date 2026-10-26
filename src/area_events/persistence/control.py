@@ -107,6 +107,22 @@ class SqliteControlStorage:
             seq = self._changes.append(tx, "source", source.source_key, digest_of(source), now, kind="source.configuration_changed")
         return SourceControlResult(CONTROL_SCHEMA, source.revision, seq, False, source)
 
+    def set_source_enabled(self, source_key, expected_revision, enabled):
+        """Versioned state change without revalidating a retired producer's options."""
+        now = self._now()
+        with self._store.write() as tx:
+            row = self._sources.by_key(tx, source_key)
+            if row is None:
+                raise NotFound(f"no source '{source_key}'")
+            if row["revision"] != expected_revision:
+                raise RevisionConflict(f"the source is at revision {row['revision']}, not {expected_revision}", row["revision"])
+            if bool(row["enabled"]) == enabled:
+                return SourceControlResult(CONTROL_SCHEMA, row["revision"], None, True, self._sources.configuration(row))
+            self._sources.set_enabled(tx, row["source_id"], enabled, now)
+            source = self._sources.configuration(self._sources.by_id(tx, row["source_id"]))
+            seq = self._changes.append(tx, "source", source.source_key, digest_of(source), now, kind="source.configuration_changed")
+        return SourceControlResult(CONTROL_SCHEMA, source.revision, seq, False, source)
+
     def update_area(self, area_key, expected_revision, wanted, source_keys, settle):
         now = self._now()
         with self._store.write() as tx:

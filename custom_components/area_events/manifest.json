@@ -9,7 +9,8 @@
   "dependencies": [
     "frontend",
     "http",
-    "websocket_api"
+    "websocket_api",
+    "panel_custom"
   ],
   "documentation": "https://github.com/lairdrt/area-events-card",
   "integration_type": "service",
