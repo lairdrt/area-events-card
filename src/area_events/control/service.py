@@ -127,15 +127,20 @@ def _revision(value):
 class LocalDiscoveryControl:
     """The control contract: validates a command and asks Persistence to carry it out. `runtime` is a callable returning the host's operating state (loop, uptime) for status."""
 
-    def __init__(self, storage: ControlStorage, runtime=lambda: {}, new_key=lambda: uuid.uuid4().hex[:16], adapters=(), source_validators=None, reserved_source_keys=()):
+    def __init__(self, storage: ControlStorage, runtime=lambda: {}, new_key=lambda: uuid.uuid4().hex[:16], adapters=(), source_validators=None, reserved_source_keys=(), producer_definitions=None):
         self._storage, self._runtime, self._new_key = storage, runtime, new_key
         self._adapters, self._source_validators = frozenset(adapters), dict(source_validators or {})
         self._reserved_source_keys = frozenset(reserved_source_keys)
+        self._producer_definitions = tuple(producer_definitions or ())
 
     # --- reads -----------------------------------------------------------------------------------------------------
 
     def list_areas(self):
         return self._storage.list_areas()
+
+    def list_producer_types(self):
+        """Versioned form metadata defined by replaceable producer adapters."""
+        return {"schema": "area_events.producer_forms.v1", "types": list(self._producer_definitions)}
 
     def list_sources(self):
         return self._storage.list_sources()
