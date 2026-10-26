@@ -267,10 +267,15 @@ import glob,hashlib,json,os,re,shlex,subprocess
 root='/home/robohobo/area-events-discovery'; venv=os.path.join(root,'.venv'); python=os.path.join(venv,'bin','python')
 expected=json.loads(os.environ['AE_EXPECTED'])
 if not isinstance(expected,dict) or len(expected)<3: raise RuntimeError('invalid source manifest')
+issues=[]
+def fail(reason):
+ issues.append(reason)
+ return False
 def blob_sha(path):
  with open(path,'rb') as f: data=f.read()
  return hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
 def verify(base,prefix):
+ if not os.path.isdir(base): return fail(prefix+' directory missing')
  expected_code=set()
  for rel,sha in expected.items():
   if not re.fullmatch(r'[0-9a-f]{40}',sha) or '..' in rel.split('/'): raise RuntimeError('invalid manifest entry')
@@ -279,30 +284,38 @@ def verify(base,prefix):
   if not suffix: raise RuntimeError('empty source path')
   expected_code.add(suffix)
   path=os.path.join(base,*suffix.split('/'))
-  if os.path.islink(path) or not os.path.isfile(path) or blob_sha(path)!=sha: return False
+  if os.path.islink(path): return fail(prefix+suffix+' is a symlink')
+  if not os.path.isfile(path): return fail(prefix+suffix+' is missing')
+  if blob_sha(path)!=sha: return fail(prefix+suffix+' content differs')
  for directory,dirs,files in os.walk(base):
-  if any(os.path.islink(os.path.join(directory,d)) for d in dirs): return False
+  if any(os.path.islink(os.path.join(directory,d)) for d in dirs): return fail(prefix+' contains a symlink directory')
   dirs[:]=[d for d in dirs if d!='__pycache__']
   for name in files:
    path=os.path.join(directory,name)
-   if os.path.islink(path): return False
-   if name.endswith('.py') and os.path.relpath(path,base).replace(os.sep,'/') not in expected_code: return False
+   if os.path.islink(path): return fail(prefix+' contains a symlink file')
+   if name.endswith('.py') and os.path.relpath(path,base).replace(os.sep,'/') not in expected_code:
+    return fail(prefix+os.path.relpath(path,base).replace(os.sep,'/')+' unexpected Python file')
  return True
-ok=os.path.isdir(root+'/src/area_events') and verify(root+'/src/area_events','src/area_events/')
+ok=verify(root+'/src/area_events','src/area_events/')
 if ok:
  p=root+'/pyproject.toml'
- ok=not os.path.islink(p) and os.path.isfile(p) and blob_sha(p)==expected['pyproject.toml']
+ if os.path.islink(p): ok=fail('pyproject.toml symlink')
+ elif not os.path.isfile(p): ok=fail('pyproject.toml missing')
+ elif blob_sha(p)!=expected['pyproject.toml']: ok=fail('pyproject.toml content differs')
 if ok:
  packages=glob.glob(os.path.join(venv,'lib','python*','site-packages','area_events'))
- ok=os.path.isfile(python) and len(packages)==1 and verify(packages[0],'src/area_events/')
+ if not os.path.isfile(python): ok=fail('venv Python missing')
+ elif len(packages)!=1: ok=fail('installed area_events package count: '+str(len(packages)))
+ else: ok=verify(packages[0],'src/area_events/')
 if ok:
  output=subprocess.run(['systemctl','--user','show','area-events-discovery.service','--property=ExecStart','--value'],capture_output=True,text=True,timeout=12,check=True).stdout
  match=re.search(r'(?:^|[;{])\s*argv\[\]=([^;}]+)',output)
  argv=shlex.split(match.group(1).strip()) if match else []
- ok=len(argv)>=3 and argv[:3]==[python,'-m','area_events']
-print(json.dumps({'matches':bool(ok)}))
+ if len(argv)<3 or argv[:3]!=[python,'-m','area_events']: ok=fail('systemd ExecStart interpreter/module differs')
+print(json.dumps({'matches':bool(ok),'diagnostics':issues[:3]}))
 '@
   $result=Invoke-CubiPython $py @{AE_EXPECTED=$manifest} 80 | ConvertFrom-Json
+  if ($result.matches -ne $true) { Write-Host "Cubi installed-source check: $(@($result.diagnostics) -join '; ')" }
   return ($result.matches -eq $true)
 }
 function Invoke-DeploymentPlan($preflight) {
