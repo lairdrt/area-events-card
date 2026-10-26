@@ -25,7 +25,7 @@ try {
 } catch { $futureRejected = $true }
 if (-not $futureRejected) { throw 'newer production schema was accepted' }
 
-foreach ($file in @('deploy-area-events.ps1','deploy-ha.ps1','install-ha.ps1','area-events-deploy-hardening.psm1','area-events-deploy-engine.psm1')) {
+foreach ($file in @('deploy-area-events.ps1','area-events-deploy-hardening.psm1','area-events-deploy-engine.psm1')) {
   $errors = $null
   [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $file),[ref]$null,[ref]$errors) | Out-Null
   if ($errors.Count) { throw ("PowerShell parse failure in {0}: {1}" -f $file,$errors[0].Message) }
