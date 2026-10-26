@@ -96,9 +96,9 @@
       },
       "source_toggle": {
         "title": "Change producer status",
-        "description": "Instance {source_id} is currently enabled: {enabled}.",
+        "description": "Confirm that you want to {action} producer {source_id}. This changes discovery eligibility; saved events are not deleted.",
         "data": {
-          "enabled": "Enabled"
+          "confirm": "Confirm this change"
         }
       },
       "area_select": {
@@ -136,6 +136,9 @@
       "invalid_scan_interval": "Enter a whole number from 5 to 300 seconds.",
       "unknown": "The configuration could not be saved.",
       "invalid_choice": "Select a listed producer or action."
+    },
+    "abort": {
+      "already_in_requested_state": "This producer already has the requested enabled state."
     }
   }
 }
