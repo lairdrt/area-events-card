@@ -177,7 +177,7 @@ function Get-HaCurrentUser {
 function Invoke-Preflight {
   Write-Step 'Preflight'
   $branch=(Invoke-Bounded 'git.exe' @('-C',$script:Repo,'branch','--show-current') 10).Trim()
-  if ($branch -ne 'ha-native-refactor') { throw "Expected ha-native-refactor, found $branch." }
+  if ($branch -ne 'main') { throw "Expected main, found $branch." }
   $dirty=Invoke-Bounded 'git.exe' @('-C',$script:Repo,'status','--porcelain') 10
   $unexpected=@($dirty -split [Environment]::NewLine | Where-Object { $_ })
   if ($unexpected.Count) { throw "Resolve local changes before deployment: $($unexpected -join ', ')" }
