@@ -235,6 +235,8 @@ class LocalDiscoveryControl:
         # Enabling an unavailable producer is unsafe, but disabling must still work.
         if enabled:
             current = self.get_source(source_key)
+            if current.revision != expected:
+                raise RevisionConflict(f"the source is at revision {current.revision}, not {expected}", current.revision)
             if current.adapter not in self._adapters:
                 raise ValidationFailed("cannot enable a producer whose adapter is not installed")
             self._source_spec(current.source_key, current.adapter, current.name, current.interval_minutes, current.options_dict())
