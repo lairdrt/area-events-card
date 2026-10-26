@@ -1253,7 +1253,7 @@ class WebSocket(Service):
         self.assertEqual(len(REGISTERED) - before, 12)
         self.assertEqual(paths[0][0][0], "/area_events/area-events-card.js")
         self.assertEqual(paths[1][0][0], "/area_events/manager.js")
-        self.assertEqual(paths[1][0][0], "/area_events/presentation")
+        self.assertEqual(paths[2][0][0], "/area_events/presentation")
         self.assertTrue(os.path.isfile(os.path.join(ROOT, "frontend", "presentation", "registry.js")))
         served = open(os.path.join(ROOT, "frontend", "area-events-card.js"), encoding="utf-8").read()
         self.assertIn("area_events/subscribe", served)
