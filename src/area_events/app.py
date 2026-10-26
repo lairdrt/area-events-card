@@ -97,7 +97,11 @@ def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None,
     host = DiscoveryHost(service, scheduler, clock, host_config)
     control = LocalDiscoveryControl(persistence.control, runtime=host.status, adapters=service.adapters,
                                     source_validators={key: producer.validate_options for key, producer in service.adapters.items()},
-                                    reserved_source_keys=(spec.source_key for spec in KNOWN_SOURCES.values()))
+                                    reserved_source_keys=(spec.source_key for spec in KNOWN_SOURCES.values()),
+                                    producer_definitions=tuple({
+                                        "id": key, "name": getattr(producer, "display_name", key),
+                                        "fields": list(getattr(producer, "configuration_fields", ()))
+                                    } for key, producer in service.adapters.items()))
     processing = ProcessingService(persistence.processing, clock, processing_config)
     events = EventQueryService(persistence.events)
     extraction = ExtractionService(LocalProcessingClient(processing), StoredCandidateExtractor(), clock, extraction_config, worker_id="extractor-local")
