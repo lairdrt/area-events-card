@@ -36,6 +36,7 @@ class AreaEventsManager extends HTMLElement {
     this._selectedSource = null;
     this._selectedArea = null;
     this._creating = false;
+    this._creatingArea = false;
     this._loading = false;
     this._saving = false;
     this._snapshot = null;
@@ -96,6 +97,7 @@ class AreaEventsManager extends HTMLElement {
       await this.call(type, params);
       this._saving = false;
       this._creating = false;
+      this._creatingArea = false;
       this._message = "Changes saved on Cubi.";
       await this.refresh();
     } catch (err) {
@@ -110,9 +112,11 @@ class AreaEventsManager extends HTMLElement {
     const action = button.dataset.action;
     if (action === "menu") { this.dispatchEvent(new CustomEvent("hass-toggle-menu", { bubbles: true, composed: true })); return; }
     if (action === "refresh") return void this.refresh();
-    if (action === "tab") { this._tab = button.dataset.value; this._creating = false; return void this.render(); }
+    if (action === "tab") { this._tab = button.dataset.value; this._creating = false; this._creatingArea = false; return void this.render(); }
     if (action === "source") { this._selectedSource = button.dataset.value; this._creating = false; return void this.render(); }
-    if (action === "area") { this._selectedArea = button.dataset.value; return void this.render(); }
+    if (action === "area") { this._selectedArea = button.dataset.value; this._creatingArea = false; return void this.render(); }
+    if (action === "create-area") { this._creatingArea = true; return void this.render(); }
+    if (action === "cancel-area") { this._creatingArea = false; return void this.render(); }
     if (action === "create") { this._creating = true; return void this.render(); }
     if (action === "cancel") { this._creating = false; return void this.render(); }
     if (action === "toggle") {
@@ -191,10 +195,24 @@ class AreaEventsManager extends HTMLElement {
   }
   saveArea(form) {
     const area = (this._snapshot?.areas || []).find((item) => item.area_key === this._selectedArea);
-    if (!area) return;
+    if (!this._creatingArea && !area) return;
     const data = new FormData(form);
     const sources = (this._snapshot.sources || []).filter((item) => data.has("source:" + item.id)).map((item) => item.id);
-    return void this.mutate("area_update", { area_key: area.area_key, expected_revision: area.revision, sources });
+    const name = String(data.get("name") || "").trim();
+    const latitude = Number(data.get("latitude"));
+    const longitude = Number(data.get("longitude"));
+    const radius = Number(data.get("radius"));
+    const unit = String(data.get("unit") || "mi");
+    const enabled = data.has("enabled");
+    if (!name || !Number.isFinite(latitude) || !Number.isFinite(longitude) ||
+        latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 ||
+        !Number.isFinite(radius) || radius <= 0 || radius > 400) {
+      this._error = "Enter a name and a valid center latitude, longitude, and radius.";
+      return void this.render();
+    }
+    const fields = { name, latitude, longitude, radius, unit, enabled, sources };
+    if (this._creatingArea) return void this.mutate("area_create", fields);
+    return void this.mutate("area_update", { area_key: area.area_key, expected_revision: area.revision, ...fields });
   }
   renderHeader() {
     const s = this._snapshot;
@@ -275,7 +293,7 @@ class AreaEventsManager extends HTMLElement {
   }
   renderAreas() {
     const areas = this._snapshot?.areas || [];
-    const area = areas.find((item) => item.area_key === this._selectedArea) || areas[0];
+    const area = this._creatingArea ? null : areas.find((item) => item.area_key === this._selectedArea) || areas[0];
     const list = areas.map((item) => "<button class='source-row " + (item.area_key === area?.area_key ? "selected" : "") +
       "' data-action='area' data-value='" + escapeHtml(item.area_key) + "'><span><span class='source-name'>" +
       escapeHtml(item.name) + "</span><span class='small'>" + escapeHtml(item.area_key) + "</span></span>" +
@@ -284,12 +302,31 @@ class AreaEventsManager extends HTMLElement {
     const checkboxes = (this._snapshot?.sources || []).map((source) => "<label class='inline'><input type='checkbox' name='source:" +
       escapeHtml(source.id) + "' " + (checked.has(source.id) ? "checked" : "") + ">" +
       escapeHtml(source.name) + "</label>").join("");
-    return "<div class='pane'><div class='pane-head'><div><h2>Discovery areas</h2><div class='sub'>Assign producers to areas; changes are saved on Cubi.</div></div></div>" +
-      "<div class='split'><div class='list'>" + (list || "<div class='empty'>No areas configured.</div>") + "</div>" +
-      "<div class='detail'>" + (area ? "<h3>" + escapeHtml(area.name) + "</h3><div class='section-note'>Choose the producers this area uses. " +
-      "Assignments determine which sources are eligible for discovery.</div><form id='area-form'><fieldset>" + checkboxes +
-      "</fieldset><button class='button primary' type='submit' " + (!this._snapshot.can_control || this._saving ? "disabled" : "") +
-      ">Save assignments</button></form>" : "<div class='empty'>Select an area.</div>") + "</div></div></div>";
+    const creating = this._creatingArea;
+    const areaForm = "<div class='pane-head'><h3>" + (creating ? "New discovery area" : escapeHtml(area?.name || "")) + "</h3>" +
+      (creating ? "<button class='button' data-action='cancel-area'>Cancel</button>" : "") + "</div>" +
+      "<form id='area-form'>" +
+      "<label>Area name<input name='name' value='" + escapeHtml(area?.name || "") + "' maxlength='80' required></label>" +
+      "<label>Center latitude<input name='latitude' type='number' step='any' min='-90' max='90' required value='" +
+      escapeHtml(area?.latitude ?? "") + "'></label>" +
+      "<label>Center longitude<input name='longitude' type='number' step='any' min='-180' max='180' required value='" +
+      escapeHtml(area?.longitude ?? "") + "'></label>" +
+      "<label>Radius<input name='radius' type='number' step='any' min='0.1' max='400' required value='" +
+      escapeHtml(area?.radius ?? 20) + "'></label>" +
+      "<label>Units<select name='unit'><option value='mi' " + (!area || area.unit === "mi" ? "selected" : "") +
+      ">Miles</option><option value='km' " + (area?.unit === "km" ? "selected" : "") + ">Kilometers</option></select></label>" +
+      "<label class='inline'><input type='checkbox' name='enabled' " + (area?.enabled !== false ? "checked" : "") + ">Area enabled</label>" +
+      "<div class='eyebrow' style='margin-top:19px'>Assigned producers</div><fieldset>" + checkboxes + "</fieldset>" +
+      "<div class='actions'><button class='button primary' type='submit' " +
+      (!this._snapshot?.can_control || this._saving ? "disabled" : "") + ">" +
+      (creating ? "Create area" : "Save area") + "</button></div></form>";
+    return "<div class='pane'><div class='pane-head'><div><h2>Discovery areas</h2>" +
+      "<div class='sub'>Manage area boundaries and assign producer sources.</div></div>" +
+      "<button class='button primary' data-action='create-area' " +
+      (!this._snapshot?.can_control ? "disabled" : "") + ">+ Add area</button></div>" +
+      "<div class='split'><div class='list'>" + (list || "<div class='empty'>No areas configured yet.</div>") + "</div>" +
+      "<div class='detail'>" + (creating || area ? areaForm : "<div class='empty'>Select or create an area.</div>") +
+      "</div></div></div>";
   }
   renderOverview() {
     const s = this._snapshot || {};
