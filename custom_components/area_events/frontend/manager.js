@@ -23,6 +23,7 @@ const CSS = [
   ".detail{background:var(--secondary-background-color,rgba(120,130,140,.06));border:1px solid var(--ae-line);border-radius:10px;padding:16px;min-width:0}",
   "label{display:block;margin-top:13px;font-size:12px;font-weight:600}input,select{display:block;width:100%;margin-top:5px;border:1px solid var(--ae-line);border-radius:8px;padding:9px 10px;background:var(--ae-surface);color:var(--primary-text-color);min-width:0}",
   "input[type=checkbox]{width:auto;display:inline-block;margin-right:8px}fieldset{border:0;padding:0;margin:10px 0}.inline{display:flex;align-items:center;gap:9px}.inline input{width:auto;margin:0}",
+  "textarea{display:block;width:100%;min-height:120px;resize:vertical;margin-top:5px;border:1px solid var(--ae-line);border-radius:8px;padding:9px 10px;background:var(--ae-surface);color:var(--primary-text-color);font:inherit;font-size:13px}",
   ".detail .actions{margin-top:18px}.message{padding:12px 14px;margin:0 0 16px;border:1px solid var(--ae-line);border-radius:8px;background:var(--ae-surface);font-size:13px}.message.error{border-color:var(--error-color,#bf4646)}",
   ".empty{color:var(--ae-muted);font-size:13px;padding:25px;text-align:center}.area-row{padding:13px 0;border-top:1px solid var(--ae-line)}.section-note{font-size:12px;color:var(--ae-muted);line-height:1.55}",
   "@media(max-width:900px){.layout{grid-template-columns:1fr}.nav{flex-direction:row;overflow-x:auto}.split{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}",
@@ -151,6 +152,14 @@ class AreaEventsManager extends HTMLElement {
   fieldMarkup(fields, values = {}) {
     return fields.map((field) => {
       const value = values[field.name] ?? field.default ?? "";
+      if (field.kind === "url_list") {
+        const list = Array.isArray(value) ? value.join("\n") : String(value);
+        return "<label>" + escapeHtml(field.label || field.name) +
+          "<textarea name='opt:" + escapeHtml(field.name) + "' rows='5' " +
+          (field.required ? "required " : "") +
+          (field.placeholder ? "placeholder='" + escapeHtml(field.placeholder) + "' " : "") +
+          ">" + escapeHtml(list) + "</textarea></label>";
+      }
       const kind = field.kind === "integer" ? "number" : field.kind === "url" ? "url" : "text";
       return "<label>" + escapeHtml(field.label || field.name) +
         "<input name='opt:" + escapeHtml(field.name) + "' type='" + kind + "' value='" + escapeHtml(value) + "'" +
@@ -165,7 +174,8 @@ class AreaEventsManager extends HTMLElement {
     for (const field of this.fieldsFor(type)) {
       const element = form.elements.namedItem("opt:" + field.name);
       if (!element || element.value.trim() === "") continue;
-      const value = field.kind === "integer" ? Number(element.value) : element.value.trim();
+      const value = field.kind === "integer" ? Number(element.value) :
+        field.kind === "url_list" ? element.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean) : element.value.trim();
       if (field.kind === "integer" && !Number.isInteger(value)) throw new Error("Invalid integer in " + field.label);
       options[field.name] = value;
     }
