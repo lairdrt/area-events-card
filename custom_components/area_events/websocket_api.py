@@ -14,7 +14,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
 
 from .const import (DOMAIN, PHOTOS_KEY, WS_AREA_CREATE, WS_AREA_UPDATE, WS_AREAS, WS_EVENT, WS_EVENTS, WS_PAUSE, WS_RESUME, WS_SETTINGS, WS_STATUS,
-                    WS_SUBSCRIBE)
+                    WS_SUBSCRIBE, WS_MANAGEMENT, WS_SOURCE_COMMAND)
 from .discovery_client import DiscoveryAuthError, DiscoveryConflictError, DiscoveryConnectionError, DiscoveryRequestError
 from .hub import ControlNotConfigured, UnknownArea
 
@@ -26,7 +26,7 @@ REVISION = vol.All(int, vol.Range(min=1))
 
 @callback
 def async_register(hass: HomeAssistant) -> None:
-    for handler in (ws_areas, ws_status, ws_events, ws_event, ws_subscribe, ws_area_create, ws_area_update, ws_settings, ws_pause, ws_resume):
+    for handler in (ws_areas, ws_status, ws_events, ws_event, ws_subscribe, ws_area_create, ws_area_update, ws_settings, ws_pause, ws_resume, ws_management, ws_source_command):
         websocket_api.async_register_command(hass, handler)
 
 
@@ -214,3 +214,51 @@ async def ws_resume(hass, connection, msg):
     async def action(hub):
         return await hub.resume()
     await _serve(hass, connection, msg, action)
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({vol.Required("type"): WS_MANAGEMENT})
+@websocket_api.async_response
+async def ws_management(hass, connection, msg):
+    """One admin-only snapshot, with no tokens sent to the browser."""
+    await _serve(hass, connection, msg, lambda hub: hub.management_snapshot())
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): WS_SOURCE_COMMAND,
+    vol.Required("action"): vol.In(("create", "update", "toggle")),
+    vol.Optional("source_id"): vol.All(str, vol.Length(min=1, max=80)),
+    vol.Optional("producer_type"): vol.All(str, vol.Length(min=1, max=80)),
+    vol.Optional("name"): vol.All(str, vol.Length(min=1, max=80)),
+    vol.Optional("enabled"): bool,
+    vol.Optional("interval_minutes"): vol.All(int, vol.Range(min=1, max=525600)),
+    vol.Optional("options"): dict,
+    vol.Optional("expected_revision"): REVISION,
+})
+@websocket_api.async_response
+async def ws_source_command(hass, connection, msg):
+    """Validated, revisioned mutations through the Cubi control service and persistence."""
+    action = msg["action"]
+    expected = {
+        "create": ("source_id", "producer_type", "name", "enabled", "interval_minutes", "options"),
+        "update": ("source_id", "expected_revision"),
+        "toggle": ("source_id", "expected_revision", "enabled"),
+    }[action]
+    if any(name not in msg for name in expected):
+        connection.send_error(msg["id"], "invalid_request", "Required producer fields are missing.")
+        return
+    if action == "update" and not any(name in msg for name in ("name", "interval_minutes", "options")):
+        connection.send_error(msg["id"], "invalid_request", "Choose at least one setting to change.")
+        return
+
+    async def change(hub):
+        if action == "create":
+            return await hub.create_source(msg["source_id"], msg["producer_type"], msg["name"], msg["enabled"],
+                                           msg["interval_minutes"], msg["options"])
+        if action == "update":
+            changes = _optional(msg, "name", "interval_minutes", "options")
+            return await hub.update_source(msg["source_id"], msg["expected_revision"], **changes)
+        return await hub.set_source_enabled(msg["source_id"], msg["expected_revision"], msg["enabled"])
+
+    await _serve(hass, connection, msg, change)
