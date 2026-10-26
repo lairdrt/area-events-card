@@ -950,9 +950,22 @@ class ProducerOptions(Service):
             flow = self.options_flow()
             flow._source_action = "enable" if enabled else "disable"
             self.with_client_session(flow.async_step_source_select({"source_id": "calendar-one"}))
-            self.with_client_session(flow.async_step_source_toggle({"enabled": enabled}))
+            preview = self.with_client_session(flow.async_step_source_toggle())
+            self.assertEqual(preview["step_id"], "source_toggle")
+            self.assertIn("confirm", [key.schema for key in preview["data_schema"].schema])
+            self.with_client_session(flow.async_step_source_toggle({"confirm": True}))
             source = self.with_client_session(self.api_client().source("calendar-one"))
             self.assertEqual(source["enabled"], enabled)
+
+        flow = self.options_flow()
+        flow._source_action = "enable"
+        already = self.with_client_session(flow.async_step_source_select({"source_id": "calendar-one"}))
+        preview = self.with_client_session(flow.async_step_source_toggle())
+        self.assertEqual(preview["step_id"], "source_toggle")
+        # Canceling the confirmation must leave the producer disabled.
+        canceled = self.with_client_session(flow.async_step_source_toggle({"confirm": False}))
+        self.assertEqual(canceled["step_id"], "sources")
+        self.assertFalse(self.with_client_session(self.api_client().source("calendar-one"))["enabled"])
 
         # Known-source registration during service startup does not replace user-owned instance configuration.
         self.built.register_known_sources()
