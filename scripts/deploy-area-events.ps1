@@ -178,11 +178,6 @@ function Invoke-Preflight {
   Write-Step 'Preflight'
   $branch=(Invoke-Bounded 'git.exe' @('-C',$script:Repo,'branch','--show-current') 10).Trim()
   if ($branch -ne 'ha-native-refactor') { throw "Expected ha-native-refactor, found $branch." }
-  foreach ($helper in @('deploy-ha.ps1','install-ha.ps1')) {
-    if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $helper) -PathType Leaf)) {
-      throw "Missing required HA deployment helper: scripts/$helper."
-    }
-  }
   $dirty=Invoke-Bounded 'git.exe' @('-C',$script:Repo,'status','--porcelain') 10
   $unexpected=@($dirty -split [Environment]::NewLine | Where-Object { $_ })
   if ($unexpected.Count) { throw "Resolve local changes before deployment: $($unexpected -join ', ')" }
@@ -597,15 +592,62 @@ print(json.dumps({'cleaned':True}))
   }
 }
 function Install-Ha {
-  $old=$env:HA_TOKEN; $env:HA_TOKEN=$script:Token
-  try {
-    $ps=(Get-Command powershell.exe -ErrorAction Stop).Source
-    $args=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'deploy-ha.ps1'),'-SkipBuild','-SkipApp','-ConfigShare',$ConfigShare,'-Url',$script:BaseUrl,'-CoreRecoveryTimeoutSeconds',"$RestartTimeoutSeconds")
-    if (-not $script:DeploymentState.HaLoaded) { $args+= '-Force' }
-    $output=Invoke-Bounded $ps $args ($RestartTimeoutSeconds+240)
-    if ($output) { Write-Host $output }
-  } finally { $env:HA_TOKEN=$old }
-  [pscustomobject]@{Changed=$true}
+  # The verified HA backup is created by Invoke-Backups before this phase.
+  # Only the custom_components/area_events subtree is modified here.
+  $source=Join-Path $script:Repo 'custom_components\area_events'
+  $target=$script:DeploymentState.HAPath
+  $null=Invoke-BoundedBlock {
+    param($src,$dst)
+    $ErrorActionPreference='Stop'
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    foreach ($file in Get-ChildItem -LiteralPath $src -Recurse -File | Where-Object { $_.Extension -ne '.pyc' -and $_.FullName -notmatch '\\__pycache__\\' }) {
+      $rel=$file.FullName.Substring($src.Length).TrimStart('\')
+      $dest=Join-Path $dst $rel
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
+      Copy-Item -LiteralPath $file.FullName -Destination $dest -Force
+    }
+    # Only these retired integration modules may be removed, and only after backup.
+    foreach ($name in @('client.py','profile.py','media_view.py')) {
+      if (-not (Test-Path -LiteralPath (Join-Path $src $name)) -and (Test-Path -LiteralPath (Join-Path $dst $name) -PathType Leaf)) {
+        Remove-Item -LiteralPath (Join-Path $dst $name) -Force
+      }
+    }
+  } @($source,$target) 150
+  if (-not (Test-FolderMatches $source $target)) { throw 'HA integration copy failed source hash verification.' }
+  Write-Host 'HA integration files copied and hash-verified. Requesting one Core restart.'
+  $headers=@{Authorization="Bearer $script:Token"}
+  $restartAt=Get-Date
+  try { $null=Invoke-RestMethod -Method Post -Uri "$script:BaseUrl/api/services/homeassistant/restart" -Headers $headers -TimeoutSec 30 }
+  catch {
+    $status=$null
+    try { $status=[int]$_.Exception.Response.StatusCode } catch { }
+    if ($null -ne $status -and $status -notin @(502,503,504)) {
+      throw "Home Assistant rejected the restart request (HTTP $status): $($_.Exception.Message)"
+    }
+    Write-Host 'HA restart connection closed without a definitive response; verifying shutdown and recovery.'
+  }
+  $deadline=$restartAt.AddSeconds($RestartTimeoutSeconds)
+  $observeUntil=$restartAt.AddSeconds([Math]::Min(45,[Math]::Max(10,$RestartTimeoutSeconds-10)))
+  $wentDown=$false
+  while ((Get-Date) -lt $deadline) {
+    $healthy=$false
+    try {
+      $config=Invoke-RestMethod -Method Get -Uri "$script:BaseUrl/api/config" -Headers $headers -TimeoutSec 6
+      $healthy=($config.state -eq 'RUNNING' -and $config.components -contains 'area_events')
+    } catch { }
+    if (-not $healthy) {
+      if (-not $wentDown) { Write-Host 'HA Core became unavailable during restart.' }
+      $wentDown=$true
+    } elseif ($wentDown) {
+      Write-Host 'HA Core restarted and Area Events integration is loaded.'
+      return [pscustomobject]@{Changed=$true}
+    }
+    if (-not $wentDown -and (Get-Date) -ge $observeUntil) {
+      throw 'Home Assistant restart could not be confirmed: API never became unavailable.'
+    }
+    Start-Sleep -Seconds 3
+  }
+  throw "Home Assistant did not recover within $RestartTimeoutSeconds seconds; do not issue another restart until inspected."
 }
 function Test-HaWebSocket {
   $wsUrl=$script:BaseUrl -replace '^http','ws'
