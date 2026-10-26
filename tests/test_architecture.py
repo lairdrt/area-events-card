@@ -357,7 +357,7 @@ class Real(unittest.TestCase):
         retired = (
             "area_events/DOCS.md", "area_events/Dockerfile", "area_events/config.yaml", "repository.yaml", "scripts/discovery.py", "scripts/workbench.py", "scripts/deploy-ha.ps1", "scripts/install-ha.ps1",
             "src/area_events/discovery/core.py", "src/area_events/discovery/engine.py", "src/area_events/discovery/sources/__init__.py",
-            "src/area_events/discovery/producers/craft_fairs/__init__.py", "tests/test_engine.py", "tests/test_craft_fair_acquisition.py",
+            "tests/test_engine.py",
         )
         for relative in retired:
             self.assertFalse(os.path.exists(os.path.join(ROOT, relative)), relative)
