@@ -250,6 +250,28 @@ END:VCALENDAR"""
                          {"Open Studio Art Fair", "Community Concert"})
         self.assertEqual(len(result.candidates), 2)
 
+    def test_ordinary_narrative_paragraph_needs_no_special_site_template(self):
+        page = """<h1>Evening Astronomy</h1>
+<p>Join us November 22, 2026 from 6pm to 8pm at the observatory.</p>"""
+        result, _ = run_crawl({SEED: page}, timezone="America/Los_Angeles")
+        self.assertEqual([(v.title, v.starts_at, v.ends_at) for v in result.candidates],
+                         [("Evening Astronomy", "2026-11-22T18:00:00-08:00",
+                           "2026-11-22T20:00:00-08:00")])
+
+    def test_generic_html_event_table_rows_are_separate_events(self):
+        page = """<h1>Event Calendar</h1>
+<table><tr><th>Event</th><th>Date</th><th>Time</th></tr>
+<tr><td>Garden Workshop</td><td>November 22, 2026</td><td>10am–12pm</td></tr>
+<tr><td>Star Party</td><td>November 25, 2026</td><td>7pm–9pm</td></tr></table>"""
+        result, _ = run_crawl({SEED: page}, timezone="America/Los_Angeles")
+        self.assertEqual({v.title for v in result.candidates}, {"Garden Workshop", "Star Party"})
+
+    def test_publication_date_and_business_hours_do_not_fabricate_events(self):
+        page = """<h1>Visitor Center News</h1><p>Published November 22, 2026</p>
+<p>Staff meeting at 6pm, Visitor Center open daily 9am to 5pm.</p>"""
+        result, _ = run_crawl({SEED: page}, timezone="America/Los_Angeles")
+        self.assertEqual(result.candidates, ())
+
     def test_text_events_need_explicit_configured_timezone_and_event_time(self):
         no_zone, _ = run_crawl({MTRP_MARKETPLACE: MTRP_HTML},
                                urls=(MTRP_MARKETPLACE,), max_depth=0)
