@@ -383,6 +383,8 @@ _LINK_WORDS = re.compile(r"\b(event|show|concert|workshop|festival|fair|lecture|
 _UNHELPFUL_HEADINGS = re.compile(
     r"^(?:dates?|times?|locations?|details?|events?|calendar|programs?|"
     r"schedule|overview|information|about|home|learn more|registration|"
+    r"event calendar|upcoming events|events and programs|calendar of events|"
+    r"news|news and updates|visitor center news|"
     r"buy tickets|vendors?|parking|contact|directions|hours|venue)$", re.I)
 _JUNK_TITLES = re.compile(
     r"^(?:visitor center|park hours|opening hours|hours of operation|"
