@@ -41,3 +41,26 @@ jobs:
           git diff --check
       - name: Run JavaScript tests
         run: npm test
+
+  windows-build-checkout:
+    name: Windows Git checkout / clean rebuild
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Reproduce CRLF checkout and build without tracked changes
+        shell: pwsh
+        run: |
+          git config core.autocrlf true
+          git checkout-index --all --force
+          if (git status --porcelain) { throw 'Windows checkout was already dirty before build' }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed' }
+          if (git status --porcelain) { throw 'Frontend build modified tracked files on Windows' }
+          node --test tests/build.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'LF/CRLF build regression failed' }
