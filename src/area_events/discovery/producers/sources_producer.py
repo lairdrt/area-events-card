@@ -560,6 +560,8 @@ def _text_event_group(heading, lines, page_title, page_url, source_name, retriev
     evidence = []
     clock_start = clock_end = clock_line = None
     for pos, line in raw_date_lines[:6]:
+        if re.match(r"\s*(?:published|posted|updated|last updated|article date|news date)\s*:?\s*", line, re.I):
+            continue  # Publication timestamps are not event dates.
         expanded = _text_dates(line, heading + " " + page_title)
         if not expanded:
             continue
