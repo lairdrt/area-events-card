@@ -94,6 +94,8 @@ def _timestamp(value, zone=None):
     if not isinstance(value, str):
         return None
     value = value.strip()
+    if "T" not in value and " " not in value:
+        return None  # Date-only (all-day) is not a scheduled start time.
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
@@ -405,7 +407,8 @@ class SourcesProducer:
 
     def crawl(self, fetcher, previous, options):
         # Control validates on create/edit; validate again at the adapter boundary.
-        _, cfg = self.validate_options(options)
+        _, cfg = self.validate_options({k: v for k, v in options.items()
+                                         if k not in ("source_key", "name")})
         name = options.get("name", "Website event sources")
         retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         queue = deque((url, 0, url, None) for url in cfg["urls"])
