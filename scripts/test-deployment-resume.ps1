@@ -38,4 +38,44 @@ $planner = $source.Substring($start,$end-$start)
 if ($planner -match 'remote\.receipt' -or $planner -notmatch 'Test-CubiInstalledSource' -or $planner -notmatch 'Test-HaAssets') {
   throw 'Planner must reconcile actual installed components, not trust a prior receipt.'
 }
-Write-Host 'Deployment reconciliation tests: PASS'
+# Execute only the two pure status-classification functions from the production script.
+# Avoid dot-sourcing the deployer, which initializes platform-dependent paths.
+$parseErrors=$null
+$ast=[System.Management.Automation.Language.Parser]::ParseFile(
+  (Join-Path $PSScriptRoot 'deploy-area-events.ps1'),[ref]$null,[ref]$parseErrors
+)
+if ($parseErrors.Count) { throw "Cannot parse deployer: $($parseErrors[0].Message)" }
+foreach ($name in @('Get-HaRestartHttpStatus','Test-HaRestartRejected')) {
+  $matches=@($ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+      $node.Name -eq $name
+  },$false))
+  if ($matches.Count -ne 1) { throw "Cannot find exactly one $name function" }
+  . ([scriptblock]::Create($matches[0].Extent.Text))
+}
+$closed=[pscustomobject]@{Exception=[pscustomobject]@{Message='Connection closed'}}
+$cases=@(
+  @{Name='closed HTTP connection'; Error=$closed; Expected=$null},
+  @{Name='missing response'; Error=[pscustomobject]@{Exception=[pscustomobject]@{Response=$null}}; Expected=$null},
+  @{Name='missing status'; Error=[pscustomobject]@{Exception=[pscustomobject]@{Response=[pscustomobject]@{StatusCode=$null}}}; Expected=$null},
+  @{Name='HTTP zero'; Error=[pscustomobject]@{Exception=[pscustomobject]@{Response=[pscustomobject]@{StatusCode=0}}}; Expected=$null},
+  @{Name='HTTP 400'; Error=[pscustomobject]@{Exception=[pscustomobject]@{Response=[pscustomobject]@{StatusCode=400}}}; Expected=400},
+  @{Name='HTTP 403'; Error=[pscustomobject]@{Exception=[pscustomobject]@{Response=[pscustomobject]@{StatusCode=[System.Net.HttpStatusCode]::Forbidden}}}; Expected=403},
+  @{Name='HTTP 502'; Error=[pscustomobject]@{Exception=[pscustomobject]@{Response=[pscustomobject]@{StatusCode=502}}}; Expected=502},
+  @{Name='HTTP 503'; Error=[pscustomobject]@{Exception=[pscustomobject]@{Response=[pscustomobject]@{StatusCode=503}}}; Expected=503}
+)
+foreach ($case in $cases) {
+  $status=Get-HaRestartHttpStatus $case.Error
+  if ($status -ne $case.Expected) { throw "Bad restart HTTP status ($($case.Name)): got $status, expected $($case.Expected)" }
+  $reject=Test-HaRestartRejected $status
+  $expectedReject=($case.Expected -in @(400,403))
+  if ($reject -ne $expectedReject) { throw "Wrong restart rejection classification ($($case.Name))" }
+  Write-Host "ok HA restart: $($case.Name)"
+}
+# Both deployment and recovery restart paths must use the same helper.
+if (([regex]::Matches($source,'\$status=Get-HaRestartHttpStatus \$_')).Count -ne 2 -or
+    ([regex]::Matches($source,'Test-HaRestartRejected \$status')).Count -ne 2) {
+  throw 'Main HA restart and rollback do not share the tested status classifier.'
+}
+Write-Host 'Deployment reconciliation and restart-status tests: PASS'
