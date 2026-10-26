@@ -249,25 +249,39 @@ class AreaEventsOptionsFlow(OptionsFlow):
     async def async_step_source_edit(self, user_input=None, errors=None):
         source = self._source_snapshot
         if user_input is not None:
-            try:
-                options = json.loads(user_input["options"])
-                if not isinstance(options, dict):
-                    raise ValueError
-            except (KeyError, TypeError, ValueError):
-                return await self.async_step_source_edit(errors={"options": "invalid_json"})
+            changes = {"name": user_input["name"], "interval_minutes": user_input["interval_minutes"]}
             try:
                 client = await self._client(control=True)
-                await client.update_source(self._selected_source_key, source["revision"], name=user_input["name"],
-                                           interval_minutes=user_input["interval_minutes"], options=options)
+                await client.update_source(self._selected_source_key, source["revision"], **changes)
             except DiscoveryConflictError:
                 return self.async_abort(reason="revision_conflict")
             except (DiscoveryAuthError, DiscoveryConnectionError, DiscoveryRequestError, _ControlTokenMissing) as error:
                 return await self.async_step_source_edit(errors={"base": self._error(error)})
             return await self._finish_mutation()
         schema = vol.Schema({vol.Required("name", default=source["name"]): str,
-                             vol.Required("interval_minutes", default=source["interval_minutes"]): vol.All(vol.Coerce(int), vol.Range(min=1)),
-                             vol.Required("options", default=json.dumps(source["options"], sort_keys=True)): str})
+                             vol.Required("interval_minutes", default=source["interval_minutes"]): vol.All(vol.Coerce(int), vol.Range(min=1))})
         return self.async_show_form(step_id="source_edit", data_schema=schema, errors=errors or {})
+
+    async def async_step_source_options(self, user_input=None, errors=None):
+        """Separate advanced editor: regular name/schedule edits never expose JSON."""
+        source = self._source_snapshot
+        if user_input is not None:
+            try:
+                options = json.loads(user_input["options"])
+                if not isinstance(options, dict):
+                    raise ValueError
+            except (KeyError, TypeError, ValueError):
+                return await self.async_step_source_options(errors={"options": "invalid_json"})
+            try:
+                client = await self._client(control=True)
+                await client.update_source(self._selected_source_key, source["revision"], options=options)
+            except DiscoveryConflictError:
+                return self.async_abort(reason="revision_conflict")
+            except (DiscoveryAuthError, DiscoveryConnectionError, DiscoveryRequestError, _ControlTokenMissing) as error:
+                return await self.async_step_source_options(errors={"base": self._error(error)})
+            return await self._finish_mutation()
+        schema = vol.Schema({vol.Required("options", default=json.dumps(source["options"], indent=2, sort_keys=True)): str})
+        return self.async_show_form(step_id="source_options", data_schema=schema, errors=errors or {})
 
     async def async_step_source_toggle(self, user_input=None, errors=None):
         source = self._source_snapshot
