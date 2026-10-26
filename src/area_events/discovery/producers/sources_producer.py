@@ -16,9 +16,10 @@ import hashlib
 import json
 import re
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from html import unescape
 from html.parser import HTMLParser
+import calendar
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from xml.etree import ElementTree
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -358,6 +359,286 @@ def _feed_links(page):
     return links
 
 
+
+# Unstructured HTML support lives in THIS adapter. No site-specific selectors,
+# second producer, remote AI call or alternative downstream processing contract.
+_MONTH_NAMES = {
+    name.casefold(): index for index, name in enumerate(calendar.month_name)
+    if name
+}
+_MONTH_NAMES.update({
+    name.casefold(): index for index, name in enumerate(calendar.month_abbr) if name
+})
+_MONTH = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+_TEXT_DATE = re.compile(
+    rf"\b(?P<month>{_MONTH})\.?\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?"
+    r"(?:\s*,?\s*(?P<year>20\d{2}))?\b", re.I)
+_TEXT_DATES_NUMERIC = re.compile(r"\b(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>20\d{2})\b")
+_TEXT_DATES_ISO = re.compile(r"\b(?P<year>20\d{2})-(?P<month>\d{2})-(?P<day>\d{2})\b")
+_YEAR = re.compile(r"\b20\d{2}\b")
+_CLOCK = re.compile(
+    r"(?<![0-9A-Za-z])(?P<hour>1[0-2]|0?[1-9])(?::(?P<minute>[0-5]\d))?"
+    r"\s*(?P<meridiem>[ap])\s*\.?\s*m\.?(?![a-z])", re.I)
+_LINK_WORDS = re.compile(r"\b(event|show|concert|workshop|festival|fair|lecture|market|meetup|class)\b", re.I)
+_UNHELPFUL_HEADINGS = re.compile(
+    r"^(?:dates?|times?|locations?|details?|events?|calendar|programs?|"
+    r"schedule|overview|information|about|home|learn more|registration|"
+    r"buy tickets|vendors?|parking|contact|directions|hours|venue)$", re.I)
+_JUNK_TITLES = re.compile(
+    r"^(?:visitor center|park hours|opening hours|hours of operation|"
+    r"contact us|event registration|related events)$", re.I)
+_LOCATION = re.compile(r"^(?:location|venue|where|place)\s*:\s*(.*)$", re.I)
+_DATE_LABEL = re.compile(r"^(?:dates?|when)\s*:\s*", re.I)
+_TIME_LABEL = re.compile(r"^(?:times?|hours?)\s*:\s*", re.I)
+_WEEKDAY = re.compile(r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b", re.I)
+
+
+class _VisibleEventText(HTMLParser):
+    """Turn arbitrary HTML into heading sections and self-contained listing cards."""
+    BLOCKS = frozenset(("p", "br", "div", "li", "section", "article", "time",
+                        "tr", "td", "th", "blockquote", "ul", "ol"))
+    HEADINGS = frozenset(("h1", "h2", "h3", "h4", "h5"))
+    SKIP = frozenset(("script", "style", "noscript", "svg", "template", "nav", "footer"))
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.sections = []
+        self.cards = []
+        self._heading = ""
+        self._heading_tag = None
+        self._section = []
+        self._ignored = []
+        self._cards = []
+        self.first_heading = ""
+
+    def _section_flush(self):
+        value = _visible_lines("".join(self._section))
+        if self._heading or value:
+            self.sections.append((self._heading, value))
+        self._section = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self._ignored.append(tag)
+        if self._ignored:
+            return
+        if tag in self.HEADINGS:
+            self._section_flush()
+            self._heading_tag = tag
+            self._heading = ""
+            self._section.append("\n")
+        elif tag in self.BLOCKS:
+            self._section.append("\n")
+        if tag in ("li", "article"):
+            self._cards.append([tag, []])
+
+    def handle_data(self, data):
+        if self._ignored:
+            return
+        if self._heading_tag:
+            self._heading += data
+        self._section.append(data)
+        for card in self._cards:
+            card[1].append(data)
+
+    def handle_endtag(self, tag):
+        if self._ignored:
+            if tag == self._ignored[-1]:
+                self._ignored.pop()
+            return
+        if tag in self.HEADINGS and tag == self._heading_tag:
+            self._heading = _clean(self._heading, 160) or ""
+            if self._heading and not self.first_heading:
+                self.first_heading = self._heading
+            self._heading_tag = None
+            self._section.append("\n")
+        elif tag in self.BLOCKS:
+            self._section.append("\n")
+        if tag in ("li", "article") and self._cards and self._cards[-1][0] == tag:
+            card = self._cards.pop()
+            lines = _visible_lines(" ".join(card[1]))
+            if lines:
+                self.cards.append(lines)
+
+    def finish(self):
+        self._section_flush()
+        return self.sections, self.cards, self.first_heading
+
+
+def _visible_lines(text):
+    return [_SPACE.sub(" ", unescape(line)).strip()[:500]
+            for line in text.splitlines() if line.strip()][:150]
+
+
+def _text_dates(line, title):
+    """Read explicitly dated occurrences; share an explicitly supplied year, never guess."""
+    found = []
+    matches = list(_TEXT_DATE.finditer(line[:350]))
+    years = {int(match.group("year")) for match in matches if match.group("year")}
+    if not years:
+        years = {int(year) for year in _YEAR.findall((line + " " + title)[:350])}
+    # For dates with a missing year, accept one unambiguous year in this group.
+    shared_year = next(iter(years)) if len(years) == 1 else None
+    for match in matches:
+        month_name = match.group("month").rstrip(".").casefold()
+        month = _MONTH_NAMES.get(month_name)
+        if not month:
+            # abbreviated forms that intentionally omit a period are allowed.
+            month = _MONTH_NAMES.get(month_name[:3])
+        year = int(match.group("year")) if match.group("year") else shared_year
+        if not year:
+            continue
+        try:
+            start = datetime(year, month, int(match.group("day")))
+            found.append(start.date())
+        except (TypeError, ValueError):
+            continue
+        # Common prose: November 14–15, 2026; November 14 and 15, 2026.
+        between = line[match.end():match.end()+32]
+        remaining = re.match(r"\s*(?:-|–|—|&|and|to)\s*(?P<day>\d{1,2})(?:st|nd|rd|th)?\b", between, re.I)
+        if remaining:
+            try:
+                other = datetime(year, month, int(remaining.group("day"))).date()
+                if 0 < (other-start.date()).days <= 14:
+                    found.append(other)
+            except ValueError:
+                pass
+    for pattern in (_TEXT_DATES_ISO, _TEXT_DATES_NUMERIC):
+        for m in pattern.finditer(line[:350]):
+            try:
+                found.append(datetime(int(m.group("year")), int(m.group("month")), int(m.group("day"))).date())
+            except ValueError:
+                pass
+    return list(dict.fromkeys(found))
+
+
+def _text_clock(lines):
+    """Choose a bounded date-adjacent stated event clock, not a general website hour."""
+    for line in lines[:18]:
+        entries = list(_CLOCK.finditer(line[:180]))
+        if not entries:
+            continue
+        if any(word in line.casefold() for word in ("open daily", "visitor center hours", "business hours", "office hours")):
+            continue
+        start = entries[0]
+        finish = entries[1] if len(entries) > 1 and entries[1].start() - start.end() < 42 else None
+        if finish and not re.search(r"(?:-|–|—|to|until|through)", line[start.end():finish.start()], re.I):
+            finish = None
+        def at(match):
+            hour = int(match.group("hour")) % 12
+            if match.group("meridiem").lower() == "p":
+                hour += 12
+            return hour, int(match.group("minute") or 0)
+        return at(start), at(finish) if finish else None, line
+    return None, None, None
+
+
+def _local_instant(day, clock, zone):
+    if not zone:
+        return None
+    return _timestamp(f"{day.isoformat()}T{clock[0]:02d}:{clock[1]:02d}:00", zone)
+
+
+def _text_event_group(heading, lines, page_title, page_url, source_name, retrieved_at, zone):
+    """Return only candidates with independently visible heading + explicit date + time."""
+    candidate_title = re.sub(r"^\s*20\d{2}\s+", "", heading or "").strip(" :–—")
+    if not candidate_title or _UNHELPFUL_HEADINGS.fullmatch(candidate_title):
+        candidate_title = page_title
+    if not candidate_title or _UNHELPFUL_HEADINGS.fullmatch(candidate_title) or _JUNK_TITLES.fullmatch(candidate_title):
+        return [], 0
+    raw_date_lines = [(i, line) for i, line in enumerate(lines[:35])
+                      if _TEXT_DATE.search(line) or _TEXT_DATES_ISO.search(line)
+                      or _TEXT_DATES_NUMERIC.search(line)]
+    if not raw_date_lines:
+        return [], 0
+    # Avoid combining unrelated body paragraphs: time should be nearby a stated date.
+    dates = []
+    evidence = []
+    clock_start = clock_end = clock_line = None
+    for pos, line in raw_date_lines[:6]:
+        expanded = _text_dates(line, heading + " " + page_title)
+        if not expanded:
+            continue
+        adjacent = lines[max(0, pos-2):min(len(lines), pos+4)]
+        start, end, time_line = _text_clock(adjacent)
+        if not start:
+            continue
+        dates.extend(expanded)
+        if clock_line is None:
+            clock_start, clock_end, clock_line = start, end, time_line
+        evidence.append((line, time_line))
+    dates = list(dict.fromkeys(dates))[:10]
+    if not dates or clock_start is None:
+        return [], len(raw_date_lines)
+    venue = address = None
+    for index, line in enumerate(lines[:35]):
+        match = _LOCATION.match(line)
+        if match:
+            venue = _clean(match.group(1), 160)
+            # Only use a nearby explicit street/city line, never a footer address.
+            following = lines[index+1:index+3]
+            address_lines = [v for v in following if re.search(r"\b\d{1,5}\s+[A-Za-z]|\b[A-Za-z][A-Za-z ]+,\s*[A-Z]{2}\b", v)]
+            address = _clean(", ".join(address_lines), 250) if address_lines else None
+            break
+    description = next((line for line in lines[:15] if len(line) > 55 and not
+                       (_TEXT_DATE.search(line) or _TEXT_DATES_ISO.search(line) or _TEXT_DATES_NUMERIC.search(line))
+                       and not _CLOCK.search(line)), None)
+    result = []
+    for day in dates:
+        begin = _local_instant(day, clock_start, zone)
+        if begin is None:
+            continue
+        until = None
+        if clock_end:
+            finish_day = day + timedelta(days=1) if clock_end < clock_start else day
+            until = _local_instant(finish_day, clock_end, zone)
+        fingerprint = f"{page_url}|{candidate_title.casefold()}|{begin}"
+        result.append(EventCandidate(
+            local_id=hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:32],
+            title=_clean(candidate_title, 200), starts_at=begin, ends_at=until,
+            venue=venue, address=address, description=_clean(description, 600),
+            url=page_url,
+            provenance=Provenance(source_name, page_url, retrieved_at, (page_url,)),
+            verification=stated((
+                f"Heading on {page_url}: {heading or page_title}",
+                f"Date shown: {evidence[0][0][:180]}",
+                f"Time shown: {clock_line[:180]}",
+                "Local timezone supplied by configured source: " + str(zone),
+            ), False, until, venue, address, description)))
+    return result, len(raw_date_lines) - int(bool(result))
+
+
+def _plain_text_events(html, page_url, source_name, retrieved_at, zone):
+    parser = _VisibleEventText()
+    try:
+        parser.feed(html[:1_500_000])
+        groups, cards, page_title = parser.finish()
+    except (ValueError, TypeError):
+        return [], 0
+    events, missing = [], 0
+    for heading, lines in groups[:100]:
+        extracted, skipped = _text_event_group(heading, lines, page_title,
+                                               page_url, source_name, retrieved_at, zone)
+        events.extend(extracted)
+        missing += skipped
+    # Listing cards often have no headings, e.g. <li>Craft Fair — Nov 14 at 9am</li>.
+    for card in cards[:120]:
+        row = " ".join(card)
+        if not (_TEXT_DATE.search(row) or _TEXT_DATES_ISO.search(row) or _TEXT_DATES_NUMERIC.search(row)):
+            continue
+        title = row.split(" – ", 1)[0].split(" — ", 1)[0].split(" - ", 1)[0]
+        if _TEXT_DATE.search(title) or _TEXT_DATES_ISO.search(title) or _TEXT_DATES_NUMERIC.search(title):
+            continue
+        extracted, skipped = _text_event_group(title[:120], [row], page_title,
+                                               page_url, source_name, retrieved_at, zone)
+        events.extend(extracted)
+        missing += skipped
+    # A page can expose the same event in text, JSON-LD, a list item and a heading.
+    distinct = {(e.title.casefold(), e.starts_at): e for e in events}
+    return list(distinct.values())[:MAX_EVENTS], missing
+
+
+
 class SourcesProducer:
     adapter = "sources_producer"
     extractor = "producers/sources_producer@v1"
@@ -366,6 +647,8 @@ class SourcesProducer:
     configuration_fields = (
         {"name": "urls", "label": "Website URLs (one per line)", "kind": "url_list", "required": True,
          "placeholder": "https://example.org/events\nhttps://another.org/calendar"},
+        {"name": "timezone", "label": "Local timezone for page text", "kind": "text",
+         "placeholder": "America/Los_Angeles"},
         {"name": "max_pages", "label": "Maximum pages per scan (all websites)", "kind": "integer",
          "default": 12, "min": 1, "max": MAX_PAGES},
         {"name": "max_depth", "label": "Link levels to follow", "kind": "integer",
@@ -378,7 +661,7 @@ class SourcesProducer:
     def validate_options(options):
         if not isinstance(options, dict):
             raise ValueError("options must be an object")
-        unknown = sorted(set(options) - {"url", "urls", "max_pages", "max_depth", "max_events"})
+        unknown = sorted(set(options) - {"url", "urls", "timezone", "max_pages", "max_depth", "max_events"})
         if unknown:
             raise ValueError(f"unsupported sources_producer options: {', '.join(unknown)[:100]}")
         raw = options.get("urls")
@@ -390,6 +673,7 @@ class SourcesProducer:
             raise ValueError("url must match the first website in urls")
         values = {
             "urls": list(urls),
+            **({"timezone": _timezone(options["timezone"])} if options.get("timezone") else {}),
             "max_pages": _integer(options.get("max_pages"), "max_pages", 12, 1, MAX_PAGES),
             "max_depth": _integer(options.get("max_depth"), "max_depth", 1, 0, MAX_DEPTH),
             "max_events": _integer(options.get("max_events"), "max_events", 75, 1, MAX_EVENTS),
@@ -419,6 +703,7 @@ class SourcesProducer:
         leads = []
         errors = []
         rejected_dates = 0
+        unstructured_events = 0
         limit = cfg["max_pages"]
         max_depth = cfg["max_depth"]
 
@@ -456,6 +741,14 @@ class SourcesProducer:
                         events.extend(extracted)
                         rejected += discarded
                     discovered = parser.links
+                    visible, from_text = _plain_text_events(page, page_url, name, retrieved_at,
+                                                            cfg.get("timezone"))
+                    # Favor exact structured source claims when the same event is also visible as text.
+                    existing = {(e.title.casefold(), e.starts_at) for e in events}
+                    text_events = [e for e in visible if (e.title.casefold(), e.starts_at) not in existing]
+                    events.extend(text_events)
+                    unstructured_events += len(text_events)
+                    rejected += from_text
                 except (ValueError, TypeError):
                     events, rejected = [], 0
             rejected_dates += rejected
@@ -489,4 +782,5 @@ class SourcesProducer:
         return ProducerResult(tuple(candidates.values()), tuple(leads),
             {"sites": len(cfg["urls"]), "pages": sum(v.fetched for v in leads),
              "candidates": len(candidates), "invalid_or_ambiguous_event_dates": rejected_dates,
-             "failed_pages": len(errors), "links_remaining": len(queue)})
+             "failed_pages": len(errors), "links_remaining": len(queue),
+             "unstructured_candidates": unstructured_events})
