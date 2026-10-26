@@ -62,6 +62,7 @@ function Get-AreaEventsRequiredFrontendAssets {
   if (-not $imports.Count) { throw 'Presentation manifest has no statically registered module imports.' }
   $assets = [System.Collections.Generic.List[string]]::new()
   $assets.Add((Join-Path $root 'area-events-card.js'))
+  $assets.Add((Join-Path $root 'manager.js'))
   $assets.Add($manifest)
   foreach ($match in $imports) {
     $relative = $match.Groups[1].Value.Substring(2).Replace('/', '\')
