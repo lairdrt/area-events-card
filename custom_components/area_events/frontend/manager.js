@@ -52,9 +52,12 @@ class AreaEventsManager extends HTMLElement {
   set narrow(value) { this._narrow = value; }
   set panel(value) { this._panel = value; }
   connectedCallback() {
-    this.shadowRoot.addEventListener("click", (ev) => this.handleClick(ev));
-    this.shadowRoot.addEventListener("submit", (ev) => this.handleSubmit(ev));
-    this.shadowRoot.addEventListener("change", (ev) => this.handleChange(ev));
+    if (!this._listenersAttached) {
+      this._listenersAttached = true;
+      this.shadowRoot.addEventListener("click", (ev) => this.handleClick(ev));
+      this.shadowRoot.addEventListener("submit", (ev) => this.handleSubmit(ev));
+      this.shadowRoot.addEventListener("change", (ev) => this.handleChange(ev));
+    }
     this.render();
     if (this._hass && !this._loaded) {
       this._loaded = true;
@@ -89,7 +92,6 @@ class AreaEventsManager extends HTMLElement {
     this._saving = true;
     this._error = "";
     this._message = "";
-    this.render();
     try {
       await this.call(type, params);
       this._saving = false;
@@ -253,8 +255,8 @@ class AreaEventsManager extends HTMLElement {
       (!canControl || !source.enabled ? "disabled" : "") + ">Disable source</button></div>";
     const typeOptions = this.sourceTypes().map((item) => "<option value='" + escapeHtml(item.id) + "' " +
       (item.id === type ? "selected" : "") + ">" + escapeHtml(item.name) + "</option>").join("");
-    const editor = "<form id='source-form'><input type='hidden' name='source_id' value='" +
-      escapeHtml(source?.id || "") + "'>" +
+    const editor = "<form id='source-form'>" +
+      (!creating ? "<input type='hidden' name='source_id' value='" + escapeHtml(source.id) + "'>" : "") +
       (creating ? "<label>Producer type<select name='producer_type' required>" + typeOptions + "</select></label>" :
         "<div class='section-note'>Producer type: " + escapeHtml(descriptor?.name || type) + "</div>" +
         "<input type='hidden' name='producer_type' value='" + escapeHtml(type) + "'>") +
