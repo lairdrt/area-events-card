@@ -181,20 +181,25 @@ class AreaEventsOptionsFlow(OptionsFlow):
             return self.async_show_form(step_id="sources", data_schema=vol.Schema({}), errors={"base": self._error(error)})
         statuses = {row.get("source_key"): row for row in status.get("sources", ())}
         lines = []
-        for source in sources:
+        for source in sorted(sources, key=lambda item: item["name"].casefold()):
             state = statuses.get(source["id"], {})
-            eligibility = "eligible for discovery" if state.get("eligible") else "idle; attach to an enabled area to make eligible"
-            lines.append(f"{source['id']} — {source['name']} ({source['type']}), {'enabled' if source['enabled'] else 'disabled'}, "
-                         f"{source['interval_minutes']} min, {eligibility}; options={json.dumps(source['options'], sort_keys=True)}")
-        description = "\n".join(lines) if lines else "No producer instances are configured."
-        actions = {"create": "Create instance", "edit": "Edit instance", "enable": "Enable instance", "disable": "Disable instance", "back": "Back"}
+            if not source["enabled"]:
+                eligibility = "Disabled"
+            elif state.get("eligible"):
+                eligibility = "Ready to discover"
+            else:
+                eligibility = "Waiting for an area assignment"
+            # A brief human-readable summary, never raw JSON/URLs in a shared dialog.
+            lines.append(f"- **{source['name']}** — {eligibility}; every {source['interval_minutes']} min")
+        description = "\n".join(lines) if lines else "No producers configured yet."
+        actions = {"create": "Create a producer (advanced)", "edit": "Edit name or schedule", "options": "Edit advanced producer settings", "enable": "Enable a producer", "disable": "Disable a producer", "back": "Back"}
         schema = vol.Schema({vol.Required("action"): vol.In(actions)})
         if user_input is None:
             return self.async_show_form(step_id="sources", data_schema=schema, errors=errors or {}, description_placeholders={"instances": description})
         action = user_input.get("action")
         if action == "create":
             return await self.async_step_source_create()
-        if action in ("edit", "enable", "disable"):
+        if action in ("edit", "options", "enable", "disable"):
             self._source_action = action
             return await self.async_step_source_select()
         return await self.async_step_init()
@@ -225,7 +230,7 @@ class AreaEventsOptionsFlow(OptionsFlow):
             sources = await (await self._client()).sources()
         except (DiscoveryAuthError, DiscoveryConnectionError, DiscoveryRequestError) as error:
             return self.async_show_form(step_id="source_select", data_schema=vol.Schema({}), errors={"base": self._error(error)})
-        choices = {source["id"]: f"{source['name']} ({source['id']})" for source in sources}
+        choices = {source["id"]: f"{source['name']} — {'Enabled' if source['enabled'] else 'Disabled'} · {source['interval_minutes']} min" for source in sources}
         if user_input is not None:
             key = user_input["source_id"]
             try:
@@ -235,6 +240,8 @@ class AreaEventsOptionsFlow(OptionsFlow):
             self._selected_source_key, self._source_snapshot = key, source
             if self._source_action == "edit":
                 return await self.async_step_source_edit()
+            if self._source_action == "options":
+                return await self.async_step_source_options()
             return await self.async_step_source_toggle()
         schema = vol.Schema({vol.Required("source_id"): vol.In(choices)})
         return self.async_show_form(step_id="source_select", data_schema=schema, errors=errors or {})
