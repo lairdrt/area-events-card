@@ -396,6 +396,13 @@ def cmd_source_cleanup(args):
         if not args.backup_dir:
             print("--apply requires --backup-dir outside the active application tree", file=sys.stderr)
             return 2
+        required_guards = (args.expect_source_id, args.expect_source_key, args.expect_adapter,
+                           args.expect_enabled, args.expect_candidates, args.expect_events_owned,
+                           args.expect_area_assignments, args.expect_leased_jobs,
+                           args.expect_processing_work, args.expect_leased_processing_work)
+        if any(value is None for value in required_guards):
+            print("--apply requires explicit --expect-* identity, state, and ownership guards", file=sys.stderr)
+            return 2
         # Validate and back up before opening DiscoveryStore, which may apply a schema migration.
         try:
             app_root = os.environ.get("AREA_EVENTS_APP_ROOT", os.path.abspath(os.path.join(os.path.dirname(args.db), os.pardir, os.pardir)))
@@ -410,7 +417,21 @@ def cmd_source_cleanup(args):
         cleanup = app.persistence.source_cleanup
         plan = cleanup.preview(args.source_key)
         if args.apply:
-            counts = cleanup.remove(args.source_key)
+            expected_identity = {
+                "source_id": args.expect_source_id,
+                "source_key": args.expect_source_key,
+                "adapter": args.expect_adapter,
+                "enabled": args.expect_enabled == "true",
+            }
+            expected_counts = {
+                "candidates": args.expect_candidates,
+                "events_owned": args.expect_events_owned,
+                "area_assignments": args.expect_area_assignments,
+                "leased_jobs": args.expect_leased_jobs,
+                "processing_work": args.expect_processing_work,
+                "leased_processing_work": args.expect_leased_processing_work,
+            }
+            counts = cleanup.remove(args.source_key, expected_identity, expected_counts)
             print(f"removed source {args.source_key}")
         else:
             counts = plan["counts"]
@@ -512,6 +533,16 @@ def main(argv=None):
     cleanup.add_argument("source_key")
     cleanup.add_argument("--apply", action="store_true", help="create and verify an external SQLite backup, then remove the source")
     cleanup.add_argument("--backup-dir", help="required for --apply; must be outside the active application tree")
+    cleanup.add_argument("--expect-source-id", type=int, help="required for --apply; guard the database source ID")
+    cleanup.add_argument("--expect-source-key", help="required for --apply; guard the stable source key")
+    cleanup.add_argument("--expect-adapter", help="required for --apply; guard the configured adapter")
+    cleanup.add_argument("--expect-enabled", choices=("true", "false"), help="required for --apply; guard enabled state")
+    cleanup.add_argument("--expect-candidates", type=int, help="required for --apply; expected source-owned candidate count")
+    cleanup.add_argument("--expect-events-owned", type=int, help="required for --apply; expected source-owned event count")
+    cleanup.add_argument("--expect-area-assignments", type=int, help="required for --apply; expected area assignment count")
+    cleanup.add_argument("--expect-leased-jobs", type=int, help="required for --apply; expected leased crawl job count")
+    cleanup.add_argument("--expect-processing-work", type=int, help="required for --apply; expected processing work count")
+    cleanup.add_argument("--expect-leased-processing-work", type=int, help="required for --apply; expected leased processing work count")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")

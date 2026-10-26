@@ -33,6 +33,135 @@ class SourceCleanupTests(unittest.TestCase):
                                                                      sources=("retired-calendar", "other-calendar"))).area
         self._seed_records()
 
+    def _cubi_fixture(self):
+        temp = tempfile.TemporaryDirectory()
+        app_root = os.path.join(temp.name, "application")
+        os.makedirs(app_root)
+        app = app_module.build(os.path.join(app_root, "data", "discovery.db"),
+                               clock=self.clock, fetch_client=FakeClient({}))
+        db = database(app)
+        with db.write() as tx:
+            for source_id, source_key, adapter, enabled in (
+                (1, "other-one", "localist", 1),
+                (2, "other-two", "localist", 1),
+                (3, "sd_craft_fairs", "craft_fairs", 0),
+            ):
+                tx.execute("""INSERT INTO sources(source_id,source_key,adapter,name,base_url,enabled,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,1,1)""",
+                    (source_id, source_key, adapter, source_key, "https://example.com", enabled))
+            tx.execute("""INSERT INTO jobs(job_id,job_key,kind,source_id,state,next_run_at,runs,created_at,updated_at)
+                VALUES(3,'crawl_source:sd_craft_fairs','crawl_source',3,'ready',1,0,1,1)""")
+            tx.execute("""INSERT INTO changes(entity,entity_key,op,kind,payload_hash,created_at)
+                VALUES('source','sd_craft_fairs','upsert','source.configuration_changed',?,1)""", ("a" * 64,))
+            tx.execute("""INSERT INTO areas(area_id,area_key,name,latitude,longitude,radius,unit,enabled,intensity,revision,created_at,updated_at)
+                VALUES(1,'test-area-01','Test Area',32.7,-117.1,25,'mi',1,'normal',1,1,1)""")
+            tx.execute("INSERT INTO area_sources(area_id,source_id,added_at) VALUES(1,1,1)")
+            for source_id, suffix in ((1, "one"), (2, "two")):
+                candidate_key, event_key = f"other:{suffix}", f"other-event-{suffix}"
+                candidate_id = tx.execute("""INSERT INTO candidates(candidate_key,source_id,method,extractor,title,starts_at,payload_json,
+                    payload_hash,first_seen_at,last_seen_at,updated_at) VALUES(?,?,'adapter','test',?,1000,'{}',?,1,1,1)
+                    RETURNING candidate_id""", (candidate_key, source_id, f"Other {suffix}", "b" * 64)).fetchone()[0]
+                event_id = tx.execute("""INSERT INTO events(event_key,title,starts_at,location_status,status,first_extracted_at,updated_at)
+                    VALUES(?,?,1000,'unknown','complete',1,1) RETURNING event_id""",
+                    (event_key, f"Other {suffix}")).fetchone()[0]
+                tx.execute("INSERT INTO event_candidates(candidate_id,event_id,role,linked_at) VALUES(?,?,'primary',1)",
+                           (candidate_id, event_id))
+        return temp, app, db
+
+    @staticmethod
+    def _cubi_guards():
+        return (
+            {"source_id": 3, "source_key": "sd_craft_fairs", "adapter": "craft_fairs", "enabled": False},
+            {"candidates": 0, "events_owned": 0, "area_assignments": 0, "leased_jobs": 0,
+             "processing_work": 0, "leased_processing_work": 0},
+        )
+
+    def test_cubi_shaped_cleanup_removes_only_source_job_and_history(self):
+        temp, app, db = self._cubi_fixture()
+        self.addCleanup(temp.cleanup)
+        self.addCleanup(app.close)
+        identity, counts = self._cubi_guards()
+        plan = app.persistence.source_cleanup.preview("sd_craft_fairs")
+        self.assertEqual(plan["source"]["source_id"], 3)
+        self.assertEqual(plan["source"]["adapter"], "craft_fairs")
+        self.assertEqual(plan["source"]["enabled"], 0)
+        self.assertEqual(plan["counts"]["jobs"], 1)
+        self.assertEqual(plan["counts"]["candidates"], 0)
+        self.assertEqual(plan["counts"]["events_owned"], 0)
+        self.assertEqual(plan["counts"]["area_assignments"], 0)
+        with db.read() as tx:
+            before = {table: tx.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                      for table in ("sources", "jobs", "changes", "candidates", "events", "area_sources")}
+            unrelated = {
+                "sources": [tuple(row) for row in tx.execute("SELECT source_id,source_key,adapter,enabled FROM sources WHERE source_id<>3 ORDER BY source_id")],
+                "candidates": [tuple(row) for row in tx.execute("SELECT candidate_key,source_id FROM candidates ORDER BY candidate_key")],
+                "events": [tuple(row) for row in tx.execute("SELECT event_key,title FROM events ORDER BY event_key")],
+                "area_sources": [tuple(row) for row in tx.execute("SELECT area_id,source_id FROM area_sources")],
+            }
+        removed = app.persistence.source_cleanup.remove("sd_craft_fairs", identity, counts)
+        self.assertEqual(removed["source"], 1)
+        self.assertEqual(removed["jobs"], 1)
+        self.assertEqual(removed["source_change_records"], 1)
+        with db.read() as tx:
+            after = {table: tx.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                     for table in ("sources", "jobs", "changes", "candidates", "events", "area_sources")}
+            self.assertIsNone(tx.execute("SELECT 1 FROM sources WHERE source_id=3 OR source_key='sd_craft_fairs'").fetchone())
+            self.assertIsNone(tx.execute("SELECT 1 FROM jobs WHERE job_id=3").fetchone())
+            self.assertIsNone(tx.execute("SELECT 1 FROM changes WHERE entity='source' AND entity_key='sd_craft_fairs'").fetchone())
+            self.assertEqual(unrelated["sources"], [tuple(row) for row in tx.execute("SELECT source_id,source_key,adapter,enabled FROM sources ORDER BY source_id")])
+            self.assertEqual(unrelated["candidates"], [tuple(row) for row in tx.execute("SELECT candidate_key,source_id FROM candidates ORDER BY candidate_key")])
+            self.assertEqual(unrelated["events"], [tuple(row) for row in tx.execute("SELECT event_key,title FROM events ORDER BY event_key")])
+            self.assertEqual(unrelated["area_sources"], [tuple(row) for row in tx.execute("SELECT area_id,source_id FROM area_sources")])
+            self.assertEqual(tx.execute("PRAGMA foreign_key_check").fetchall(), [])
+            self.assertEqual(tx.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+        self.assertEqual({table: before[table] - after[table] for table in before},
+                         {"sources": 1, "jobs": 1, "changes": 1, "candidates": 0, "events": 0, "area_sources": 0})
+
+    def test_cubi_guards_reject_identity_state_and_new_ownership(self):
+        identity, counts = self._cubi_guards()
+        mismatches = (
+            {**identity, "source_id": 4},
+            {**identity, "source_key": "other-source"},
+            {**identity, "adapter": "localist"},
+            {**identity, "enabled": True},
+        )
+        for mismatch in mismatches:
+            with self.subTest(identity=mismatch):
+                temp, app, db = self._cubi_fixture()
+                try:
+                    with self.assertRaisesRegex(SourceCleanupError, "identity/state"):
+                        app.persistence.source_cleanup.remove("sd_craft_fairs", mismatch, counts)
+                    with db.read() as tx:
+                        self.assertIsNotNone(tx.execute("SELECT 1 FROM sources WHERE source_id=3").fetchone())
+                        self.assertIsNotNone(tx.execute("SELECT 1 FROM jobs WHERE job_id=3").fetchone())
+                finally:
+                    app.close()
+                    temp.cleanup()
+
+        for ownership in ("candidate", "area"):
+            with self.subTest(ownership=ownership):
+                temp, app, db = self._cubi_fixture()
+                try:
+                    preview = app.persistence.source_cleanup.preview("sd_craft_fairs")
+                    self.assertEqual(preview["counts"]["candidates"], 0)
+                    self.assertEqual(preview["counts"]["area_assignments"], 0)
+                    with db.write() as tx:
+                        if ownership == "candidate":
+                            tx.execute("""INSERT INTO candidates(candidate_key,source_id,method,extractor,title,starts_at,payload_json,
+                                payload_hash,first_seen_at,last_seen_at,updated_at) VALUES('sd_craft_fairs:new',3,'adapter','test','New',1000,'{}',?,1,1,1)""",
+                                ("c" * 64,))
+                        else:
+                            tx.execute("INSERT INTO area_sources(area_id,source_id,added_at) VALUES(1,3,1)")
+                    with self.assertRaisesRegex(SourceCleanupError, "ownership/work"):
+                        app.persistence.source_cleanup.remove("sd_craft_fairs", identity, counts)
+                    with db.read() as tx:
+                        self.assertIsNotNone(tx.execute("SELECT 1 FROM sources WHERE source_id=3").fetchone())
+                        self.assertIsNotNone(tx.execute("SELECT 1 FROM jobs WHERE job_id=3").fetchone())
+                        self.assertEqual(tx.execute("PRAGMA foreign_key_check").fetchall(), [])
+                finally:
+                    app.close()
+                    temp.cleanup()
+
     def _seed_records(self):
         with database(self.app).write() as tx:
             source_id = tx.execute("SELECT source_id FROM sources WHERE source_key='retired-calendar'").fetchone()[0]

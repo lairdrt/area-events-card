@@ -79,6 +79,7 @@ class SourceCleanup:
         return {
             "source": dict(source), "candidate_ids": tuple(candidate_ids), "candidate_keys": tuple(candidate_keys),
             "exclusive_events": tuple(exclusive_events), "shared_events": tuple(shared_events),
+            "events_owned": len(event_rows),
             "protected_shared_events": protected_shared_events, "protected_shared_extractions": protected_shared_extractions,
             "page_ids": tuple(r[0] for r in page_rows), "page_keys": tuple(r[0] for r in connection.execute(
                 "SELECT DISTINCT p.url_key FROM source_pages sp JOIN pages p USING(page_id) WHERE sp.source_id=?", (source_id,))),
@@ -87,6 +88,7 @@ class SourceCleanup:
             "leased_processing_work": connection.execute("SELECT COUNT(*) FROM processing_work WHERE state='leased' AND candidate_id IN (SELECT candidate_id FROM candidates WHERE source_id=?)", (source_id,)).fetchone()[0],
             "counts": {
                 "source": 1, "jobs": len(jobs),
+                "leased_jobs": sum(r["state"] == "leased" for r in jobs),
                 "area_assignments": connection.execute("SELECT COUNT(*) FROM area_sources WHERE source_id=?", (source_id,)).fetchone()[0],
                 "source_leads": connection.execute("SELECT COUNT(*) FROM source_leads WHERE source_id=?", (source_id,)).fetchone()[0],
                 "source_page_associations": page_associations, "pages_exclusive": len(exclusive_pages),
@@ -95,8 +97,10 @@ class SourceCleanup:
                 "evidence": connection.execute("SELECT COUNT(*) FROM evidence WHERE candidate_id IN (SELECT candidate_id FROM candidates WHERE source_id=?)", (source_id,)).fetchone()[0],
                 "extractions": connection.execute("SELECT COUNT(*) FROM extractions WHERE candidate_id IN (SELECT candidate_id FROM candidates WHERE source_id=?)", (source_id,)).fetchone()[0],
                 "processing_work": connection.execute("SELECT COUNT(*) FROM processing_work WHERE candidate_id IN (SELECT candidate_id FROM candidates WHERE source_id=?)", (source_id,)).fetchone()[0],
+                "leased_processing_work": connection.execute("SELECT COUNT(*) FROM processing_work WHERE state='leased' AND candidate_id IN (SELECT candidate_id FROM candidates WHERE source_id=?)", (source_id,)).fetchone()[0],
                 "candidate_media": connection.execute("SELECT COUNT(*) FROM candidate_media WHERE candidate_id IN (SELECT candidate_id FROM candidates WHERE source_id=?)", (source_id,)).fetchone()[0],
                 "events_exclusive": len(exclusive_events), "events_shared_preserved": len(shared_events),
+                "events_owned": len(event_rows),
                 "fetches_from_source_jobs": connection.execute("SELECT COUNT(*) FROM fetches WHERE job_id IN (SELECT job_id FROM jobs WHERE source_id=?)", (source_id,)).fetchone()[0],
                 "source_change_records": connection.execute("SELECT COUNT(*) FROM changes WHERE entity='source' AND entity_key=?", (source_key,)).fetchone()[0],
             },
@@ -106,11 +110,23 @@ class SourceCleanup:
         with self._store.read() as connection:
             return self._inventory(connection, source_key)
 
-    def remove(self, source_key):
+    def remove(self, source_key, expected_identity=None, expected_counts=None):
         if source_key in self._reserved:
             raise SourceCleanupError(f"built-in source {source_key!r} is protected")
         with self._store.write() as tx:
             plan = self._inventory(tx, source_key)
+            if expected_identity is not None:
+                identity_keys = ("source_id", "source_key", "adapter", "enabled")
+                actual_identity = {key: plan["source"][key] for key in identity_keys}
+                if actual_identity != expected_identity:
+                    raise SourceCleanupError(f"source identity/state differs from expected guard: {actual_identity!r}")
+            if expected_counts is not None:
+                unknown_counts = set(expected_counts) - set(plan["counts"])
+                if unknown_counts:
+                    raise SourceCleanupError(f"unknown expected source counts: {sorted(unknown_counts)!r}")
+                actual_counts = {key: plan["counts"][key] for key in expected_counts}
+                if actual_counts != expected_counts:
+                    raise SourceCleanupError(f"source ownership/work differs from expected guard: {actual_counts!r}")
             if plan["leased_jobs"]:
                 raise SourceCleanupError("source has a leased crawl job; stop discovery and retry")
             if plan["leased_processing_work"]:
