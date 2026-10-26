@@ -32,6 +32,13 @@ def geo_of(raw):
 
 class LocalistProducer:
     adapter = "localist"
+    configuration_fields = (
+        {"name": "url", "label": "Calendar URL", "kind": "url", "required": True},
+        {"name": "days", "label": "Look-ahead days", "kind": "integer", "default": 14, "min": 1, "max": 365},
+        {"name": "max_pages", "label": "Maximum pages per scan", "kind": "integer", "default": 5, "min": 1, "max": 100},
+        {"name": "timezone", "label": "Calendar time zone", "kind": "text", "placeholder": "America/Los_Angeles"},
+    )
+    display_name = "Localist events calendar"
     extractor = "producers/localist@v1"
     method = "adapter"
 
