@@ -542,6 +542,8 @@ def _local_instant(day, clock, zone):
 def _text_event_group(heading, lines, page_title, page_url, source_name, retrieved_at, zone):
     """Return only candidates with independently visible heading + explicit date + time."""
     candidate_title = re.sub(r"^\s*20\d{2}\s+", "", heading or "").strip(" :–—")
+    if candidate_title.isupper() and len(candidate_title) > 6:
+        candidate_title = candidate_title.title()
     if not candidate_title or _UNHELPFUL_HEADINGS.fullmatch(candidate_title):
         candidate_title = page_title
     if not candidate_title or _UNHELPFUL_HEADINGS.fullmatch(candidate_title) or _JUNK_TITLES.fullmatch(candidate_title):
