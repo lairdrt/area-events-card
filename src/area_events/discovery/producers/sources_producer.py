@@ -442,6 +442,8 @@ class SourcesProducer:
             elif "xml" in media or page.lstrip().startswith(("<?xml", "<rss", "<feed")):
                 events, rejected = [], 0
                 discovered = _feed_links(page)
+            elif "json" in media or page.lstrip().startswith(("{", "[")):
+                events, rejected = _jsonld_events(page, page_url, name, retrieved_at)
             else:
                 parser = _LinksAndEvents()
                 try:
