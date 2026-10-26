@@ -607,6 +607,24 @@ print(json.dumps({'cleaned':True}))
     Write-Host 'Legacy entry point and runtime tree removed after successful API verification; verified backup retained.'
   }
 }
+function Get-HaRestartHttpStatus($ErrorRecord) {
+  # A restart can close its own HTTP connection without producing a response.
+  # [int]$null becomes 0 in PowerShell; 0 is NOT an HTTP rejection.
+  if ($null -eq $ErrorRecord -or $null -eq $ErrorRecord.Exception) { return $null }
+  $response=$null
+  try { $response=$ErrorRecord.Exception.Response } catch { return $null }
+  if ($null -eq $response) { return $null }
+  $raw=$null
+  try { $raw=$response.StatusCode } catch { return $null }
+  if ($null -eq $raw) { return $null }
+  try { $status=[int]$raw } catch { return $null }
+  if ($status -lt 100 -or $status -gt 599) { return $null }
+  return $status
+}
+function Test-HaRestartRejected($Status) {
+  # Transient gateway failures and missing/invalid responses cannot establish rejection.
+  return ($null -ne $Status -and $Status -notin @(502,503,504))
+}
 function Install-Ha {
   # The verified HA backup is created by Invoke-Backups before this phase.
   # Only the custom_components/area_events subtree is modified here.
@@ -635,9 +653,8 @@ function Install-Ha {
   $restartAt=Get-Date
   try { $null=Invoke-RestMethod -Method Post -Uri "$script:BaseUrl/api/services/homeassistant/restart" -Headers $headers -TimeoutSec 30 }
   catch {
-    $status=$null
-    try { $status=[int]$_.Exception.Response.StatusCode } catch { }
-    if ($null -ne $status -and $status -notin @(502,503,504)) {
+    $status=Get-HaRestartHttpStatus $_
+    if (Test-HaRestartRejected $status) {
       throw "Home Assistant rejected the restart request (HTTP $status): $($_.Exception.Message)"
     }
     Write-Host 'HA restart connection closed without a definitive response; verifying shutdown and recovery.'
@@ -814,9 +831,8 @@ function Restore-HaBackup($state) {
   $headers=@{Authorization="Bearer $script:Token"}
   try { $null=Invoke-RestMethod -Method Post -Uri "$script:BaseUrl/api/services/homeassistant/restart" -Headers $headers -TimeoutSec 20 }
   catch {
-    $status=$null
-    try { $status=[int]$_.Exception.Response.StatusCode } catch { }
-    if ($status -and $status -notin @(502,503,504)) { throw "HA rejected the rollback restart request (HTTP $status)." }
+    $status=Get-HaRestartHttpStatus $_
+    if (Test-HaRestartRejected $status) { throw "HA rejected the rollback restart request (HTTP $status)." }
   }
   $deadline=(Get-Date).AddSeconds($RestartTimeoutSeconds); $sawUnavailable=$false; $healthy=$false
   while ((Get-Date) -lt $deadline) {
