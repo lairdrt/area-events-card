@@ -35,6 +35,9 @@ jobs:
         shell: pwsh
         run: ./scripts/test-deployment-resume.ps1
       - name: Validate frontend build
-        run: npm run build
+        run: |
+          npm run build
+          git diff --exit-code -- custom_components/area_events/frontend/
+          git diff --check
       - name: Run JavaScript tests
         run: npm test
