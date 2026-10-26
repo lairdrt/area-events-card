@@ -226,7 +226,14 @@ class LocalDiscoveryControl:
     def set_source_enabled(self, source_key, enabled, expected_revision):
         if not isinstance(enabled, bool):
             raise ValidationFailed("enabled must be true or false")
-        return self.update_source(UpdateSourceRequest(source_key, expected_revision, enabled=enabled))
+        expected = _revision(expected_revision)
+        # Enabling an unavailable producer is unsafe, but disabling must still work.
+        if enabled:
+            current = self.get_source(source_key)
+            if current.adapter not in self._adapters:
+                raise ValidationFailed("cannot enable a producer whose adapter is not installed")
+            self._source_spec(current.source_key, current.adapter, current.name, current.interval_minutes, current.options_dict())
+        return self._storage.set_source_enabled(source_key, expected, enabled)
 
     def set_area_enabled(self, area_key, enabled, expected_revision=None):
         if not isinstance(enabled, bool):
