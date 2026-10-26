@@ -11,7 +11,7 @@
  */
 
 import { PRESENTATIONS } from "./presentation/manifest.js";
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-00000000";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-15e14053";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
