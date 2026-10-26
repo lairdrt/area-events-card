@@ -118,3 +118,23 @@ test("creation calls the versioned WebSocket API using the user's actual source 
     globalThis.FormData = previous;
   }
 });
+
+
+test("SourcesProducer URL list uses multiline native editor, not JSON", () => {
+  const manager = setup();
+  manager._snapshot.producer_types.types.push({
+    id: "sources_producer", name: "Website event sources (generic)",
+    fields: [{ name: "urls", kind: "url_list", label: "Website URLs (one per line)", required: true }]
+  });
+  manager._snapshot.sources.push({
+    id: "websites", type: "sources_producer", name: "My websites", enabled: false,
+    interval_minutes: 60, revision: 1,
+    options: { urls: ["https://a.example/events", "https://b.example/calendar"] }
+  });
+  const html = manager.sourceForm(manager._snapshot.sources[1]);
+  assert.match(html, /<textarea name='opt:urls'/);
+  assert.match(html, /https:\/\/a.example\/events\nhttps:\/\/b.example\/calendar/);
+  const input = { elements: { namedItem() { return { value: " https://a.example/events\n\nhttps://b.example/calendar \n" }; } } };
+  assert.deepEqual(manager.optionsFrom(input, "sources_producer"),
+    { urls: ["https://a.example/events", "https://b.example/calendar"] });
+});

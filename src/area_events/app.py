@@ -32,6 +32,7 @@ from .validation.processing import ProcessingService
 from .discovery.producers import city_of_san_diego
 from .discovery.producers.city_of_san_diego import CityOfSanDiegoProducer
 from .discovery.producers.localist import LocalistProducer
+from .discovery.producers.sources_producer import SourcesProducer
 from .discovery.scheduler import AreaPacing, DiscoveryScheduler, SchedulerConfig
 from .discovery.service import DiscoveryConfig, DiscoveryService
 
@@ -91,7 +92,8 @@ def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None,
     pacing = AreaPacing(scheduler_config)
     scheduler = DiscoveryScheduler(persistence.scheduling, pacing)
     config = config or DiscoveryConfig(require_area=service_gate)
-    adapters = {"sandiego_gov": CityOfSanDiegoProducer(), "localist": LocalistProducer()}
+    adapters = {"sandiego_gov": CityOfSanDiegoProducer(), "localist": LocalistProducer(),
+                "sources_producer": SourcesProducer()}
     service = DiscoveryService(persistence.crawl, client, adapters, clock, config, worker_id,
                                pacing=pacing if service_gate else None, gate=scheduler if service_gate else None)
     host = DiscoveryHost(service, scheduler, clock, host_config)

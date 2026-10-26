@@ -11,6 +11,24 @@ This console is **part of the existing Area Events Home Assistant integration**.
 - Retired source adapters appear as retired. They can be disabled without reviving the removed adapter; enabling or editing them is blocked. Existing events are retained.
 - **No source deletion** in this first slice: removal semantics require a deliberate control/persistence contract and tests. The UI does not perform SQL operations.
 
+## Generic website SourcesProducer (AE-10B4)
+
+The **Website event sources (generic)** producer appears in **Sources → Add producer**.
+It is an ordinary configured instance of the replaceable adapter in
+`src/area_events/discovery/producers/sources_producer.py`:
+
+- Enter 1–12 public HTTP(S) **website URLs, one per line**.
+- Configure the scan interval, maximum pages (1–24), link depth (0–2) and maximum events (1–150).
+- Newly created producers are disabled until deliberately enabled and assigned to an area.
+- The existing scheduler handles repeat discovery; the shared SafeFetcher applies URL validation, robots.txt, private-network blocking, request budgets and host pacing.
+- Reads structured **JSON-LD Event** data and **iCalendar (.ics)** VEVENT calendars. Visits bounded same-host links relevant to event calendars, and uses RSS/Atom entry links as leads when encountered.
+- Events without an actual stated time zone or UTC offset are **not emitted**. Non-structured websites may yield no events; this is not evidence that the area has no events.
+- Every event uses the standard candidate contract; leads, fetched pages, candidate records and event results use the same shared persistence and processing interfaces as other producers.
+
+The generic producer is **not an unconstrained web spider, JavaScript browser,
+arbitrary natural-language event extractor or scraper for authenticated sites**.
+No new API, database, timer or per-source downstream path is introduced.
+
 ## Architecture and security
 
 ```text
