@@ -321,14 +321,16 @@ function Invoke-DeploymentPlan($preflight) {
   $script:HAFingerprint=Get-FolderFingerprint $haSource
   $remote=$preflight.Remote
   $ha=Test-FolderMatches $haSource (Join-Path $ConfigShare 'custom_components\area_events')
-  $cubiCurrent=($remote.schema -eq $script:TargetSchema) -and (Test-CubiInstalledSource)
-  $cubiNeeded=(-not $cubiCurrent)
-  $haCurrent=$false
+  $cubiCurrent=$false
+  if ($remote.schema -eq $script:TargetSchema) { $cubiCurrent=Test-CubiInstalledSource }
+  $haRuntimeCurrent=$false
   if ($ha -and $script:HaLoaded) {
-    try { Test-HaAssets; $haCurrent=$true }
+    try { Test-HaAssets; $haRuntimeCurrent=$true }
     catch { Write-Host "HA runtime does not yet match the current source: $($_.Exception.Message)" }
   }
-  $haNeeded=(-not $haCurrent)
+  $plan=Resolve-AreaEventsComponentPlan -CurrentSchema $remote.schema -TargetSchema $script:TargetSchema -CubiSourceMatches $cubiCurrent -HaFilesMatch $ha -HaRuntimeMatches $haRuntimeCurrent
+  $cubiNeeded=$plan.CubiNeeded
+  $haNeeded=$plan.HANeeded
   $script:State=[pscustomobject]@{Remote=$remote;Head=$script:Head;HAPath=(Join-Path $ConfigShare 'custom_components\area_events');CubiNeeded=[bool]$cubiNeeded;HANeeded=[bool]$haNeeded;HaLoaded=[bool]$preflight.HaLoaded;CubiFingerprint=$script:CubiFingerprint;HAFingerprint=$script:HAFingerprint;RequiredAssets=@(Get-AreaEventsRequiredFrontendAssets (Join-Path $haSource 'frontend'))}
   $noChange=(-not $cubiNeeded -and -not $haNeeded)
   Write-Host "Built artifacts fingerprinted; Cubi update $cubiNeeded; HA update $haNeeded"
