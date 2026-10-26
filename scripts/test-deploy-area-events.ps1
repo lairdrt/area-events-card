@@ -324,6 +324,7 @@ Check 'manifest-driven assets include an added renderer' {
   $presentation=Join-Path $root 'presentation'; New-Item -ItemType Directory -Path $presentation | Out-Null
   try {
     Set-Content (Join-Path $root 'area-events-card.js') 'card'
+    Set-Content (Join-Path $root 'manager.js') 'manager'
     $names=@('manifest.js','registry.js','community.js','generic.js','nasa-mission.js','new-renderer.js')
     foreach($name in $names) { Set-Content (Join-Path $presentation $name) 'module' }
     Set-Content (Join-Path $presentation 'manifest.js') @'
