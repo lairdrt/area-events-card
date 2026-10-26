@@ -439,7 +439,6 @@ class SourcesProducer:
             if (page_url.lower().split("?", 1)[0].endswith((".ics", ".ical"))
                     or "text/calendar" in media or "begin:vcalendar" in page[:500].lower()):
                 events, rejected = _ics_events(page, page_url, name, retrieved_at)
-                rejected_dates += rejected
             elif "xml" in media or page.lstrip().startswith(("<?xml", "<rss", "<feed")):
                 events, rejected = [], 0
                 discovered = _feed_links(page)
