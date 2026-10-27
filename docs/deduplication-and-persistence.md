@@ -20,6 +20,12 @@ Owns every matching rule and nothing else. `Deduplicator.decide(Incoming, EventL
 
 Strategies: `exact` (matching normalized title and exact start instant, plus compatible stated address, venue or location evidence) and `tolerant` (the same exact start with broader venue evidence and a configurable end-time tolerance). Both accept high-confidence title edits when the normalized titles have strong token overlap and text similarity; these edited-title matches also require the same specific event URL and venue plus address/location evidence. A stated place conflict, incompatible known end times, or conflicting source URLs vetoes a match; at least one comparable place fact must agree. Missing facts do not trigger a merge. Both strategies page through the full indexed time window; there is no result cap. They import neither SQLite nor Persistence nor any producer. Choosing one is the composition root's argument: `build(..., deduplication="exact" | "tolerant" | <any Deduplicator>)`, or `--deduplication` on the command line. Matching reads event facts directly; `event_key` remains stable and strategy changes do not require rebuilding identities.
 
+### Optional duplicate maintenance extension
+
+The original `discovery.dedup.v1` contract **still requires only** `name`, `version`, and `decide(Incoming, EventLookup)`. A third-party strategy implementing only those members remains fully valid for normal event processing.
+
+Stored-event scanning is a separate optional `discovery.dedup.maintenance.v1` capability (`MaintenanceMatcher`, extending `Deduplicator`): `matches(ExistingEvent, ExistingEvent) -> bool` and `anchors(ExistingEvent) -> tuple`. The built-in exact/tolerant strategies provide both interfaces. The maintenance entry point fails with a clear message if the selected strategy lacks the extension; it does not change normal processing behavior. No event/schema migrations are required.
+
 ## Persistence (`src/area_events/persistence/`)
 Exclusively owns the database: connections, transactions, SQL, schema, event/candidate links, revision history, evidence and work records. The rest of the service sees only `persistence/ports.py`:
 
