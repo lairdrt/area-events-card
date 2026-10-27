@@ -213,6 +213,18 @@ class GenericProducer(unittest.TestCase):
             "Autumn Fair": "https://example.org/images/83a9c2.jpg",
             "Winter Concert": "https://example.org/images/91b7d4.jpg"})
 
+    def test_close_event_headings_keep_opaque_images_with_their_own_event(self):
+        page = ('<main><article><h2>Harvest Craft Fair</h2>'
+                '<p>November 14, 2026 from 10am to 2pm</p>'
+                '<img src="/images/83a9c2.jpg">'
+                '<h2>Moonlight Lecture</h2>'
+                '<p>November 20, 2026 from 6:30pm to 8pm</p>'
+                '<img src="/images/91b7d4.jpg"></article></main>')
+        result, _ = run_crawl({SEED: page}, timezone="America/Los_Angeles", max_depth=0)
+        self.assertEqual({event.title: event.image_url for event in result.candidates}, {
+            "Harvest Craft Fair": "https://example.org/images/83a9c2.jpg",
+            "Moonlight Lecture": "https://example.org/images/91b7d4.jpg"})
+
     def test_unlabeled_neighboring_event_image_is_not_associated_with_distant_title(self):
         page = ('<script type="application/ld+json">' + json.dumps(DOC) + '</script>'
                 '<main><h2>Autumn Fair</h2>'
@@ -221,6 +233,40 @@ class GenericProducer(unittest.TestCase):
         result, _ = run_crawl({SEED: page}, max_depth=0)
         self.assertEqual(len(result.candidates), 1)
         self.assertIsNone(result.candidates[0].image_url)
+
+    def test_close_jsonld_events_keep_opaque_images_with_their_own_heading(self):
+        second = {**DOC, "@id": "winter-concert-456", "name": "Winter Concert"}
+        page = ('<script type="application/ld+json">' + json.dumps([DOC, second]) + '</script>'
+                '<main><article><h2>Autumn <em>Fair</em></h2><img src="/images/83a9c2.jpg">'
+                '<h2>Winter Concert</h2><img src="/images/91b7d4.jpg"></article></main>')
+        result, _ = run_crawl({SEED: page}, max_depth=0)
+        self.assertEqual({event.title: event.image_url for event in result.candidates}, {
+            "Autumn Fair": "https://example.org/images/83a9c2.jpg",
+            "Winter Concert": "https://example.org/images/91b7d4.jpg"})
+
+    def test_opaque_images_do_not_borrow_headings_from_neighboring_containers(self):
+        for container in ("article", "section", "li", "tr"):
+            with self.subTest(container=container):
+                page = ('<script type="application/ld+json">' + json.dumps(DOC) + '</script>'
+                        '<main><' + container + '><h2>Autumn Fair</h2></' + container + '>'
+                        '<' + container + '><img src="/images/91b7d4.jpg"></' + container + '>'
+                        '<img src="/images/83a9c2.jpg"></main>')
+                result, _ = run_crawl({SEED: page}, max_depth=0)
+                self.assertEqual(len(result.candidates), 1)
+                self.assertIsNone(result.candidates[0].image_url)
+
+    def test_opaque_images_with_ambiguous_context_remain_unset(self):
+        second = {**DOC, "@id": "winter-concert-456", "name": "Winter Concert"}
+        for content in (
+                '<h2>Autumn Fair</h2><img src="/images/83a9c2.jpg"><img src="/images/91b7d4.jpg">',
+                '<p>Autumn Fair and Winter Concert</p><img src="/images/83a9c2.jpg">',
+                '<h2>Autumn Fair and Winter Concert</h2><img src="/images/83a9c2.jpg">'):
+            with self.subTest(content=content):
+                page = ('<script type="application/ld+json">' + json.dumps([DOC, second])
+                        + '</script><main><article>' + content + '</article></main>')
+                result, _ = run_crawl({SEED: page}, max_depth=0)
+                self.assertEqual(len(result.candidates), 2)
+                self.assertTrue(all(event.image_url is None for event in result.candidates))
 
     def test_conflicting_descriptions_override_matching_filename_and_article_text(self):
         for attributes, caption in (
