@@ -16,6 +16,7 @@ import hashlib
 import json
 import re
 from collections import deque
+from dataclasses import replace
 from datetime import datetime, timezone, timedelta
 from html import unescape
 from html.parser import HTMLParser
@@ -332,6 +333,158 @@ class _LinksAndEvents(HTMLParser):
         if tag == "a" and self._anchor is not None:
             self.links.append((self._anchor[0], _clean(" ".join(self._anchor[1]), 150) or ""))
             self._anchor = None
+
+
+def _srcset(value):
+    """Return URL and declared responsive width pairs from an HTML srcset."""
+    variants = []
+    for entry in (value or "").split(","):
+        parts = entry.strip().split()
+        if not parts:
+            continue
+        width = 0
+        if len(parts) > 1:
+            descriptor = parts[1].lower()
+            try:
+                width = int(descriptor[:-1]) if descriptor.endswith("w") else 0
+            except ValueError:
+                width = 0
+        variants.append((parts[0], width))
+    return variants
+
+
+class _EventImages(HTMLParser):
+    """Collect image candidates only from main/article content, with descriptive context."""
+    URL_ATTRS = ("src", "data-src", "data-lazy-src", "data-original", "data-full-url")
+    SRCSET_ATTRS = ("srcset", "data-srcset", "data-lazy-srcset")
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.images = []
+        self._main_depth = 0
+        self._article_depth = 0
+        self._picture = None
+        self._figure = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "main":
+            self._main_depth += 1
+        if tag == "article":
+            self._article_depth += 1
+        if tag == "figure":
+            self._figure = {"text": []}
+        if tag == "picture":
+            self._picture = {"variants": [], "context": []}
+        if not (self._main_depth or self._article_depth):
+            return
+        labels = " ".join(attrs.get(key, "") for key in ("alt", "title", "class", "id", "aria-label"))
+        if self._picture is not None:
+            self._picture["context"].append(labels)
+        if tag == "source" and self._picture is not None:
+            for key in self.SRCSET_ATTRS:
+                self._picture["variants"].extend(_srcset(attrs.get(key)))
+        if tag != "img":
+            return
+        variants = []
+        for key in self.URL_ATTRS:
+            if attrs.get(key):
+                variants.append((attrs[key], 0))
+        for key in self.SRCSET_ATTRS:
+            variants.extend(_srcset(attrs.get(key)))
+        context = [labels]
+        if self._picture is not None:
+            variants.extend(self._picture["variants"])
+            context.extend(self._picture["context"])
+        self.images.append({"variants": variants, "context": " ".join(context),
+                            "figure": self._figure})
+
+    def handle_data(self, data):
+        if self._figure is not None:
+            self._figure["text"].append(data)
+        if self._picture is not None:
+            self._picture["context"].append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "picture":
+            self._picture = None
+        if tag == "figure":
+            self._figure = None
+        if tag == "main":
+            self._main_depth = max(0, self._main_depth - 1)
+        if tag == "article":
+            self._article_depth = max(0, self._article_depth - 1)
+
+
+_IMAGE_STOP_WORDS = frozenset(("2026", "event", "events", "the", "and", "for", "at", "of", "a"))
+_IMAGE_GENERIC = re.compile(r"\b(?:logo|icon|banner|header|footer|site|website|sponsor|map|badge|sprite)\b", re.I)
+_IMAGE_GRAPHIC_FILE = re.compile(r"(?:logo|favicon|sprite|site-?icon|wordmark|avatar|placeholder|pixel|spacer|tracking)", re.I)
+
+
+def _usable_event_image_url(url):
+    """Apply the producer's narrow graphic guard without coupling to enrichment."""
+    path = urlsplit(url).path
+    filename = path.rsplit("/", 1)[-1]
+    return not (_IMAGE_GRAPHIC_FILE.search(filename)
+                or filename.lower().endswith((".svg", ".ico", ".gif")))
+
+
+def _event_image(html, page_url, title):
+    """Pick a responsive image only when its own description identifies this event."""
+    parser = _EventImages()
+    try:
+        parser.feed(html[:1_500_000])
+    except (ValueError, TypeError):
+        return None
+    title_words = {word for word in re.findall(r"[a-z0-9]+", title.casefold())
+                   if len(word) >= 4 and word not in _IMAGE_STOP_WORDS}
+    if not title_words:
+        return None
+    choices = []
+    for image in parser.images:
+        caption = " ".join(image["figure"]["text"]) if image["figure"] else ""
+        image_urls = " ".join(raw for raw, _ in image["variants"])
+        context = f"{image['context']} {caption} {image_urls}"
+        if _IMAGE_GENERIC.search(context):
+            continue
+        # Require all short titles' useful words, or at least two-thirds of longer titles.
+        words = set(re.findall(r"[a-z0-9]+", context.casefold()))
+        matches = len(title_words & words)
+        needed = len(title_words) if len(title_words) <= 2 else max(2, (2 * len(title_words) + 2) // 3)
+        if matches < needed:
+            continue
+        variants = []
+        for raw_url, width in image["variants"]:
+            try:
+                resolved = _url(urljoin(page_url, raw_url.strip()))
+            except (ValueError, AttributeError):
+                continue
+            if _usable_event_image_url(resolved):
+                variants.append((width, resolved))
+        if variants:
+            # The existing image enrichment byte limit remains authoritative at fetch time.
+            # Prefer the largest explicitly declared responsive variant; lazy/src fallbacks
+            # have width zero and are used only when no larger usable variant exists.
+            choices.append(max(variants, key=lambda item: item[0]))
+    return max(choices, key=lambda item: item[0])[1] if choices else None
+
+
+def _attach_event_images(events, html, page_url):
+    updated = []
+    for event in events:
+        if event.image_url:
+            updated.append(event)
+            continue
+        image = _event_image(html, page_url, event.title)
+        if not image:
+            updated.append(event)
+            continue
+        evidence = tuple(event.verification.evidence) + (f"Event-specific article image at {page_url}",)
+        updated.append(replace(
+            event, image_url=image, image_source="source HTML event image",
+            verification=stated(evidence, False, event.ends_at, event.venue, event.address,
+                                event.description, image)))
+    return updated
 
 
 def _feed_links(page):
@@ -760,6 +913,7 @@ class SourcesProducer:
                     existing = {(e.title.casefold(), e.starts_at) for e in events}
                     text_events = [e for e in visible if (e.title.casefold(), e.starts_at) not in existing]
                     events.extend(text_events)
+                    events = _attach_event_images(events, page, page_url)
                     unstructured_events += len(text_events)
                     rejected += from_text
                 except (ValueError, TypeError):
