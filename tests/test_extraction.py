@@ -318,7 +318,7 @@ class Identity(Fixture):
         self.two_areas(built)
         page = "https://www.sandiego.gov/event/harbor"
         self.add_candidate(built, "sandiego_gov", "sandiego_gov:harbor", candidate_payload(), page)
-        self.add_candidate(built, "austin_fixture", "austin_fixture:harbor-copy", candidate_payload(venue="Harbor Hall (mirror)", description="A different wording."), page)
+        self.add_candidate(built, "austin_fixture", "austin_fixture:harbor-copy", candidate_payload(venue="Harbor Hall", description="A different wording."), page)
         self.drain(built)
         events = self.all_events(built)
         self.assertEqual(len(events), 1, "the same title, start and address is one event")

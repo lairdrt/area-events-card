@@ -36,7 +36,7 @@ def create_verified_database_backup(database_path, backup_dir, application_root)
         raise ValueError("backup directory must be outside the active application tree")
     os.makedirs(backup_dir, exist_ok=True)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    path = os.path.join(backup_dir, f"discovery-before-source-cleanup-{stamp}.sqlite3")
+    path = os.path.join(backup_dir, f"discovery-before-maintenance-{stamp}.sqlite3")
     try:
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
@@ -51,10 +51,16 @@ def create_verified_database_backup(database_path, backup_dir, application_root)
             raise ValueError(f"database schema {version} differs from this tool's schema {LATEST}")
         if integrity != "ok":
             raise ValueError(f"database integrity check failed: {integrity}")
+        foreign_keys = source.execute("PRAGMA foreign_key_check").fetchall()
+        if foreign_keys:
+            raise ValueError(f"database foreign-key check failed: {len(foreign_keys)} violation(s)")
         source.backup(target)
         check = target.execute("PRAGMA integrity_check").fetchone()[0]
         if check != "ok":
             raise ValueError(f"SQLite backup integrity check failed: {check}")
+        backup_foreign_keys = target.execute("PRAGMA foreign_key_check").fetchall()
+        if backup_foreign_keys:
+            raise ValueError(f"SQLite backup foreign-key check failed: {len(backup_foreign_keys)} violation(s)")
         target.commit()
     finally:
         target.close()

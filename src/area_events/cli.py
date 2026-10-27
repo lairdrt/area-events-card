@@ -31,7 +31,7 @@ import urllib.request
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from .app import DEDUPLICATORS, DEFAULT_DEDUPLICATION, KNOWN_SOURCES, build, build_api, create_verified_database_backup, load_tokens
+from .app import DEDUPLICATORS, DEFAULT_DEDUPLICATION, KNOWN_SOURCES, build, build_api, create_verified_database_backup, duplicate_maintenance, load_tokens
 from .contracts.models import CandidateQuery
 from .control.service import ControlError, CreateAreaRequest, RevisionConflict, SettingsRequest, UpdateAreaRequest
 from .api.events import EventQuery
@@ -463,6 +463,56 @@ def cmd_source_cleanup(args):
     return 0
 
 
+def _duplicate_group(value):
+    keys = tuple(part.strip() for part in value.split(",") if part.strip())
+    if len(keys) != 2 or len(set(keys)) != 2:
+        raise argparse.ArgumentTypeError("--group must contain exactly two distinct event keys separated by a comma")
+    return keys
+
+
+def cmd_duplicates(args):
+    maintenance = duplicate_maintenance(args.db, args.deduplication)
+    try:
+        applying = getattr(args, "apply", False)
+        selected_groups = getattr(args, "group", None)
+        if applying:
+            if not getattr(args, "backup_dir", None) or not selected_groups or args.limit is None:
+                print("--apply requires --backup-dir, --limit, and one or more explicit --group KEY,KEY selections", file=sys.stderr)
+                return 2
+            app_root = os.environ.get("AREA_EVENTS_APP_ROOT", os.path.abspath(os.path.join(os.path.dirname(args.db), os.pardir, os.pardir)))
+            backup = create_verified_database_backup(args.db, args.backup_dir, app_root)
+            print(f"verified backup: {backup}")
+            results = maintenance.clean(selected_groups, days=args.days, limit=args.limit)
+            print(f"reconciled {len(results)} duplicate group(s)")
+            for result in results:
+                print(f"survivor {result['survivor']}; removed {result['removed']}; candidates {result['candidates_preserved']}; revisions {result['revisions_preserved']}")
+            remaining = maintenance.scan(days=args.days, limit=1000)
+            print(f"candidate associations retained: {sum(result['candidates_preserved'] for result in results)}; pruned: 0")
+            print(f"remaining duplicate groups: {len(remaining)}")
+            return 0
+        groups = maintenance.scan(days=args.days, limit=args.limit or 100)
+        if selected_groups:
+            by_keys = {tuple(sorted(group["event_keys"])): group for group in groups}
+            missing = [keys for keys in selected_groups if tuple(sorted(keys)) not in by_keys]
+            if missing:
+                raise ValueError("selected group is absent or ambiguous in the current scan")
+            groups = tuple(by_keys[tuple(sorted(keys))] for keys in selected_groups)
+        print(f"{len(groups)} likely duplicate group(s), read-only; horizon {args.days} days")
+        for group in groups:
+            if group["eligible"]:
+                headline = f"eligible; keep {group['event_keys'][0]}; remove {group['event_keys'][1]}"
+            else:
+                headline = "ambiguous; no automatic survivor; events " + ", ".join(group["event_keys"])
+            print(headline + f"; candidate associations {group['candidate_associations']}" +
+                  (f" ({group['reason']})" if group["reason"] else ""))
+            for event in group["events"]:
+                print(f"  {event['event_id']}  {_when(event['starts_at'])}  {event['title']}  [{event['address'] or event['venue_name'] or event['location_text'] or '-'}]")
+        return 0
+    except (OSError, ValueError) as error:
+        print(f"refused: {error}", file=sys.stderr)
+        return 2
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="discovery", description="The Area Events Discovery Service.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -548,6 +598,21 @@ def main(argv=None):
     cleanup.add_argument("--expect-leased-jobs", type=int, help="required for --apply; expected leased crawl job count")
     cleanup.add_argument("--expect-processing-work", type=int, help="required for --apply; expected processing work count")
     cleanup.add_argument("--expect-leased-processing-work", type=int, help="required for --apply; expected leased processing work count")
+    duplicates = add("duplicates", "read-only duplicate scan or transactionally reconcile explicitly selected events")
+    duplicate_actions = duplicates.add_subparsers(dest="duplicates_action", required=True)
+    scan = duplicate_actions.add_parser("scan", help="strictly read-only scan of future normalized events")
+    scan.add_argument("--db", default=argparse.SUPPRESS)
+    scan.add_argument("--deduplication", choices=sorted(DEDUPLICATORS), default=argparse.SUPPRESS)
+    scan.add_argument("--days", type=int, default=180)
+    scan.add_argument("--limit", type=int, default=100)
+    clean_duplicates = duplicate_actions.add_parser("clean", help="preview by default; revalidate selected matches and reconcile atomically")
+    clean_duplicates.add_argument("--db", default=argparse.SUPPRESS)
+    clean_duplicates.add_argument("--deduplication", choices=sorted(DEDUPLICATORS), default=argparse.SUPPRESS)
+    clean_duplicates.add_argument("--days", type=int, default=180)
+    clean_duplicates.add_argument("--limit", type=int, help="maximum selected groups; required with --apply")
+    clean_duplicates.add_argument("--group", type=_duplicate_group, action="append", help="explicit pair of event keys, repeat per group")
+    clean_duplicates.add_argument("--apply", action="store_true", help="requires --backup-dir and explicit --group selections")
+    clean_duplicates.add_argument("--backup-dir", help="required for --apply; outside the active application tree")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")
@@ -561,6 +626,8 @@ def main(argv=None):
     handlers = {"run": cmd_run, "serve": cmd_serve, "stop": cmd_stop, "status": cmd_status, "areas": cmd_areas, "settings": cmd_settings,
                 "pause": cmd_pause_resume, "resume": cmd_pause_resume, "changes": cmd_changes, "inspect": cmd_inspect, "extract": cmd_extract,
                 "events": cmd_events, "sources": cmd_source_cleanup}
+    if args.command == "duplicates":
+        return cmd_duplicates(args)
     return handlers[args.command](args)
 
 

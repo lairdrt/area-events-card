@@ -10,14 +10,19 @@ from dataclasses import dataclass
 from .areas import AreaRepository, SettingsRepository
 from .control import SqliteControlStorage
 from .crawl import SqliteCrawlStorage
-from .events import EventRepository, SqliteEventQueries
+from .events import DuplicateMaintenance, EventRepository, SqliteEventQueries
 from .media import LocalMediaFiles, LocalMediaWork, MediaRepository, SqliteMediaStore
 from .ports import MediaCache
 from .processing import ProcessingRepository, SqliteProcessingStorage
 from .reading import LocalDiscoveryReader
 from .repositories import CandidateRepository, ChangeLog, JobRepository, PageRepository, Retention, SourceCleanup, SourceRepository
 from .scheduling import SqliteSchedulingStorage
-from .store import DiscoveryStore
+from .store import DiscoveryStore, SCHEMA_VERSION
+
+
+def open_duplicate_maintenance(db_path, matcher, clock=time.time):
+    """Open the narrow maintenance port without initializing the service or applying migrations."""
+    return DuplicateMaintenance(db_path, matcher, SCHEMA_VERSION, clock)
 
 
 @dataclass

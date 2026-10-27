@@ -19,6 +19,7 @@ from area_events.contracts.models import CleanEvent, DecisionRejected, LeaseLost
 from area_events.deduplication import Association, Decision, ExistingEvent, Incoming
 from area_events.deduplication.exact import ExactMatch
 from area_events.deduplication.tolerant import TolerantMatch
+from area_events.deduplication import same_event_facts
 from area_events.extraction.service import VERSION, ExtractionService, LocalProcessingClient, StoredCandidateExtractor
 from area_events.api.events import EventQuery
 from area_events.validation.processing import ProcessingService
@@ -37,7 +38,7 @@ def clean(title="Harbor Concert", starts_at=START, address="500 Harbor Drive, Sa
 
 
 def known(event_key, event):
-    return ExistingEvent(event_key, event.title, event.starts_at, event.ends_at, event.venue_name, event.address, event.location_text, 1)
+    return ExistingEvent(event_key, event.title, event.starts_at, event.ends_at, event.venue_name, event.address, event.location_text, 1, event.source_url)
 
 
 class Lookup:
@@ -64,7 +65,7 @@ class Interface(unittest.TestCase):
         for name, make in STRATEGIES.items():
             with self.subTest(name):
                 strategy = make()
-                self.assertEqual((strategy.name, strategy.version), (name, 2))
+                self.assertEqual((strategy.name, strategy.version), (name, 3))
                 decision = strategy.decide(Incoming("src:a", clean(), None), Lookup())
                 self.assertIsInstance(decision, Decision)
                 self.assertEqual((decision.action, decision.event_key), ("create", None))
@@ -104,16 +105,39 @@ class Exact(unittest.TestCase):
         decision = ExactMatch().decide(Incoming("other:b", clean(address=None, venue=None), None), Lookup(existing))
         self.assertEqual(decision.action, "create", "nothing is invented to make a placeless description comparable")
 
+    def test_high_confidence_title_edits_match_with_identical_date_place_and_url(self):
+        first = clean(title="Holiday Marketplace at Mission Trails Regional Park")
+        first = dataclasses.replace(first, source_url="https://mtrp.org/marketplace/", ends_at=START + 7200)
+        second = clean(title="Holiday Marketplace Benefitting Mission Trails Regional Park")
+        second = dataclasses.replace(second, source_url="https://mtrp.org/marketplace/")
+        decision = ExactMatch().decide(Incoming("other:b", second, None), Lookup(known("ev-1", first)))
+        self.assertEqual((decision.action, decision.event_key), ("link", "ev-1"))
+
+    def test_similar_titles_do_not_override_conflicting_event_facts(self):
+        first = clean(title="Holiday Marketplace at Mission Trails Regional Park")
+        first = dataclasses.replace(first, source_url="https://mtrp.org/marketplace/", ends_at=START + 7200)
+        variants = (
+            dataclasses.replace(first, starts_at=START + 86400),
+            dataclasses.replace(first, address="900 Other Street, San Diego, CA"),
+            dataclasses.replace(first, ends_at=START + 10800),
+            dataclasses.replace(first, source_url="https://other.example/marketplace/"),
+        )
+        for variant in variants:
+            with self.subTest(variant=variant):
+                self.assertFalse(same_event_facts(first, variant))
+
 
 class Tolerant(unittest.TestCase):
     def existing(self, **kwargs):
         event = clean(**kwargs)
         return known("ev-1", event)
 
-    def test_a_start_within_the_window_and_the_same_place_is_one_event(self):
-        decision = TolerantMatch(window_s=900).decide(Incoming("o:b", clean(starts_at=START + 600), None), Lookup(self.existing()))
+    def test_exact_start_is_required_but_ends_may_differ_within_window(self):
+        event = clean(ends_at=START + 7200)
+        existing = self.existing(ends_at=START + 7500)
+        decision = TolerantMatch(window_s=900).decide(Incoming("o:b", event, None), Lookup(existing))
         self.assertEqual((decision.action, decision.event_key), ("link", "ev-1"))
-        self.assertEqual(TolerantMatch(window_s=900).decide(Incoming("o:b", clean(starts_at=START + 3600), None), Lookup(self.existing())).action, "create")
+        self.assertEqual(TolerantMatch(window_s=900).decide(Incoming("o:b", clean(starts_at=START + 1), None), Lookup(self.existing())).action, "create")
 
     def test_contradicting_places_are_different_events_and_a_missing_address_needs_the_same_venue(self):
         strategy = TolerantMatch()
@@ -125,6 +149,14 @@ class Tolerant(unittest.TestCase):
     def test_materially_different_stated_end_times_do_not_match(self):
         existing = self.existing(ends_at=START + 7200)
         self.assertEqual(TolerantMatch(window_s=900).decide(Incoming("o:b", clean(starts_at=START + 300, ends_at=START + 10800), None), Lookup(existing)).action, "create")
+
+    def test_title_edits_need_same_specific_event_url_and_complete_place_identity(self):
+        original = clean(title="Holiday Marketplace at Mission Trails Regional Park")
+        original = dataclasses.replace(original, source_url="https://mtrp.org/marketplace/")
+        changed = clean(title="Holiday Marketplace Benefitting Mission Trails Regional Park")
+        for url in ("https://mtrp.org/events/", None, "https://other.example/marketplace/"):
+            candidate = dataclasses.replace(changed, source_url=url)
+            self.assertEqual(TolerantMatch().decide(Incoming("o:b", candidate, None), Lookup(known("ev-1", original))).action, "create")
 
 
 class LookupPagination(unittest.TestCase):
@@ -216,7 +248,7 @@ class ThroughRealPersistence(Fixture):
     def test_a_strategy_object_can_be_registered_instead_of_a_name(self):
         built = self.build(deduplication=TolerantMatch(window_s=3600))
         self.add_candidate(built, "sandiego_gov", "sandiego_gov:one", document("Harbor Concert"))
-        self.add_candidate(built, "austin_fixture", "austin_fixture:two", document("Harbor Concert", starts_at="2030-05-01T18:30:00-07:00"))
+        self.add_candidate(built, "austin_fixture", "austin_fixture:two", document("Harbor Concert"))
         self.drain(built)
         self.assertEqual((self.count("events"), self.count("event_candidates", "role='duplicate'")), (1, 1))
 
@@ -245,8 +277,7 @@ class ThroughRealPersistence(Fixture):
 
         tolerant = self.build(deduplication="tolerant")
         secondary_key = "austin_fixture:strategy-switch-secondary"
-        self.add_candidate(tolerant, "austin_fixture", secondary_key,
-                           document("HARBOR CONCERT!", starts_at="2030-05-01T18:10:00-07:00"))
+        self.add_candidate(tolerant, "austin_fixture", secondary_key, document("HARBOR CONCERT!"))
         self.drain(tolerant)
         self.assertEqual((self.count("events"), self.count("event_candidates", "role='duplicate'")), (1, 1))
         event = tolerant.events.get(stable_key).event
@@ -284,7 +315,7 @@ class ThroughRealPersistence(Fixture):
         tolerant = self.build(deduplication="tolerant")
         tolerant_candidate = "austin_fixture:sqlite-page-tolerant"
         self.add_candidate(tolerant, "austin_fixture", tolerant_candidate,
-                           document("HARBOR CONCERT!", starts_at="2030-05-01T18:05:00-07:00", ends_at="2030-05-01T20:05:00-07:00"))
+                           document("HARBOR CONCERT!", starts_at="2030-05-01T18:00:00-07:00", ends_at="2030-05-01T20:00:00-07:00"))
         self.drain(tolerant)
         self.assertEqual((self.count("events"), self.count("event_candidates", "role='duplicate'")), (261, 2))
         with database(tolerant).read() as connection:

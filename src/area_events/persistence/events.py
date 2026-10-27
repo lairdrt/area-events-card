@@ -7,6 +7,11 @@ says. The lookup, the decision and the write all happen inside the single write 
 """
 import hashlib
 import json
+import os
+import sqlite3
+import time
+from collections import defaultdict
+from urllib.parse import quote
 
 from ..contracts.models import CleanEvent, DecisionRejected, NotFound
 from ..deduplication import ACTIONS, Association, Decision, ExistingEvent, Incoming, LOOKUP_PAGE_SIZE
@@ -29,14 +34,14 @@ class EventRepository:
 
     @staticmethod
     def _existing(row):
-        return ExistingEvent(row["event_key"], row["title"], row["starts_at"], row["ends_at"], row["venue_name"], row["address"], row["location_text"], row["revision"])
+        return ExistingEvent(row["event_key"], row["title"], row["starts_at"], row["ends_at"], row["venue_name"], row["address"], row["location_text"], row["revision"], row["source_url"])
 
     def association(self, tx, candidate_id):
         row = tx.execute("SELECT e.event_key, l.role FROM event_candidates l JOIN events e USING (event_id) WHERE l.candidate_id=?", (candidate_id,)).fetchone()
         return Association(row["event_key"], row["role"]) if row else None
 
     def between(self, tx, earliest, latest, after=None, limit=LOOKUP_PAGE_SIZE):
-        sql = "SELECT event_key, title, starts_at, ends_at, venue_name, address, location_text, revision FROM events WHERE starts_at BETWEEN ? AND ?"
+        sql = "SELECT event_key, title, starts_at, ends_at, venue_name, address, location_text, revision, source_url FROM events WHERE starts_at BETWEEN ? AND ?"
         params = [int(earliest), int(latest)]
         if after is not None:
             sql += " AND (starts_at > ? OR (starts_at = ? AND event_key > ?))"
@@ -211,4 +216,190 @@ class SqliteEventQueries:
                 raise NotFound("no such event")
             return EventDetail(EVENTS_SCHEMA, self._events.record(connection, row), self._events.history(connection, row["event_id"]),
                                self._events.evidence(connection, row["extraction_id"]), self._events.links(connection, row["event_id"]))
+
+
+class DuplicateMaintenanceError(ValueError):
+    pass
+
+
+def _maintenance_connection(path, mode):
+    absolute = os.path.abspath(path).replace("\\", "/")
+    connection = sqlite3.connect(f"file:{quote(absolute, safe='/:')}?mode={mode}", uri=True, isolation_level=None, timeout=10)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA busy_timeout=10000")
+    return connection
+
+
+class DuplicateMaintenance:
+    """Read-only duplicate discovery and transactional reconciliation through the injected deduplicator."""
+    MAX_SCAN_EVENTS = 20000
+    MAX_ANCHOR_BUCKET = 50
+    MAX_PAIR_COMPARISONS = 50000
+
+    def __init__(self, path, matcher, schema_version, clock=time.time):
+        self.path, self.matcher, self.schema_version, self.clock = os.path.abspath(path), matcher, schema_version, clock
+
+    @staticmethod
+    def _facts(row):
+        return ExistingEvent(row["event_key"], row["title"], row["starts_at"], row["ends_at"], row["venue_name"], row["address"],
+                             row["location_text"], row["revision"], row["source_url"])
+
+    def _eligible_pairs(self, rows):
+        anchors = defaultdict(set)
+        by_id = {row["event_id"]: row for row in rows}
+        for row in rows:
+            for field, value in self.matcher.anchors(self._facts(row)):
+                anchors[(row["starts_at"], field, value)].add(row["event_id"])
+        pairs = set()
+        for ids in anchors.values():
+            ordered = sorted(ids)
+            if len(ordered) > self.MAX_ANCHOR_BUCKET:
+                raise DuplicateMaintenanceError("ambiguous high-density event bucket; narrow the scan before cleaning")
+            for index, left in enumerate(ordered):
+                for right in ordered[index + 1:]:
+                    pairs.add((left, right))
+                    if len(pairs) > self.MAX_PAIR_COMPARISONS:
+                        raise DuplicateMaintenanceError("duplicate scan pair limit exceeded; narrow the scan")
+        links = defaultdict(set)
+        for left_id, right_id in pairs:
+            if self.matcher.matches(self._facts(by_id[left_id]), self._facts(by_id[right_id])):
+                links[left_id].add(right_id)
+                links[right_id].add(left_id)
+        groups, seen = [], set()
+        for start in links:
+            if start in seen:
+                continue
+            component, pending = set(), [start]
+            while pending:
+                item = pending.pop()
+                if item in component:
+                    continue
+                component.add(item)
+                pending.extend(links[item] - component)
+            seen.update(component)
+            group = tuple(by_id[event_id] for event_id in sorted(component))
+            groups.append({"event_keys": tuple(row["event_key"] for row in group), "event_ids": tuple(row["event_id"] for row in group),
+                           "eligible": len(group) == 2, "reason": "" if len(group) == 2 else "ambiguous match component has more than two events",
+                           "events": tuple(dict(row) for row in group)})
+        return tuple(sorted(groups, key=lambda group: group["event_ids"]))
+
+    def _scan(self, connection, days=180, limit=100):
+        if days < 1 or days > 730 or limit < 1 or limit > 1000:
+            raise DuplicateMaintenanceError("days must be 1..730 and limit must be 1..1000")
+        now = int(self.clock())
+        rows = connection.execute("SELECT * FROM events WHERE starts_at>=? AND starts_at<=? ORDER BY starts_at,event_id LIMIT ?",
+                                  (now, now + int(days) * 86400, self.MAX_SCAN_EVENTS + 1)).fetchall()
+        if len(rows) > self.MAX_SCAN_EVENTS:
+            raise DuplicateMaintenanceError("duplicate scan event limit exceeded; narrow the scan")
+        groups = self._eligible_pairs(rows)
+        for group in groups:
+            ids = group["event_ids"]
+            placeholders = ",".join("?" for _ in ids)
+            group["candidate_associations"] = connection.execute(
+                f"SELECT COUNT(*) FROM event_candidates WHERE event_id IN ({placeholders})", ids).fetchone()[0]
+        return groups[:limit]
+
+    def scan(self, days=180, limit=100):
+        connection = _maintenance_connection(self.path, "ro")
+        try:
+            if connection.execute("PRAGMA user_version").fetchone()[0] != self.schema_version:
+                raise DuplicateMaintenanceError("database schema does not match this maintenance tool; no migration was run")
+            return self._scan(connection, days, limit)
+        except sqlite3.Error as error:
+            raise DuplicateMaintenanceError(f"read-only duplicate scan failed: {error}") from error
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _snapshot(row):
+        return {key: row[key] for key in ("event_id", "event_key", "title", "description", "starts_at", "ends_at", "timezone", "venue_name",
+                                           "location_text", "address", "location_status", "source_url", "status", "missing_json", "revision",
+                                           "extraction_id", "first_extracted_at", "updated_at")}
+
+    def clean(self, selected_groups, days=180, limit=10):
+        selected = tuple(tuple(sorted(set(keys))) for keys in selected_groups)
+        if not selected or len(selected) > limit or limit < 1 or limit > 100:
+            raise DuplicateMaintenanceError("select 1..limit duplicate groups explicitly")
+        if any(len(group) != 2 or not all(group) for group in selected) or len(set(selected)) != len(selected):
+            raise DuplicateMaintenanceError("each selected group must contain two unique event keys")
+        connection = _maintenance_connection(self.path, "rw")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("PRAGMA user_version").fetchone()[0] != self.schema_version:
+                raise DuplicateMaintenanceError("database schema does not match this maintenance tool")
+            groups = self._scan(connection, days, 1000)
+            available = {tuple(sorted(group["event_keys"])): group for group in groups if group["eligible"]}
+            if any(group not in available for group in selected):
+                raise DuplicateMaintenanceError("a selected group is no longer an unambiguous duplicate; transaction refused")
+            changed = [self._reconcile(connection, available[keys]["events"]) for keys in selected]
+            violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise DuplicateMaintenanceError(f"foreign-key integrity failed ({len(violations)} violations)")
+            connection.execute("COMMIT")
+            return tuple(changed)
+        except BaseException as error:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            if isinstance(error, sqlite3.Error):
+                raise DuplicateMaintenanceError(f"duplicate cleanup transaction failed and was rolled back: {error}") from error
+            raise
+        finally:
+            connection.close()
+
+    def _reconcile(self, tx, snapshots):
+        keys = tuple(row["event_key"] for row in snapshots)
+        placeholders = ",".join("?" for _ in keys)
+        rows = tx.execute(f"SELECT * FROM events WHERE event_key IN ({placeholders}) ORDER BY event_id", keys).fetchall()
+        if len(rows) != 2 or {row["event_key"] for row in rows} != set(keys):
+            raise DuplicateMaintenanceError("selected event identity changed during cleanup")
+        current, prior = {row["event_key"]: row for row in rows}, {row["event_key"]: row for row in snapshots}
+        if any(self._snapshot(current[key]) != self._snapshot(prior[key]) for key in keys):
+            raise DuplicateMaintenanceError("selected event facts changed during cleanup")
+        if not self.matcher.matches(self._facts(current[keys[0]]), self._facts(current[keys[1]])):
+            raise DuplicateMaintenanceError("selected events no longer match")
+        survivor = min(rows, key=lambda row: row["event_id"])
+        loser = next(row for row in rows if row["event_id"] != survivor["event_id"])
+        latest = max(rows, key=lambda row: (row["updated_at"], row["event_id"]))
+        candidate_rows = tx.execute("SELECT candidate_id,role,linked_at FROM event_candidates WHERE event_id=? ORDER BY candidate_id", (survivor["event_id"],)).fetchall()
+        loser_candidates = tx.execute("SELECT candidate_id,role,linked_at FROM event_candidates WHERE event_id=? ORDER BY candidate_id", (loser["event_id"],)).fetchall()
+        if not candidate_rows or not loser_candidates:
+            raise DuplicateMaintenanceError("both events must have candidate ownership; refusing ambiguous reconciliation")
+        if any(sum(link["role"] == "primary" for link in links) != 1 for links in (candidate_rows, loser_candidates)):
+            raise DuplicateMaintenanceError("each event must have exactly one primary candidate; refusing ambiguous reconciliation")
+        revision_rows = tx.execute("SELECT rowid,event_id,revision,extraction_id,changed_json,created_at FROM event_revisions WHERE event_id IN (?,?) ORDER BY created_at,event_id,revision",
+                                   (survivor["event_id"], loser["event_id"])).fetchall()
+        revisions_by_event = {event["event_id"]: [item["revision"] for item in revision_rows if item["event_id"] == event["event_id"]] for event in rows}
+        if any(sorted(revisions_by_event[event["event_id"]]) != list(range(1, event["revision"] + 1)) for event in rows):
+            raise DuplicateMaintenanceError("event revision history is incomplete or inconsistent; refusing to discard history")
+        now = int(self.clock())
+        for link in loser_candidates:
+            tx.execute("UPDATE event_candidates SET event_id=? WHERE candidate_id=?", (survivor["event_id"], link["candidate_id"]))
+        all_links = tx.execute("SELECT candidate_id,role FROM event_candidates WHERE event_id=? ORDER BY candidate_id", (survivor["event_id"],)).fetchall()
+        primaries = [link["candidate_id"] for link in all_links if link["role"] == "primary"]
+        primary = primaries[0] if primaries else all_links[0]["candidate_id"]
+        tx.execute("UPDATE event_candidates SET role='duplicate' WHERE event_id=?", (survivor["event_id"],))
+        tx.execute("UPDATE event_candidates SET role='primary' WHERE event_id=? AND candidate_id=?", (survivor["event_id"], primary))
+        tx.execute("UPDATE extractions SET event_id=? WHERE event_id=?", (survivor["event_id"], loser["event_id"]))
+        for index, revision in enumerate(revision_rows, 1):
+            tx.execute("UPDATE event_revisions SET revision=? WHERE rowid=?", (-index, revision["rowid"]))
+        for revision_number, revision in enumerate(revision_rows, 1):
+            tx.execute("UPDATE event_revisions SET event_id=?, revision=? WHERE rowid=?", (survivor["event_id"], revision_number, revision["rowid"]))
+        fields = ("title", "description", "starts_at", "ends_at", "timezone", "venue_name", "location_text", "address", "location_status",
+                  "source_url", "status", "missing_json")
+        changed = {field: [survivor[field], latest[field]] for field in fields if survivor[field] != latest[field]}
+        revision = len(revision_rows) + 1
+        changed["reconciled_from"] = {"event_key": loser["event_key"], "event_id": loser["event_id"], "revision": loser["revision"]}
+        assignments = ",".join(f"{field}=?" for field in fields)
+        tx.execute(f"UPDATE events SET {assignments},revision=?,extraction_id=?,first_extracted_at=?,updated_at=? WHERE event_id=?",
+                   tuple(latest[field] for field in fields) + (revision, latest["extraction_id"], min(row["first_extracted_at"] for row in rows), now, survivor["event_id"]))
+        tx.execute("INSERT INTO event_revisions(event_id,revision,extraction_id,changed_json,created_at) VALUES(?,?,?,?,?)",
+                   (survivor["event_id"], revision, latest["extraction_id"] or revision_rows[-1]["extraction_id"],
+                    json.dumps(changed, ensure_ascii=False, sort_keys=True), now))
+        tx.execute("DELETE FROM events WHERE event_id=?", (loser["event_id"],))
+        digest = hashlib.sha256(json.dumps(changed, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        tx.execute("INSERT INTO changes(entity,entity_key,op,kind,payload_hash,created_at) VALUES('event',?,'upsert','event.reconciled',?,?)", (survivor["event_key"], digest, now))
+        tx.execute("INSERT INTO changes(entity,entity_key,op,kind,payload_hash,created_at) VALUES('event',?,'delete','event.reconciled',?,?)", (loser["event_key"], digest, now))
+        return {"survivor": survivor["event_key"], "removed": loser["event_key"], "candidates_preserved": len(all_links),
+                "revisions_preserved": len(revision_rows)}
 

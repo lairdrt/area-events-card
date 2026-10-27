@@ -156,7 +156,7 @@ Check 'legacy cleanup occurs only after API verification and retains verified ba
 }
 Check 'HA restart and module verification are authenticated and bounded' {
   $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
-  if ($text -notmatch 'CoreRecoveryTimeoutSeconds' -or $text -notmatch 'Test-HaWebSocket' -or $text -notmatch 'Get-AreaEventsRequiredFrontendAssets') { throw 'HA restart, websocket or manifest-driven module checks are missing' }
+  if ($text -notmatch 'RestartTimeoutSeconds' -or $text -notmatch 'Test-HaWebSocket' -or $text -notmatch 'Get-AreaEventsRequiredFrontendAssets') { throw 'HA restart, websocket or manifest-driven module checks are missing' }
   if ($text -match 'Count -ne 6|six presentation modules|No current events|samples.*-lt 1') { throw 'hardcoded renderer count or nonempty event requirement remains' }
   if ($text -match 'ServerCertificateCustomValidationCallback|DangerousAcceptAnyServerCertificateValidator') { throw 'TLS verification is disabled' }
 }

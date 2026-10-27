@@ -1,47 +1,33 @@
-"""Tolerant field matching: normalized title, nearby starts and non-contradictory stated place evidence."""
-import re
-
-from . import Decision, Incoming, LOOKUP_PAGE_SIZE, retain
-
-
-def _norm(text):
-    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+"""Tolerant field matching: similar titles, exact starts and compatible stated place evidence."""
+from . import Decision, Incoming, LOOKUP_PAGE_SIZE, anchors, retain, same_event_facts
 
 
 class TolerantMatch:
-    name, version = "tolerant", 2
+    name, version = "tolerant", 3
 
     def __init__(self, window_s=900):
         self.window_s = int(window_s)
+
+    def matches(self, left, right):
+        return same_event_facts(left, right, 0, allow_venue_only=True, end_window_s=self.window_s)
+
+    def anchors(self, event):
+        return anchors(event)
 
     def decide(self, incoming: Incoming, lookup):
         event = incoming.event
         known = retain(incoming)
         if known is not None:
             return known
-        title = _norm(event.title)
-        earliest, latest = event.starts_at - self.window_s, event.starts_at + self.window_s
+        earliest = latest = event.starts_at
         after = None
         while True:
             page = lookup.starting_between(earliest, latest, after, LOOKUP_PAGE_SIZE)
             for other in page:
-                end_times_agree = event.ends_at is None or other.ends_at is None or abs(event.ends_at - other.ends_at) <= self.window_s
-                if _norm(other.title) == title and end_times_agree and self._same_place(event, other):
-                    return Decision("link", other.event_key, "the same title, a start within the window, and matching place evidence")
+                if self.matches(event, other):
+                    return Decision("link", other.event_key, "matching title, exact start, and compatible place evidence")
             if len(page) < LOOKUP_PAGE_SIZE:
                 break
             last = page[-1]
             after = (last.starts_at, last.event_key)
-        return Decision("create", reason="no known event states the same title near this start in a comparable place")
-
-    @staticmethod
-    def _same_place(event, other):
-        evidence_agrees = False
-        for left, right in ((event.address, other.address), (event.venue_name, other.venue_name),
-                            (event.location_text, other.location_text)):
-            left, right = _norm(left), _norm(right)
-            if left and right:
-                if left != right:
-                    return False
-                evidence_agrees = True
-        return evidence_agrees
+        return Decision("create", reason="no known event states a matching title, exact start and comparable place")

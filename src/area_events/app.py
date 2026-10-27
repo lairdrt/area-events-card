@@ -27,7 +27,7 @@ from .enrichment.service import EnrichmentConfig, MediaEnrichmentService, Source
 from .api.events import EventQueryService
 from .extraction.service import ExtractionConfig, ExtractionService, LocalProcessingClient, StoredCandidateExtractor
 from .discovery.host import DiscoveryHost, HostConfig
-from .persistence.build import open_persistence
+from .persistence.build import open_duplicate_maintenance, open_persistence
 from .persistence.store import create_verified_database_backup
 from .validation.processing import ProcessingService
 from .discovery.producers import city_of_san_diego
@@ -41,6 +41,12 @@ from .discovery.service import DiscoveryConfig, DiscoveryService
 # implements `deduplication.Deduplicator`) here; nothing else in the application changes.
 DEDUPLICATORS = types.MappingProxyType({"exact": ExactMatch, "tolerant": TolerantMatch})
 DEFAULT_DEDUPLICATION = "exact"
+
+
+def duplicate_maintenance(db_path, strategy=DEFAULT_DEDUPLICATION, clock=time.time):
+    """Build duplicate maintenance with the same replaceable matcher used by event processing."""
+    deduplicator = DEDUPLICATORS[strategy]() if isinstance(strategy, str) else strategy
+    return open_duplicate_maintenance(db_path, deduplicator, clock)
 
 KNOWN_SOURCES = types.MappingProxyType({  # read-only
     "san-diego-city": SourceSpec("sandiego_gov", "sandiego_gov", city_of_san_diego.NAME, city_of_san_diego.LISTING_URL,
