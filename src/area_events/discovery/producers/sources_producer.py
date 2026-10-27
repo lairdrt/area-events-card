@@ -491,13 +491,17 @@ def _event_image(html, page_url, title, event_titles=()):
                          if len(word) >= 4 and word not in _IMAGE_STOP_WORDS}
         filename_matches = len(title_words & filename_words)
         heading_matches = len(title_words & heading_words)
-        # Unlabeled, opaque images need a matching heading in their own container;
-        # neighboring event headings and text cannot establish ownership.
-        if not any(descriptions) and filename_matches < needed:
-            if heading_matches < needed or any(
-                    words and words != title_words
-                    and len(words & heading_words) >= min(2, len(words))
-                    for words in other_title_words):
+        if not any(descriptions):
+            # A strongly identified different event in the heading or filename
+            # disqualifies the image. Neither signal may override the other.
+            if any(words and len(words & heading_words) >= min(2, len(words))
+                   for words in other_title_words) and heading_matches < needed:
+                continue
+            if any(words and len(words & filename_words) >= min(2, len(words))
+                   for words in other_title_words) and filename_matches < needed:
+                continue
+            # An opaque filename requires an unambiguous owning heading.
+            if filename_matches < needed and heading_matches < needed:
                 continue
         variants = []
         for raw_url, width in image["variants"]:
