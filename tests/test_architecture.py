@@ -27,8 +27,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DISCOVERY = os.path.join(ROOT, "src", "area_events")
 
 # Neutral modules: generic utilities and libraries that belong to no engine and no source. They may import only each other and the standard library.
-NEUTRAL = frozenset(("discovery.safe", "common.timeutil", "common.textutil", "geolocation.textloc", "contracts.evidence", "enrichment.media", "enrichment.maps", "enrichment.images", "classification.classify", "classification.classifiers"))
-PRODUCER_MAY_USE = frozenset(("discovery.safe", "common.timeutil", "common.textutil", "geolocation.textloc"))
+NEUTRAL = frozenset(("discovery.safe", "common.timeutil", "common.textutil", "geolocation.textloc", "contracts.evidence", "enrichment.media", "enrichment.maps", "enrichment.images", "image_extractor", "image_extractor.v1", "image_extractor.association", "image_extractor.responsive", "image_extractor.goose3_adapter", "classification.classify", "classification.classifiers"))
+PRODUCER_MAY_USE = frozenset(("image_extractor.v1", "image_extractor.association", "image_extractor.responsive", "discovery.safe", "common.timeutil", "common.textutil", "geolocation.textloc"))
 PRODUCER_MAY_USE_SERVICE = frozenset(("discovery.producer", "discovery.fetching", "discovery.urls"))
 COMPOSITION_ROOT = "app"
 PERSISTENCE = "persistence"

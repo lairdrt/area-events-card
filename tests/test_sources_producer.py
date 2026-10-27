@@ -10,7 +10,7 @@ from area_events.control.service import CreateAreaRequest, CreateSourceRequest
 from area_events.contracts.models import ValidationFailed
 from area_events.discovery import producer
 from area_events.discovery.fetching import RecordingFetcher
-from area_events.discovery.producers.sources_producer import SourcesProducer, _EventImages, _timestamp
+from area_events.discovery.producers.sources_producer import SourcesProducer, _timestamp
 from area_events.discovery.safe import FetchError, Response
 from tests.test_discovery_service import Clock
 
@@ -102,236 +102,26 @@ def run_crawl(pages, urls=(SEED,), **kwargs):
 
 
 class GenericProducer(unittest.TestCase):
-    def assert_html_images(self, content, expected, documents=None):
-        documents = documents or [DOC, {**DOC, "@id": "winter-concert-456",
-                                       "name": "Winter Concert"}]
-        page = ('<script type="application/ld+json">' + json.dumps(documents)
-                + '</script><main>' + content + '</main>')
-        result, client = run_crawl({SEED: page}, max_depth=0)
-        self.assertEqual(client.requests, [SEED])  # Extraction never fetches photographs.
-        self.assertEqual({event.title: event.image_url for event in result.candidates}, expected)
-        self.assertEqual(len(producer.accept(result).candidates), len(documents))
 
-    def test_image_ownership_requires_agreement_between_all_signals(self):
-        cases = (
-            '<h2>Autumn Fair and Winter Concert</h2><img src="/83a9c2.jpg">',
-            '<h2>Autumn Fair and Winter Concert</h2><img src="/autumn-fair.jpg" alt="Autumn Fair">',
-            '<h2>Autumn Fair</h2><img src="/83a9c2.jpg" alt="Autumn Fair and Winter Concert">',
-            '<h2>Autumn Fair</h2><img src="/winter-concert.jpg" alt="Autumn Fair">',
-            '<h2>Winter Concert</h2><img src="/autumn-fair.jpg" alt="Autumn Fair">',
-            '<img src="/autumn-fair-and-winter-concert.jpg">',
-            '<img src="/autumn-fair.jpg" title="Autumn Fair" aria-label="Winter Concert">',
-            '<picture><source srcset="/winter-concert.webp 1024w">'
-            '<img src="/autumn-fair.jpg" alt="Autumn Fair"></picture>',
-            '<figure><img src="/autumn-fair.jpg" alt="Autumn Fair">'
-            '<figcaption>Autumn Fair and Winter Concert</figcaption></figure>',
-        )
-        for content in cases:
-            with self.subTest(content=content):
-                self.assert_html_images(content, {"Autumn Fair": None, "Winter Concert": None})
 
-    def test_image_titles_require_complete_distinctive_words(self):
-        for names, label in (
-                (("Autumn Craft Fair", "Winter Craft Fair"), "Craft Fair"),
-                (("Autumn Craft Fair", "Winter Craft Fair"), "Autumn Fair"),
-                (("Art Fair", "Modern Art Fair"), "Modern Art Fair")):
-            with self.subTest(names=names, label=label):
-                docs = [{**DOC, "name": name, "@id": str(index)} for index, name in enumerate(names)]
-                self.assert_html_images('<img src="/83a9c2.jpg" alt="' + label + '">',
-                                        dict.fromkeys(names), docs)
 
-    def test_short_unicode_and_encoded_image_titles(self):
-        for title, filename in (("AI at Zoo", "ai-at-zoo"), ("Café Noël", "caf%C3%A9-no%C3%ABl")):
-            with self.subTest(title=title):
-                self.assert_html_images('<img src="/' + filename + '.jpg">',
-                                        {title: 'https://example.org/' + filename + '.jpg'},
-                                        [{**DOC, "name": title}])
 
-    def test_images_before_headings_need_a_single_container_owner(self):
-        self.assert_html_images(
-            '<article><img src="/83a9c2.jpg"><div><h2>Autumn Fair</h2></div></article>'
-            '<article><img src="/91b7d4.jpg"><h2>Winter Concert</h2></article>',
-            {"Autumn Fair": "https://example.org/83a9c2.jpg",
-             "Winter Concert": "https://example.org/91b7d4.jpg"})
-        self.assert_html_images(
-            '<article><img src="/83a9c2.jpg"><h2>Autumn Fair</h2><h2>Winter Concert</h2></article>',
-            {"Autumn Fair": None, "Winter Concert": None})
-        for prefix in ('', '<h1>Upcoming Events</h1>'):
-            with self.subTest(prefix=prefix):
-                self.assert_html_images(prefix + '<img src="/83a9c2.jpg"><h2>Autumn Fair</h2>'
-                                        '<img src="/91b7d4.jpg"><h2>Winter Concert</h2>',
-                                        {"Autumn Fair": None, "Winter Concert": None})
 
-    def test_nested_wrappers_and_event_containers_preserve_ownership(self):
-        self.assert_html_images(
-            '<article><h2>Autumn Fair</h2><div><figure><img src="/83a9c2.jpg"></figure></div>'
-            '<section><h3>Winter Concert</h3><div><img src="/91b7d4.jpg"></div></section></article>',
-            {"Autumn Fair": "https://example.org/83a9c2.jpg",
-             "Winter Concert": "https://example.org/91b7d4.jpg"})
-        self.assert_html_images(
-            '<div><h2>Autumn Fair</h2><img src="/83a9c2.jpg"></div>'
-            '<div><h2>Winter Concert</h2><img src="/91b7d4.jpg"></div>',
-            {"Autumn Fair": "https://example.org/83a9c2.jpg",
-             "Winter Concert": "https://example.org/91b7d4.jpg"})
 
-    def test_figcaptions_apply_only_to_their_own_figure(self):
-        self.assert_html_images(
-            '<figure><p>Winter Concert tickets are sold separately.</p>'
-            '<img src="/83a9c2.jpg"><figcaption>Autumn <em>Fair</em></figcaption>'
-            '<figure><img src="/91b7d4.jpg"><figcaption>Winter Concert</figcaption></figure></figure>',
-            {"Autumn Fair": "https://example.org/83a9c2.jpg",
-             "Winter Concert": "https://example.org/91b7d4.jpg"})
 
-    def test_gallery_headings_require_image_specific_identity(self):
-        for content, autumn in (
-                ('<h2>Photo Gallery</h2><img src="/83a9c2.jpg">', None),
-                ('<h2>Autumn Fair</h2><h3>Photo Gallery</h3><img src="/83a9c2.jpg">', None),
-                ('<h2>Photo Gallery</h2><img src="/autumn-fair.jpg">',
-                 'https://example.org/autumn-fair.jpg')):
-            with self.subTest(content=content):
-                self.assert_html_images(content, {"Autumn Fair": autumn, "Winter Concert": None})
 
-    def test_multiple_photos_and_cross_event_url_reuse_remain_unset(self):
-        for content in (
-                '<h2>Autumn Fair</h2><img src="/83a9c2.jpg"><img src="/91b7d4.jpg">',
-                '<img src="/83a9c2.jpg" alt="Autumn Fair"><img src="/83a9c2.jpg" alt="Winter Concert">',
-                '<img src="/83a9c2.jpg" alt="Autumn Fair and Winter Concert">'
-                '<img src="/83a9c2.jpg" alt="Autumn Fair">',
-                '<img src="/83a9c2.jpg" alt="Summer Concert">'
-                '<img src="/83a9c2.jpg" alt="Autumn Fair">',
-                '<img src="/a0c1e2.jpg" srcset="/83a9c2.jpg 1024w" alt="Autumn Fair">'
-                '<img src="/a0c1e2.jpg" srcset="/91b7d4.jpg 1024w" alt="Winter Concert">'):
-            with self.subTest(content=content):
-                self.assert_html_images(content, {"Autumn Fair": None, "Winter Concert": None})
-        self.assert_html_images('<img src="/83a9c2.jpg" alt="Autumn Fair">' * 2,
-                                {"Autumn Fair": "https://example.org/83a9c2.jpg",
-                                 "Winter Concert": None})
 
-    def test_recurring_event_occurrences_share_one_html_photo(self):
-        docs = [DOC, {**DOC, "startDate": "2026-11-06T11:30:00-08:00"}]
-        page = ('<script type="application/ld+json">' + json.dumps(docs)
-                + '</script><main><h2>Autumn Fair</h2><img src="/83a9c2.jpg"></main>')
-        result, _ = run_crawl({SEED: page}, max_depth=0)
-        self.assertEqual(len(result.candidates), 2)
-        self.assertEqual({event.image_url for event in result.candidates},
-                         {"https://example.org/83a9c2.jpg"})
 
-    def test_hidden_navigation_advertising_and_graphics_are_not_event_photos(self):
-        for wrapper in ('nav', 'footer', 'aside', 'template', 'noscript', 'svg',
-                        'div hidden', 'div aria-hidden="true"', 'div class="advertisement"'):
-            with self.subTest(wrapper=wrapper):
-                self.assert_html_images('<' + wrapper + '><img src="/autumn-fair.jpg" '
-                                        'alt="Autumn Fair"></' + wrapper.split()[0] + '>',
-                                        {"Autumn Fair": None, "Winter Concert": None})
-        for filename in ('autumn-fair_banner.jpg', 'autumn-fair-logo.png', 'autumn-fair-advertisement.jpg',
-                         'autumn-fair.svg', 'autumn-fair.gif', 'autumn-fair.avif', 'autumn-fair.pdf'):
-            with self.subTest(filename=filename):
-                self.assert_html_images('<img src="/' + filename + '" alt="Autumn Fair">',
-                                        {"Autumn Fair": None, "Winter Concert": None})
 
-    def test_supported_picture_sources_lazy_urls_and_density_variants(self):
-        for markup, expected in (
-                ('<img src="/83a9c2.jpg" data-src="/91b7d4.jpg">', '/91b7d4.jpg'),
-                ('<img src="/placeholder.png" data-original="/83a9c2.jpg">', '/83a9c2.jpg'),
-                ('<img srcset="/83a9c2.jpg 1x, /91b7d4.jpg 2x">', '/83a9c2.jpg'),
-                ('<img data-srcset="/83a9c2.jpg 1440w, /91b7d4.jpg 2048w">', '/83a9c2.jpg'),
-                ('<picture><source type="image/avif" srcset="/91b7d4.avif 1024w">'
-                 '<source type="image/webp" srcset="/83a9c2.webp 1024w">'
-                 '<img src="/a0c1e2.jpg"></picture>', '/83a9c2.webp'),
-                ('<picture><source srcset="/83a9c2.jpg 1024w"/>'
-                 '<img src="/91b7d4.jpg"/></picture>', '/83a9c2.jpg')):
-            with self.subTest(markup=markup):
-                self.assert_html_images('<h2>Autumn Fair</h2>' + markup,
-                                        {"Autumn Fair": 'https://example.org' + expected,
-                                         "Winter Concert": None})
 
-    def test_invalid_image_variants_do_not_discard_other_events(self):
-        for invalid in ('http://[broken', 'javascript:alert(1)', 'data:image/png;base64,AAAA',
-                        'https://user:password@example.org/autumn-fair.jpg', '/autumn-fair.svg'):
-            with self.subTest(invalid=invalid):
-                self.assert_html_images('<h2>Autumn Fair</h2><img src="' + invalid + '" '
-                                        'data-src="/83a9c2.jpg"><h2>Winter Concert</h2>'
-                                        '<img src="/91b7d4.jpg">',
-                                        {"Autumn Fair": "https://example.org/83a9c2.jpg",
-                                         "Winter Concert": "https://example.org/91b7d4.jpg"})
 
-    def test_non_event_url_directories_do_not_override_image_identity(self):
-        self.assert_html_images('<img src="https://website.example.org/site/photos/autumn-fair.jpg" '
-                                'alt="Autumn Fair">',
-                                {"Autumn Fair": "https://website.example.org/site/photos/autumn-fair.jpg",
-                                 "Winter Concert": None})
 
-    def test_unknown_descriptive_filenames_are_not_treated_as_opaque_photos(self):
-        for filename in ('summer-concert.jpg', 'summerconcert2026.jpg'):
-            for label in ('', ' alt="Autumn Fair"'):
-                with self.subTest(filename=filename, label=label):
-                    self.assert_html_images('<h2>Autumn Fair</h2><img src="/' + filename + '"' + label + '>',
-                                            {"Autumn Fair": None, "Winter Concert": None})
-        for filename in ('IMG_1234.jpg', 'DSC_0012.JPG', '83a9c2.jpg', '83a9c2-1024x341.jpg'):
-            with self.subTest(filename=filename):
-                self.assert_html_images('<h2>Autumn Fair</h2><img src="/' + filename + '">',
-                                        {"Autumn Fair": 'https://example.org/' + filename,
-                                         "Winter Concert": None})
 
-    def test_image_sources_respect_url_and_descriptor_validation(self):
-        for markup, expected in (
-                ('<img src="../83a9c2.jpg">', 'https://example.org/83a9c2.jpg'),
-                ('<img src="//cdn.example.org/83a9c2.webp">', 'https://cdn.example.org/83a9c2.webp'),
-                ('<img src="/image.php?id=1">', 'https://example.org/image.php?id=1'),
-                ('<img src="/83a9c2.jpg" srcset="/91b7d4.jpg 0w, /a0c1e2.jpg -1x">',
-                 'https://example.org/83a9c2.jpg'),
-                ('<img srcset="/91b7d4.jpg 2x, /83a9c2.jpg 1x">', 'https://example.org/83a9c2.jpg'),
-                ('<img srcset="/83a9c2.jpg?q=1,2 1024w, /91b7d4.jpg 2048w">',
-                 'https://example.org/83a9c2.jpg?q=1%2C2'),
-                ('<img srcset="data:image/png;base64,/autumn-fair.jpg 1024w">', None),
-                ('<img src="/autumn-fair.jpg" width="1" height="1">', None),
-                ('<img src="#autumn-fair">', None)):
-            with self.subTest(markup=markup):
-                self.assert_html_images('<h2>Autumn Fair</h2>' + markup,
-                                        {"Autumn Fair": expected, "Winter Concert": None})
 
-    def test_optional_listing_end_tags_do_not_mix_event_cards(self):
-        for content in (
-                '<ul><li><h2>Autumn Fair</h2><img src="/83a9c2.jpg">'
-                '<li><h2>Winter Concert</h2><img src="/91b7d4.jpg"></ul>',
-                '<table><tr><td><h2>Autumn Fair</h2><img src="/83a9c2.jpg">'
-                '<tr><td><h2>Winter Concert</h2><img src="/91b7d4.jpg"></table>'):
-            with self.subTest(content=content):
-                self.assert_html_images(content, {"Autumn Fair": 'https://example.org/83a9c2.jpg',
-                                                 "Winter Concert": 'https://example.org/91b7d4.jpg'})
 
-    def test_ignored_nested_containers_cannot_change_visible_ownership(self):
-        self.assert_html_images('<section><h2>Autumn Fair</h2><section hidden>'
-                                '<h2>Winter Concert</h2></section><img src="/83a9c2.jpg"></section>',
-                                {"Autumn Fair": 'https://example.org/83a9c2.jpg', "Winter Concert": None})
-        self.assert_html_images('<div style="display: none"><img src="/autumn-fair.jpg"></div>'
-                                '<div role="banner"><img src="/winter-concert.jpg"></div>',
-                                {"Autumn Fair": None, "Winter Concert": None})
 
-    def test_html_does_not_reassign_a_jsonld_photo_to_another_title(self):
-        docs = [{**DOC, "image": "/83a9c2.jpg"},
-                {**DOC, "@id": "winter-concert-456", "name": "Winter Concert"}]
-        self.assert_html_images('<h2>Winter Concert</h2><img src="/83a9c2.jpg">',
-                                {"Autumn Fair": 'https://example.org/83a9c2.jpg', "Winter Concert": None}, docs)
 
-    def test_similar_normalized_titles_are_not_assumed_to_be_recurrences(self):
-        docs = [DOC, {**DOC, "@id": "second", "name": "The Autumn Fair"}]
-        self.assert_html_images('<img src="/autumn-fair.jpg">',
-                                {"Autumn Fair": None, "The Autumn Fair": None}, docs)
 
-    def test_image_discovery_is_once_per_page_and_bounded(self):
-        feed = _EventImages.feed
-        with patch.object(_EventImages, "feed", autospec=True, side_effect=feed) as observed:
-            self.assert_html_images('<h2>Autumn Fair</h2><img src="/83a9c2.jpg">',
-                                    {"Autumn Fair": 'https://example.org/83a9c2.jpg', "Winter Concert": None})
-            self.assertEqual(observed.call_count, 1)
-        for content in ('<div>' * 140 + '<img src="/autumn-fair.jpg">' + '</div>' * 140,
-                        '<img src="/autumn-fair.jpg">' * 1001,
-                        '<h2>Autumn Fair</h2>' * 2001 + '<img src="/autumn-fair.jpg">',
-                        '<img srcset="' + '/autumn-fair.jpg 1024w, ' * 1001 + '">',
-                        '<h2>Autumn Fair</h2><img src="/autumn-fair.jpg">' + ' ' * 1_500_000):
-            with self.subTest(length=len(content)):
-                self.assert_html_images(content, {"Autumn Fair": None, "Winter Concert": None})
 
     def test_validates_websites_and_bounded_options(self):
         adapter = SourcesProducer()
@@ -363,48 +153,8 @@ class GenericProducer(unittest.TestCase):
         self.assertEqual(result.candidates[0].provenance.found_on, (SEED,))
         self.assertEqual(len(producer.accept(result).candidates), 1)
 
-    def test_html_event_image_uses_event_specific_responsive_variant_for_both_dates(self):
-        page = MTRP_HTML.replace(
-            "<p>Shop local this holiday season at Mission Trails Regional Park!</p>",
-            """<p><img src="../wp-content/uploads/Nature-Center-Holiday-Craft-Market.png" alt="" srcset="../wp-content/uploads/Nature-Center-Holiday-Craft-Market-300x100.png 300w, ../wp-content/uploads/Nature-Center-Holiday-Craft-Market-1024x341.png 1024w, ../wp-content/uploads/Nature-Center-Holiday-Craft-Market-2048x683.png 2048w"></p>
-<p>Shop local this holiday season at Mission Trails Regional Park!</p>""")
-        result, _ = run_crawl({MTRP_MARKETPLACE: page}, urls=(MTRP_MARKETPLACE,),
-                              timezone="America/Los_Angeles", max_depth=0)
-        self.assertEqual(len(result.candidates), 2)
-        expected = "https://mtrp.org/wp-content/uploads/Nature-Center-Holiday-Craft-Market-1024x341.png"
-        self.assertEqual({event.starts_at[:10] for event in result.candidates},
-                         {"2026-11-14", "2026-11-15"})
-        self.assertEqual({event.image_url for event in result.candidates}, {expected})
-        self.assertTrue(all(event.image_source == "source HTML event image"
-                            for event in result.candidates))
-        self.assertTrue(all(any("article image" in item for item in event.verification.evidence)
-                            for event in result.candidates))
 
-    def test_html_picture_and_lazy_loaded_image_fallback(self):
-        page = MTRP_HTML.replace(
-            "<p>Shop local this holiday season at Mission Trails Regional Park!</p>",
-            """<picture><source data-srcset="../images/holiday-marketplace-480.jpg 480w, ../images/holiday-marketplace-1024.jpg 1024w">
-<img data-lazy-src="../images/holiday-marketplace.jpg" alt="Holiday Marketplace"></picture>
-<p>Shop local this holiday season at Mission Trails Regional Park!</p>""")
-        result, _ = run_crawl({MTRP_MARKETPLACE: page}, urls=(MTRP_MARKETPLACE,),
-                              timezone="America/Los_Angeles", max_depth=0)
-        self.assertEqual(len(result.candidates), 2)
-        self.assertTrue(all(event.image_url == "https://mtrp.org/images/holiday-marketplace-1024.jpg"
-                            for event in result.candidates))
 
-    def test_html_image_rejects_unrelated_and_site_graphics(self):
-        page = MTRP_HTML.replace(
-            "<p>Shop local this holiday season at Mission Trails Regional Park!</p>",
-            """<img src="/assets/holiday-marketplace-logo.png" alt="Holiday Marketplace">
-<img src="/assets/holiday-marketplace-banner.jpg" alt="Holiday Marketplace">
-<img src="/assets/holiday-marketplace-site-icon.png" alt="Holiday Marketplace">
-<img src="/uploads/summer-concert-1024x341.jpg" alt="Summer Concert">
-<p>Shop local this holiday season at Mission Trails Regional Park!</p>""")
-        result, _ = run_crawl({MTRP_MARKETPLACE: page}, urls=(MTRP_MARKETPLACE,),
-                              timezone="America/Los_Angeles", max_depth=0)
-        self.assertEqual(len(result.candidates), 2)
-        self.assertTrue(all(event.image_url is None for event in result.candidates),
-                        [(event.title, event.image_url) for event in result.candidates])
 
     def test_jsonld_event_image_takes_precedence_over_html_fallback(self):
         doc = {**DOC, "image": "/images/autumn-fair-jsonld.jpg"}
@@ -416,125 +166,16 @@ class GenericProducer(unittest.TestCase):
                          "https://example.org/images/autumn-fair-jsonld.jpg")
         self.assertEqual(result.candidates[0].image_source, "source JSON-LD image")
 
-    def test_jsonld_event_without_image_uses_associated_html_image(self):
-        page = ("<main><img src='/uploads/autumn-fair-1024x341.jpg' alt='Autumn Fair'></main>"
-                '<script type="application/ld+json">' + json.dumps(DOC) + "</script>")
-        result, _ = run_crawl({SEED: page}, max_depth=0)
-        self.assertEqual(len(result.candidates), 1)
-        self.assertEqual(result.candidates[0].image_url,
-                         "https://example.org/uploads/autumn-fair-1024x341.jpg")
-        self.assertEqual(result.candidates[0].image_source, "source HTML event image")
 
-    def test_unlabeled_image_uses_heading_after_long_article_text(self):
-        page = ('<script type="application/ld+json">' + json.dumps(DOC) + '</script><main>'
-                + '<p>Background information unrelated to the event.</p>' * 100
-                + '<h2>Autumn Fair</h2><img src="/images/83a9c2.jpg" alt=""></main>')
-        result, _ = run_crawl({SEED: page}, max_depth=0)
-        self.assertEqual(len(result.candidates), 1)
-        self.assertEqual(result.candidates[0].image_url, "https://example.org/images/83a9c2.jpg")
 
-    def test_two_events_with_opaque_images_use_their_own_heading_context(self):
-        second = {**DOC, "@id": "winter-concert-456", "name": "Winter Concert",
-                  "startDate": "2026-12-05T11:30:00-08:00"}
-        page = ('<script type="application/ld+json">' + json.dumps([DOC, second]) + '</script>'
-                '<main><h2>Autumn Fair</h2><img src="/images/83a9c2.jpg">'
-                + '<p>Background information unrelated to either event.</p>' * 100
-                + '<h2>Winter Concert</h2><img src="/images/91b7d4.jpg"></main>')
-        result, _ = run_crawl({SEED: page}, max_depth=0)
-        self.assertEqual({event.title: event.image_url for event in result.candidates}, {
-            "Autumn Fair": "https://example.org/images/83a9c2.jpg",
-            "Winter Concert": "https://example.org/images/91b7d4.jpg"})
 
-    def test_close_event_headings_keep_opaque_images_with_their_own_event(self):
-        page = ('<main><article><h2>Harvest Craft Fair</h2>'
-                '<p>November 14, 2026 from 10am to 2pm</p>'
-                '<img src="/images/83a9c2.jpg">'
-                '<h2>Moonlight Lecture</h2>'
-                '<p>November 20, 2026 from 6:30pm to 8pm</p>'
-                '<img src="/images/91b7d4.jpg"></article></main>')
-        result, _ = run_crawl({SEED: page}, timezone="America/Los_Angeles", max_depth=0)
-        self.assertEqual({event.title: event.image_url for event in result.candidates}, {
-            "Harvest Craft Fair": "https://example.org/images/83a9c2.jpg",
-            "Moonlight Lecture": "https://example.org/images/91b7d4.jpg"})
 
-    def test_unlabeled_neighboring_event_image_is_not_associated_with_distant_title(self):
-        page = ('<script type="application/ld+json">' + json.dumps(DOC) + '</script>'
-                '<main><h2>Autumn Fair</h2>'
-                + '<p>Background information unrelated to either event.</p>' * 100
-                + '<h2>Winter Concert</h2><img src="/images/91b7d4.jpg"></main>')
-        result, _ = run_crawl({SEED: page}, max_depth=0)
-        self.assertEqual(len(result.candidates), 1)
-        self.assertIsNone(result.candidates[0].image_url)
 
-    def test_close_jsonld_events_keep_opaque_images_with_their_own_heading(self):
-        second = {**DOC, "@id": "winter-concert-456", "name": "Winter Concert"}
-        page = ('<script type="application/ld+json">' + json.dumps([DOC, second]) + '</script>'
-                '<main><article><h2>Autumn <em>Fair</em></h2><img src="/images/83a9c2.jpg">'
-                '<h2>Winter Concert</h2><img src="/images/91b7d4.jpg"></article></main>')
-        result, _ = run_crawl({SEED: page}, max_depth=0)
-        self.assertEqual({event.title: event.image_url for event in result.candidates}, {
-            "Autumn Fair": "https://example.org/images/83a9c2.jpg",
-            "Winter Concert": "https://example.org/images/91b7d4.jpg"})
 
-    def test_opaque_images_do_not_borrow_headings_from_neighboring_containers(self):
-        for container in ("article", "section", "li", "tr"):
-            with self.subTest(container=container):
-                page = ('<script type="application/ld+json">' + json.dumps(DOC) + '</script>'
-                        '<main><' + container + '><h2>Autumn Fair</h2></' + container + '>'
-                        '<' + container + '><img src="/images/91b7d4.jpg"></' + container + '>'
-                        '<img src="/images/83a9c2.jpg"></main>')
-                result, _ = run_crawl({SEED: page}, max_depth=0)
-                self.assertEqual(len(result.candidates), 1)
-                self.assertIsNone(result.candidates[0].image_url)
 
-    def test_opaque_images_with_ambiguous_context_remain_unset(self):
-        second = {**DOC, "@id": "winter-concert-456", "name": "Winter Concert"}
-        for content in (
-                '<h2>Autumn Fair</h2><img src="/images/83a9c2.jpg"><img src="/images/91b7d4.jpg">',
-                '<p>Autumn Fair and Winter Concert</p><img src="/images/83a9c2.jpg">',
-                '<h2>Autumn Fair and Winter Concert</h2><img src="/images/83a9c2.jpg">'):
-            with self.subTest(content=content):
-                page = ('<script type="application/ld+json">' + json.dumps([DOC, second])
-                        + '</script><main><article>' + content + '</article></main>')
-                result, _ = run_crawl({SEED: page}, max_depth=0)
-                self.assertEqual(len(result.candidates), 2)
-                self.assertTrue(all(event.image_url is None for event in result.candidates))
 
-    def test_unlabeled_conflicting_filename_and_event_heading_remains_unset(self):
-        second = {**DOC, "@id": "winter-concert-456", "name": "Winter Concert",
-                  "startDate": "2026-12-05T11:30:00-08:00"}
-        page = ('<script type="application/ld+json">' + json.dumps([DOC, second]) + '</script>'
-                '<main><article><h2>Winter Concert</h2>'
-                '<img src="/images/autumn-fair-1024.jpg" alt=""></article></main>')
-        result, _ = run_crawl({SEED: page}, max_depth=0)
-        self.assertEqual({event.title: event.image_url for event in result.candidates},
-                         {"Autumn Fair": None, "Winter Concert": None})
 
-    def test_generic_heading_does_not_override_matching_event_filename(self):
-        second = {**DOC, "@id": "winter-concert-456", "name": "Winter Concert",
-                  "startDate": "2026-12-05T11:30:00-08:00"}
-        page = ('<script type="application/ld+json">' + json.dumps([DOC, second]) + '</script>'
-                '<main><article><h2>Photo Gallery</h2>'
-                '<img src="/images/autumn-fair-1024.jpg" alt=""></article></main>')
-        result, _ = run_crawl({SEED: page}, max_depth=0)
-        self.assertEqual({event.title: event.image_url for event in result.candidates},
-                         {"Autumn Fair": "https://example.org/images/autumn-fair-1024.jpg",
-                          "Winter Concert": None})
 
-    def test_conflicting_descriptions_override_matching_filename_and_article_text(self):
-        for attributes, caption in (
-                ('alt="Summer Concert"', ''),
-                ('title="Summer Concert"', ''),
-                ('aria-label="Summer Concert"', ''),
-                ('alt="Autumn Fair"', '<figcaption>Summer Concert</figcaption>'),
-                ('alt="Summer Concert"', '<figcaption>Autumn Fair</figcaption>')):
-            with self.subTest(attributes=attributes, caption=caption):
-                page = ('<script type="application/ld+json">' + json.dumps(DOC) + '</script>'
-                        '<main><h2>Autumn Fair</h2><figure><img src="/images/autumn-fair.jpg" '
-                        + attributes + '>' + caption + '</figure></main>')
-                result, _ = run_crawl({SEED: page}, max_depth=0)
-                self.assertEqual(len(result.candidates), 1)
-                self.assertIsNone(result.candidates[0].image_url)
 
     def test_direct_jsonld_document_as_seed(self):
         result, client = run_crawl({SEED: json.dumps({"@graph": [DOC]})}, max_depth=0)

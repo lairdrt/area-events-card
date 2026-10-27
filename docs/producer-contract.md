@@ -18,7 +18,7 @@ Processing reads the stored standard document (`starts_at`, `ends_at`, ...). The
 The service is a standard `src`-layout Python package. Its three registered adapters live in `src/area_events/discovery/producers/`: `CityOfSanDiegoProducer` reads City listings; `LocalistProducer` reads paged Localist JSON APIs; `SourcesProducer` reads configured lists of public websites, bounded relevant links, HTML JSON-LD Events and iCalendar (`.ics`) feeds. All implement the same producer contract and are composed solely in `src/area_events/app.py`. SourcesProducer does not assume an event from generic publication dates or undated prose. Unsupported/unstructured sites yield inspection leads and diagnostics, not fabricated events. No direct persistence, timers or HA behavior is contained in any producer.
 
 - Each producer owns its source: `producers/city_of_san_diego.py` (listing and event-page reading, the "Get Directions" address, and its resumable detail-page queue) or `producers/localist.py` (the Localist API interpretation).
-- Shared utilities include `safe` (fetch policy, public-address checks, robots.txt, spacing, limits, and `FetchError`), `timeutil` (Pacific time and clock text), `textutil` (HTML to text and entity decoding), `textloc` (address and place text), `evidence` (locating a quote in a page), and the imagery libraries used by enrichment (`media`, `maps`, `images`, `classify`, `classifiers`).
+- Shared utilities include `safe` (fetch policy, public-address checks, robots.txt, spacing, limits, and `FetchError`), `timeutil` (Pacific time and clock text), `textutil` (HTML to text and entity decoding), `textloc` (address and place text), `evidence` (locating a quote in a page), and the imagery libraries used by enrichment (`media`, `maps`, `images`, `classify`, `classifiers`), and the shared **`image_extractor/v1`** capability (below).
 
 ## Configured producer instances
 
@@ -34,3 +34,13 @@ The registered City and Localist instances remain the built-ins (`sandiego_gov` 
 2. (Resolved in step 4: deduplication is its own module behind an interface, and Persistence owns all database mechanics; see deduplication-and-persistence.md.)
 3. The Home Assistant feed adapter has a per-source display-name table and drops categories; the card classifies by keywords.
 4. The candidate read API (`CandidateRecord.payload`) serves the standard document under the unchanged `discovery.v1` label.
+
+## Shared image extraction: `image_extractor/v1`
+
+Any producer that has fetched an HTML page may ask for the page's primary image through `area_events.image_extractor`:
+
+- **Contract** (`v1.py`): `ImageRequest(html, page_url, event_titles, fetch_image)` in, `ImageResult(image_url, alternatives, engine, method, confidence, width, height, error)` out. `no_image(engine, error)` is the explicit "nothing found / engine failed" result. An engine is any object with `name` and `extract(request)`; no engine object crosses the contract.
+- **Engine** (`goose3_adapter.py`): Goose3, an optional dependency (`pip install "area-events[images]"`). It never uses its own HTTP client: every download is the request's `fetch_image`, which the producer backs with its safe fetcher (`RecordingFetcher.fetch_image`: public addresses, robots.txt, size limits, its own per-job budget, nothing stored). The composition root (`app.default_image_extractor`) chooses the engine and injects it; swapping engines changes that one function.
+- **Association** (`association.py`): the engine finds the page's picture, this policy decides whether the page's events may carry it: one distinct event (recurrences included) gets it; several distinct events get none; an image the source already supplied is never replaced. No title, filename or heading matching.
+- **Responsive size** (`responsive.py`): the address used is the variant the page itself declares in `srcset`/`<picture>` (widest up to 1024 px), never a guessed file name. The bytes are still validated downstream by enrichment (type and size).
+

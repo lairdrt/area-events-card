@@ -22,6 +22,10 @@ class PageFetch:
     error: Optional[str] = None
 
 
+MAX_IMAGE_REQUESTS = 30   # image downloads an image_extractor engine may make in one job, on top of the page budget
+IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp")
+
+
 class BudgetExceeded(FetchError):
     """The job's request budget is spent."""
 
@@ -40,8 +44,9 @@ def classify_failure(error):
 
 
 class RecordingFetcher:
-    def __init__(self, client, max_requests, max_seconds=None, monotonic=time.monotonic):
+    def __init__(self, client, max_requests, max_seconds=None, monotonic=time.monotonic, max_image_requests=MAX_IMAGE_REQUESTS):
         self.client, self.max_requests, self.max_seconds, self.monotonic = client, max_requests, max_seconds, monotonic
+        self.max_image_requests, self.image_requests = max_image_requests, 0
         self.started = monotonic()
         self.fetches = []
 
@@ -62,6 +67,16 @@ class RecordingFetcher:
         body = response.body if response.body else response.text.encode("utf-8")
         self.fetches.append(PageFetch(url, "ok", response.url, getattr(response, "status", 200), (response.content_type or "").split(";")[0].strip() or None, body))
         return response
+
+    def fetch_image(self, url):
+        """The bytes of one image for an image_extractor engine, through the same safe client. Counted against its own budget and not
+        recorded: image bodies are measured by the engine and are not stored pages."""
+        if self.image_requests >= self.max_image_requests:
+            raise BudgetExceeded(f"the image budget of this job ({self.max_image_requests}) is spent")
+        if self.max_seconds is not None and self.monotonic() - self.started > self.max_seconds:
+            raise BudgetExceeded(f"the time budget of this job ({self.max_seconds} s) is spent")
+        self.image_requests += 1
+        return self.client.fetch(url, binary=IMAGE_TYPES).body
 
     def get(self, url, check_robots=True):
         """Return the fetched page text through the standard producer interface."""

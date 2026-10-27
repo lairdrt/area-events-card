@@ -9,6 +9,9 @@ description = "Local event discovery service and Home Assistant integration"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+images = ["goose3==3.1.22"]
+
 [project.scripts]
 area-events = "area_events.cli:main"
 
