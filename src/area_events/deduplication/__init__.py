@@ -21,6 +21,7 @@ from typing import Optional, Protocol
 from ..contracts.models import CleanEvent
 
 DEDUP_SCHEMA = "discovery.dedup.v1"
+DEDUP_MAINTENANCE_SCHEMA = "discovery.dedup.maintenance.v1"  # optional extension for database duplicate scans
 ACTIONS = ("create", "update", "link", "keep")
 LOOKUP_PAGE_SIZE = 100
 
@@ -142,11 +143,15 @@ class EventLookup(Protocol):
 
 
 class Deduplicator(Protocol):
+    """Baseline discovery.dedup.v1 plugin: deciding where one candidate belongs."""
     name: str
     version: int
 
     def decide(self, incoming: Incoming, lookup: EventLookup) -> Decision: ...
 
+
+class MaintenanceMatcher(Deduplicator, Protocol):
+    """Optional discovery.dedup.maintenance.v1 extension for scanning stored events."""
     def matches(self, left: ExistingEvent, right: ExistingEvent) -> bool: ...
 
     def anchors(self, event: ExistingEvent) -> tuple: ...
