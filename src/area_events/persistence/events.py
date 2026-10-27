@@ -14,7 +14,7 @@ from collections import defaultdict
 from urllib.parse import quote
 
 from ..contracts.models import CleanEvent, DecisionRejected, NotFound
-from ..deduplication import ACTIONS, Association, Decision, ExistingEvent, Incoming, LOOKUP_PAGE_SIZE
+from ..deduplication import ACTIONS, Association, DEDUP_MAINTENANCE_SCHEMA, Decision, ExistingEvent, Incoming, LOOKUP_PAGE_SIZE
 from ..api.events import EVENTS_SCHEMA, MAX_PAGE, EventDetail, EventPage, EventQuery, EventRecord
 
 FIELDS = ("title", "description", "starts_at", "ends_at", "timezone", "venue_name", "location_text", "address", "location_status", "source_url", "status")
@@ -238,6 +238,9 @@ class DuplicateMaintenance:
     MAX_PAIR_COMPARISONS = 50000
 
     def __init__(self, path, matcher, schema_version, clock=time.time):
+        if not callable(getattr(matcher, "matches", None)) or not callable(getattr(matcher, "anchors", None)):
+            raise DuplicateMaintenanceError(f"duplicate maintenance requires {DEDUP_MAINTENANCE_SCHEMA} (matches and anchors); "
+                                            "decide-only discovery.dedup.v1 strategies remain valid for normal processing")
         self.path, self.matcher, self.schema_version, self.clock = os.path.abspath(path), matcher, schema_version, clock
 
     @staticmethod
