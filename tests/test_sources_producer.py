@@ -268,6 +268,27 @@ class GenericProducer(unittest.TestCase):
                 self.assertEqual(len(result.candidates), 2)
                 self.assertTrue(all(event.image_url is None for event in result.candidates))
 
+    def test_unlabeled_conflicting_filename_and_event_heading_remains_unset(self):
+        second = {**DOC, "@id": "winter-concert-456", "name": "Winter Concert",
+                  "startDate": "2026-12-05T11:30:00-08:00"}
+        page = ('<script type="application/ld+json">' + json.dumps([DOC, second]) + '</script>'
+                '<main><article><h2>Winter Concert</h2>'
+                '<img src="/images/autumn-fair-1024.jpg" alt=""></article></main>')
+        result, _ = run_crawl({SEED: page}, max_depth=0)
+        self.assertEqual({event.title: event.image_url for event in result.candidates},
+                         {"Autumn Fair": None, "Winter Concert": None})
+
+    def test_generic_heading_does_not_override_matching_event_filename(self):
+        second = {**DOC, "@id": "winter-concert-456", "name": "Winter Concert",
+                  "startDate": "2026-12-05T11:30:00-08:00"}
+        page = ('<script type="application/ld+json">' + json.dumps([DOC, second]) + '</script>'
+                '<main><article><h2>Photo Gallery</h2>'
+                '<img src="/images/autumn-fair-1024.jpg" alt=""></article></main>')
+        result, _ = run_crawl({SEED: page}, max_depth=0)
+        self.assertEqual({event.title: event.image_url for event in result.candidates},
+                         {"Autumn Fair": "https://example.org/images/autumn-fair-1024.jpg",
+                          "Winter Concert": None})
+
     def test_conflicting_descriptions_override_matching_filename_and_article_text(self):
         for attributes, caption in (
                 ('alt="Summer Concert"', ''),
