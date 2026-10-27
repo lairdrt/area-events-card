@@ -12,14 +12,14 @@ import unittest
 REPO = pathlib.Path(__file__).resolve().parents[1]
 DEPLOYER = REPO / "scripts" / "deploy-area-events.ps1"
 BLOCKS = re.compile(
-    r"(?m)^[ \t]*\$(?:py|cleanup)=@'\r?\n([\s\S]*?)\r?\n'@"
+    r"(?m)^[ \t]*\$(?:py|cleanup|imagePy|script:ImageDepsPy)=(?:\$script:ImageDepsPy\+)?@'\r?\n([\s\S]*?)\r?\n'@"
 )
 
 class EmbeddedDeploymentPythonTests(unittest.TestCase):
     def test_all_embedded_python_blocks_parse(self):
         text = DEPLOYER.read_text(encoding="utf-8")
         blocks = BLOCKS.findall(text)
-        self.assertEqual(9, len(blocks), "all remote Python blocks must be covered")
+        self.assertEqual(11, len(blocks), "all remote Python blocks must be covered")
         for n, block in enumerate(blocks, 1):
             with self.subTest(block=n):
                 ast.parse(block, filename=f"embedded_{n}.py")

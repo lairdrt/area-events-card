@@ -307,5 +307,56 @@ class MissionTrails(unittest.TestCase):
         self.assertEqual({event.image_url for event in result.candidates}, {None})
 
 
+@GOOSE
+class Deployment(unittest.TestCase):
+    """What the deployment relies on: exact pins for the whole Goose3 tree, and a self-check that really exercises the engine."""
+
+    @staticmethod
+    def pins():
+        import tomllib
+        with open(os.path.join(os.path.dirname(FIXTURE), "..", "..", "pyproject.toml"), "rb") as handle:
+            extra = tomllib.load(handle)["project"]["optional-dependencies"]["images"]
+        return {item.split("==")[0].lower().replace("_", "-"): item.split("==")[1] for item in extra if "==" in item}, extra
+
+    def test_every_dependency_of_goose3_is_pinned_exactly_and_installed_at_that_version(self):
+        import importlib.metadata as metadata
+        import re
+        pins, extra = self.pins()
+        self.assertEqual(len(pins), len(extra), "every entry is name==version")
+        seen, queue = set(), ["goose3"]
+        while queue:
+            name = queue.pop()
+            key = re.sub(r"[-_.]+", "-", name).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            for requirement in metadata.requires(name) or ():
+                marker = requirement.split(";", 1)[1] if ";" in requirement else ""
+                if "extra ==" in marker or "platform" in marker:
+                    continue   # optional language packs and platform-only extras
+                queue.append(re.split(r"[ ;<>=!~(\[]", requirement, 1)[0])
+        self.assertEqual(seen, set(pins), "pins cover Goose3 and its whole dependency tree, and nothing else")
+        for name, version in pins.items():
+            self.assertEqual(metadata.version(name), version, f"{name}: the tested environment must match the pin")
+
+    def test_selfcheck_exercises_the_engine_end_to_end(self):
+        from area_events.image_extractor import selfcheck
+        outcome = selfcheck.check()
+        self.assertEqual(outcome["image"], selfcheck.IMAGE)
+        self.assertEqual(outcome["engine"], "goose3@" + selfcheck.EXPECTED_VERSION)
+        self.assertEqual(selfcheck.main(), 0)
+
+    def test_selfcheck_fails_for_a_missing_wrong_or_broken_engine(self):
+        from area_events.image_extractor import selfcheck
+        with patch.object(goose3_adapter, "Goose", None):
+            self.assertEqual(selfcheck.main(), 1)
+        with patch.object(selfcheck, "GOOSE3_VERSION", "3.1.21"):
+            self.assertEqual(selfcheck.main(), 1)
+        with patch.object(selfcheck, "png", return_value=b"not an image" * 1000):
+            self.assertEqual(selfcheck.main(), 1)
+        with patch.object(selfcheck, "HTML", "<html><body><article><p>No image at all.</p></article></body></html>"):
+            self.assertEqual(selfcheck.main(), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -358,5 +358,44 @@ Check 'failed recovery preserves the original deployment failure' {
   try { Invoke-AreaEventsDeploymentEngine -Operations $ops | Out-Null } catch { $message=$_.Exception.Message }
   if ($message -notmatch 'verify-cubi simulated failure') { throw "original failure was lost: $message" }
 }
+Check 'Goose3 installation and self-check cover rehearsal, deployment, recovery and verification' {
+  $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
+  function Get-Section([string]$From,[string]$To) {
+    $a=$text.IndexOf($From); if ($a -lt 0) { throw "section not found: $From" }
+    $b=$text.IndexOf($To,$a+1); if ($b -le $a) { throw "section end not found: $To" }
+    $text.Substring($a,$b-$a)
+  }
+  $rehearsal=Get-Section 'function Invoke-Rehearsal(' 'function Invoke-CubiDeploy('
+  $deploy=Get-Section 'function Invoke-CubiDeploy(' 'function Test-CubiHealth {'
+  $health=Get-Section 'function Test-CubiHealth {' 'function Install-Ha {'
+  $source=Get-Section 'function Test-CubiInstalledSource {' 'function Invoke-DeploymentPlan('
+  $recovery=Get-Section "Write-Warning 'Restoring Cubi code only" "elseif (`$phase -eq 'Home Assistant installation')"
+  foreach($case in @(@{N='rehearsal';T=$rehearsal},@{N='deployment';T=$deploy},@{N='recovery';T=$recovery},@{N='verification';T=$health},@{N='installed-source check';T=$source})) {
+    if ($case.T -notmatch '\$script:ImageDepsPy\+@') { throw "$($case.N) does not include the image dependency helper" }
+  }
+  foreach($case in @(@{N='rehearsal';T=$rehearsal},@{N='deployment';T=$deploy},@{N='recovery';T=$recovery})) {
+    if ($case.T -notmatch 'ae_install_images\(') { throw "$($case.N) does not install the pinned image dependencies" }
+  }
+  foreach($case in @(@{N='rehearsal';T=$rehearsal},@{N='deployment';T=$deploy},@{N='recovery';T=$recovery},@{N='verification';T=$health},@{N='installed-source check';T=$source})) {
+    if ($case.T -notmatch 'ae_image_smoke\(') { throw "$($case.N) does not run the image extraction self-check" }
+  }
+  if ($rehearsal -match 'schema -ge \$script:TargetSchema\) \{ return') { throw 'rehearsal is skipped when the schema is current, so dependencies would go unrehearsed' }
+  if ($deploy.IndexOf('ae_image_smoke(') -gt $deploy.IndexOf("with open(unit,'w'")) { throw 'deployment writes the service unit before the image self-check' }
+  if ($health.IndexOf('ae_image_smoke(') -gt $health.IndexOf('$deadline=')) { throw 'image verification must precede the API wait' }
+  if ($text -notmatch "--only-binary=:all:" -or $text -notmatch "optional-dependencies") { throw 'dependencies must come from the pinned pyproject extra as wheels' }
+  if ($text -match "ae_image_smoke\([^)]*\)\s+or True|except Exception:\s*pass") { throw 'a failed image self-check may be swallowed' }
+}
+Check 'embedded Python helper installs from the images extra and fails on a missing or broken engine' {
+  $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
+  $a=$text.IndexOf("`$script:ImageDepsPy=@'"); $b=$text.IndexOf("'@",$a+10)
+  if ($a -lt 0 -or $b -lt 0) { throw 'helper not found' }
+  $helper=$text.Substring($a,$b-$a); $helper=$helper.Substring($helper.IndexOf("`n")+1)
+  $dir=Join-Path ([IO.Path]::GetTempPath()) ('ae-helper-'+[guid]::NewGuid().ToString('N')); New-Item -ItemType Directory $dir | Out-Null
+  try {
+    Set-Content -LiteralPath (Join-Path $dir 'helper.py') -Value $helper -Encoding UTF8
+        $out=& python (Join-Path $PSScriptRoot 'test-deploy-image-helper.py') (Join-Path $dir 'helper.py') $dir 2>&1
+    if ($LASTEXITCODE -ne 0 -or "$out" -notmatch 'helper ok') { throw "helper behavior check failed: $out" }
+  } finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+}
 if ($script:failures) { Write-Error "$script:failures deployment tests failed"; exit 1 }
 Write-Host 'All deployment engine checks passed.'
