@@ -362,6 +362,7 @@ class _EventImages(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.images = []
         self.content_text = []
+        self._text_length = 0
         self._main_depth = 0
         self._article_depth = 0
         self._picture = None
@@ -398,12 +399,13 @@ class _EventImages(HTMLParser):
             variants.extend(self._picture["variants"])
             context.extend(self._picture["context"])
         self.images.append({"variants": variants, "context": " ".join(context),
-                            "descriptors": " ".join(attrs.get(key, "")
-                                                    for key in ("alt", "title", "aria-label")),
-                            "figure": self._figure, "text_offset": len(self.content_text)})
+                            "descriptors": tuple(attrs.get(key, "")
+                                                 for key in ("alt", "title", "aria-label")),
+                            "figure": self._figure, "text_offset": self._text_length})
 
     def handle_data(self, data):
         if self._main_depth or self._article_depth:
+            self._text_length += len(data) + bool(self.content_text)
             self.content_text.append(data)
         if self._figure is not None:
             self._figure["text"].append(data)
@@ -457,19 +459,25 @@ def _event_image(html, page_url, title):
                              for raw, _ in image["variants"])
         offset = image["text_offset"]
         nearby = article_text[max(0, offset - 500):offset + 500]
-        own_context = f"{image['context']} {image['descriptors']} {caption} {image_urls}"
+        own_context = f"{image['context']} {' '.join(image['descriptors'])} {caption} {image_urls}"
         if _IMAGE_GENERIC.search(own_context):
             continue
-        own_words = {normalize(word) for word in re.findall(
-                         r"[a-z0-9]+", f"{image['descriptors']} {caption} {filenames}".casefold())
-                     if len(word) >= 4 and word not in _IMAGE_STOP_WORDS}
+        descriptions = [{normalize(word) for word in re.findall(r"[a-z0-9]+", text.casefold())
+                         if len(word) >= 4 and word not in _IMAGE_STOP_WORDS}
+                        for text in (*image['descriptors'], caption)]
+        needed = min(2, len(title_words))
+        # Check each explicit description independently, before considering filenames
+        # or proximity. Neither can override an image labeled as another event.
+        if any(words and len(title_words & words) < needed for words in descriptions):
+            continue
+        filename_words = {normalize(word) for word in re.findall(r"[a-z0-9]+", filenames.casefold())
+                          if len(word) >= 4 and word not in _IMAGE_STOP_WORDS}
         nearby_words = {normalize(word) for word in re.findall(r"[a-z0-9]+", nearby.casefold())
                         if len(word) >= 4 and word not in _IMAGE_STOP_WORDS}
-        own_matches = len(title_words & own_words)
+        filename_matches = len(title_words & filename_words)
         nearby_matches = len(title_words & nearby_words)
-        # Strong image labels must identify the event; nearby article text is a fallback
-        # for unlabeled images, not a way for a neighboring event photo to qualify.
-        if own_matches < min(2, len(title_words)) and (own_words or nearby_matches < min(2, len(title_words))):
+        # Opaque filenames do not disqualify genuinely unlabeled article images.
+        if not any(descriptions) and filename_matches < needed and nearby_matches < needed:
             continue
         variants = []
         for raw_url, width in image["variants"]:
