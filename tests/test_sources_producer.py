@@ -134,31 +134,43 @@ class GenericProducer(unittest.TestCase):
     def test_html_event_image_uses_event_specific_responsive_variant_for_both_dates(self):
         page = MTRP_HTML.replace(
             "<p>Shop local this holiday season at Mission Trails Regional Park!</p>",
-            """<figure><picture>
-<source data-srcset="/wp-content/holiday-marketplace-480x160.jpg 480w, /wp-content/holiday-marketplace-1024x341.jpg 1024w">
-<img data-src="/wp-content/holiday-marketplace-300x100.jpg" alt="Holiday Marketplace">
-</picture><figcaption>Holiday Marketplace</figcaption></figure>
+            """<p><img src="../wp-content/uploads/Nature-Center-Holiday-Craft-Market.png" alt="" srcset="../wp-content/uploads/Nature-Center-Holiday-Craft-Market-300x100.png 300w, ../wp-content/uploads/Nature-Center-Holiday-Craft-Market-1024x341.png 1024w, ../wp-content/uploads/Nature-Center-Holiday-Craft-Market-2048x683.png 2048w"></p>
 <p>Shop local this holiday season at Mission Trails Regional Park!</p>""")
         result, _ = run_crawl({MTRP_MARKETPLACE: page}, urls=(MTRP_MARKETPLACE,),
                               timezone="America/Los_Angeles", max_depth=0)
         self.assertEqual(len(result.candidates), 2)
-        expected = "https://mtrp.org/wp-content/holiday-marketplace-1024x341.jpg"
+        expected = "https://mtrp.org/wp-content/uploads/Nature-Center-Holiday-Craft-Market-1024x341.png"
         self.assertEqual({event.image_url for event in result.candidates}, {expected})
         self.assertTrue(all(event.image_source == "source HTML event image"
                             for event in result.candidates))
         self.assertTrue(all(any("article image" in item for item in event.verification.evidence)
                             for event in result.candidates))
 
-    def test_html_image_rejects_unrelated_and_site_graphics(self):
+    def test_html_picture_and_lazy_loaded_image_fallback(self):
         page = MTRP_HTML.replace(
             "<p>Shop local this holiday season at Mission Trails Regional Park!</p>",
-            """<main><img src="/assets/holiday-marketplace-logo.png" alt="Holiday Marketplace">
-<img src="/uploads/summer-concert-1024x341.jpg" alt="Summer Concert"></main>
+            """<picture><source data-srcset="../images/holiday-marketplace-480.jpg 480w, ../images/holiday-marketplace-1024.jpg 1024w">
+<img data-lazy-src="../images/holiday-marketplace.jpg" alt="Holiday Marketplace"></picture>
 <p>Shop local this holiday season at Mission Trails Regional Park!</p>""")
         result, _ = run_crawl({MTRP_MARKETPLACE: page}, urls=(MTRP_MARKETPLACE,),
                               timezone="America/Los_Angeles", max_depth=0)
         self.assertEqual(len(result.candidates), 2)
-        self.assertTrue(all(event.image_url is None for event in result.candidates))
+        self.assertTrue(all(event.image_url == "https://mtrp.org/images/holiday-marketplace-1024.jpg"
+                            for event in result.candidates))
+
+    def test_html_image_rejects_unrelated_and_site_graphics(self):
+        page = MTRP_HTML.replace(
+            "<p>Shop local this holiday season at Mission Trails Regional Park!</p>",
+            """<img src="/assets/holiday-marketplace-logo.png" alt="Holiday Marketplace">
+<img src="/assets/holiday-marketplace-banner.jpg" alt="Holiday Marketplace">
+<img src="/assets/holiday-marketplace-site-icon.png" alt="Holiday Marketplace">
+<img src="/uploads/summer-concert-1024x341.jpg" alt="Summer Concert">
+<p>Shop local this holiday season at Mission Trails Regional Park!</p>""")
+        result, _ = run_crawl({MTRP_MARKETPLACE: page}, urls=(MTRP_MARKETPLACE,),
+                              timezone="America/Los_Angeles", max_depth=0)
+        self.assertEqual(len(result.candidates), 2)
+        self.assertTrue(all(event.image_url is None for event in result.candidates),
+                        [(event.title, event.image_url) for event in result.candidates])
 
     def test_jsonld_event_image_takes_precedence_over_html_fallback(self):
         doc = {**DOC, "image": "/images/autumn-fair-jsonld.jpg"}

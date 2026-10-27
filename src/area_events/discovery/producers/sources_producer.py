@@ -361,6 +361,7 @@ class _EventImages(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.images = []
+        self.content_text = []
         self._main_depth = 0
         self._article_depth = 0
         self._picture = None
@@ -397,9 +398,13 @@ class _EventImages(HTMLParser):
             variants.extend(self._picture["variants"])
             context.extend(self._picture["context"])
         self.images.append({"variants": variants, "context": " ".join(context),
-                            "figure": self._figure})
+                            "descriptors": " ".join(attrs.get(key, "")
+                                                    for key in ("alt", "title", "aria-label")),
+                            "figure": self._figure, "text_offset": len(self.content_text)})
 
     def handle_data(self, data):
+        if self._main_depth or self._article_depth:
+            self.content_text.append(data)
         if self._figure is not None:
             self._figure["text"].append(data)
         if self._picture is not None:
@@ -416,7 +421,9 @@ class _EventImages(HTMLParser):
             self._article_depth = max(0, self._article_depth - 1)
 
 
-_IMAGE_STOP_WORDS = frozenset(("2026", "event", "events", "the", "and", "for", "at", "of", "a"))
+_IMAGE_STOP_WORDS = frozenset(("2026", "event", "events", "the", "and", "for", "at", "of", "a",
+                               "image", "images", "photo", "photos", "picture", "pictures",
+                               "upload", "uploads", "wp", "content"))
 _IMAGE_GENERIC = re.compile(r"\b(?:logo|icon|banner|header|footer|site|website|sponsor|map|badge|sprite)\b", re.I)
 _IMAGE_GRAPHIC_FILE = re.compile(r"(?:logo|favicon|sprite|site-?icon|wordmark|avatar|placeholder|pixel|spacer|tracking)", re.I)
 
@@ -436,22 +443,33 @@ def _event_image(html, page_url, title):
         parser.feed(html[:1_500_000])
     except (ValueError, TypeError):
         return None
-    title_words = {word for word in re.findall(r"[a-z0-9]+", title.casefold())
+    normalize = lambda word: "market" if word == "marketplace" else word
+    title_words = {normalize(word) for word in re.findall(r"[a-z0-9]+", title.casefold())
                    if len(word) >= 4 and word not in _IMAGE_STOP_WORDS}
     if not title_words:
         return None
+    article_text = " ".join(parser.content_text)
     choices = []
     for image in parser.images:
         caption = " ".join(image["figure"]["text"]) if image["figure"] else ""
         image_urls = " ".join(raw for raw, _ in image["variants"])
-        context = f"{image['context']} {caption} {image_urls}"
-        if _IMAGE_GENERIC.search(context):
+        filenames = " ".join(urlsplit(raw).path.rsplit("/", 1)[-1]
+                             for raw, _ in image["variants"])
+        offset = image["text_offset"]
+        nearby = article_text[max(0, offset - 500):offset + 500]
+        own_context = f"{image['context']} {image['descriptors']} {caption} {image_urls}"
+        if _IMAGE_GENERIC.search(own_context):
             continue
-        # Require all short titles' useful words, or at least two-thirds of longer titles.
-        words = set(re.findall(r"[a-z0-9]+", context.casefold()))
-        matches = len(title_words & words)
-        needed = len(title_words) if len(title_words) <= 2 else max(2, (2 * len(title_words) + 2) // 3)
-        if matches < needed:
+        own_words = {normalize(word) for word in re.findall(
+                         r"[a-z0-9]+", f"{image['descriptors']} {caption} {filenames}".casefold())
+                     if len(word) >= 4 and word not in _IMAGE_STOP_WORDS}
+        nearby_words = {normalize(word) for word in re.findall(r"[a-z0-9]+", nearby.casefold())
+                        if len(word) >= 4 and word not in _IMAGE_STOP_WORDS}
+        own_matches = len(title_words & own_words)
+        nearby_matches = len(title_words & nearby_words)
+        # Strong image labels must identify the event; nearby article text is a fallback
+        # for unlabeled images, not a way for a neighboring event photo to qualify.
+        if own_matches < min(2, len(title_words)) and (own_words or nearby_matches < min(2, len(title_words))):
             continue
         variants = []
         for raw_url, width in image["variants"]:
@@ -462,10 +480,15 @@ def _event_image(html, page_url, title):
             if _usable_event_image_url(resolved):
                 variants.append((width, resolved))
         if variants:
-            # The existing image enrichment byte limit remains authoritative at fetch time.
-            # Prefer the largest explicitly declared responsive variant; lazy/src fallbacks
-            # have width zero and are used only when no larger usable variant exists.
-            choices.append(max(variants, key=lambda item: item[0]))
+            # Prefer a source-sized photo near the existing 2 MB fetch limit; use the
+            # nearest larger variant only when no 1024w-or-smaller source is available.
+            within_limit = [item for item in variants if 0 < item[0] <= 1024]
+            if within_limit:
+                choices.append(max(within_limit, key=lambda item: item[0]))
+            else:
+                larger = [item for item in variants if item[0] > 1024]
+                choices.append(min(larger, key=lambda item: item[0]) if larger
+                               else max(variants, key=lambda item: item[0]))
     return max(choices, key=lambda item: item[0])[1] if choices else None
 
 
