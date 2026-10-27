@@ -16,12 +16,13 @@ import hashlib
 import json
 import re
 from collections import deque
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, timedelta
 from html import unescape
 from html.parser import HTMLParser
 import calendar
-from urllib.parse import urljoin, urlsplit, urlunsplit
+import math
+from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 from xml.etree import ElementTree
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -336,206 +337,390 @@ class _LinksAndEvents(HTMLParser):
 
 
 def _srcset(value):
-    """Return URL and declared responsive width pairs from an HTML srcset."""
+    """Read URL/width/density triples without splitting commas inside a URL."""
     variants = []
-    for entry in (value or "").split(","):
-        parts = entry.strip().split()
-        if not parts:
-            continue
-        width = 0
-        if len(parts) > 1:
-            descriptor = parts[1].lower()
+    value = value or ""
+    position = 0
+    url_pattern = re.compile(r"[\s,]*(\S+)")
+    entries = 0
+    while position < len(value):
+        entries += 1
+        if entries > 1000:
+            raise ValueError("too many responsive image variants")
+        match = url_pattern.match(value, position)
+        if not match:
+            break
+        url = match[1]
+        position = match.end()
+        if url.endswith(","):
+            url, descriptor = url.rstrip(","), ""
+        else:
+            end = value.find(",", position)
+            end = len(value) if end == -1 else end
+            descriptor = value[position:end].strip()
+            position = end + 1
+        if not descriptor:
+            variants.append((url, 0, 1.0))
+        elif re.fullmatch(r"[1-9][0-9]*w", descriptor):
             try:
-                width = int(descriptor[:-1]) if descriptor.endswith("w") else 0
+                variants.append((url, int(descriptor[:-1]), 0))
             except ValueError:
-                width = 0
-        variants.append((parts[0], width))
+                pass
+        elif re.fullmatch(r"(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)x", descriptor):
+            density = float(descriptor[:-1])
+            if math.isfinite(density) and density > 0:
+                variants.append((url, 0, density))
     return variants
 
 
+@dataclass
+class _ImageHeading:
+    position: int
+    scope: _ImageScope
+    text: list = field(default_factory=list)
+
+
+@dataclass
+class _ImageScope:
+    tag: str
+    parent: _ImageScope | None
+    start: int
+    end: int = 0
+    headings: list = field(default_factory=list)
+    first_image: int | None = None
+    leading_ambiguous: bool | None = None
+
+
+@dataclass
+class _HTMLImage:
+    variants: list
+    descriptors: tuple
+    graphics: str
+    scope: _ImageScope
+    position: int
+    figure: dict | None
+    picture: dict | None
+
+
+@dataclass(frozen=True)
+class _ImageAssociation:
+    urls: frozenset
+    owner: tuple | None = None
+    chosen: str | None = None
+
+
 class _EventImages(HTMLParser):
-    """Collect image candidates only from main/article content, with descriptive context."""
-    URL_ATTRS = ("src", "data-src", "data-lazy-src", "data-original", "data-full-url")
-    SRCSET_ATTRS = ("srcset", "data-srcset", "data-lazy-srcset")
-    SCOPES = frozenset(("main", "article", "section", "li", "tr"))
+    """Collect bounded content images and structural evidence in one pass.
+
+    Frames restore nested figure/picture/heading state on closing tags. Heading
+    ranges also let a single-heading container identify a preceding photograph;
+    a multi-heading container never supplies a guessed following owner.
+    """
+    URL_ATTRS = ("data-src", "data-lazy-src", "data-original", "data-full-url", "src")
+    SRCSET_ATTRS = ("data-srcset", "data-lazy-srcset", "srcset")
+    SCOPES = frozenset(("main", "article", "section", "div", "li", "tr", "figure"))
+    BOUNDARIES = frozenset(("main", "article", "section", "li", "tr"))
     HEADINGS = frozenset(("h1", "h2", "h3", "h4", "h5", "h6"))
+    VOID = frozenset(("area", "base", "br", "col", "embed", "hr", "img", "input",
+                      "link", "meta", "param", "source", "track", "wbr"))
+    SKIP = frozenset(("script", "style", "template", "noscript", "svg", "nav", "footer",
+                      "aside", "iframe", "object", "canvas"))
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.images = []
-        self._scopes = [{"tag": None, "heading": None}]
-        self._heading = None
-        self._main_depth = 0
-        self._article_depth = 0
-        self._picture = None
-        self._figure = None
+        self.headings = []
+        self.invalid = False
+        self._position = 0
+        self._frames = [dict(tag=None, scope=None, content=False, ignored=False,
+                             heading=None, figure=None, caption=None, picture=None, owns_scope=False)]
 
     def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        if tag == "main":
-            self._main_depth += 1
-        if tag == "article":
-            self._article_depth += 1
-        if tag in self.SCOPES:
-            self._scopes.append({"tag": tag, "heading": None})
-        if tag == "figure":
-            self._figure = {"text": []}
-        if tag == "picture":
-            self._picture = {"variants": [], "context": []}
-        if not (self._main_depth or self._article_depth):
+        if self.invalid:
             return
-        if tag in self.HEADINGS:
-            self._heading = []
-            self._scopes[-1]["heading"] = self._heading
-        labels = " ".join(attrs.get(key, "") for key in ("alt", "title", "class", "id", "aria-label"))
-        if self._picture is not None:
-            self._picture["context"].append(labels)
-        if tag == "source" and self._picture is not None:
-            for key in self.SRCSET_ATTRS:
-                self._picture["variants"].extend(_srcset(attrs.get(key)))
-        if tag != "img":
-            return
-        variants = []
-        for key in self.URL_ATTRS:
-            if attrs.get(key):
-                variants.append((attrs[key], 0))
-        for key in self.SRCSET_ATTRS:
-            variants.extend(_srcset(attrs.get(key)))
-        context = [labels]
-        if self._picture is not None:
-            variants.extend(self._picture["variants"])
-            context.extend(self._picture["context"])
-        self.images.append({"variants": variants, "context": " ".join(context),
-                            "descriptors": tuple(attrs.get(key, "")
-                                                 for key in ("alt", "title", "aria-label")),
-                            "figure": self._figure, "heading": self._scopes[-1]["heading"]})
+        # Common optional closing tags must not nest neighboring listing cards.
+        if tag in ("li", "tr"):
+            for frame in reversed(self._frames[1:]):
+                if frame["tag"] in (("ul", "ol") if tag == "li" else ("table",)):
+                    break
+                if frame["tag"] == tag:
+                    self.handle_endtag(tag)
+                    break
+        self._position += 1
+        attrs = {key: value or "" for key, value in attrs}
+        frame = {**self._frames[-1], "tag": tag, "owns_scope": False}
+        markers = " ".join(attrs.get(key, "") for key in ("class", "id", "role"))
+        frame["ignored"] |= (tag in self.SKIP or "hidden" in attrs
+                              or attrs.get("aria-hidden", "").lower() == "true"
+                              or attrs.get("role", "").lower() in ("banner", "navigation", "contentinfo")
+                              or bool(re.search(r"(?:display\s*:\s*none|visibility\s*:\s*hidden)",
+                                                attrs.get("style", ""), re.I))
+                              or bool(_IMAGE_ADVERT.search(markers)))
+        frame["content"] |= tag in ("main", "article")
+        if frame["content"] and not frame["ignored"]:
+            if tag in self.SCOPES:
+                frame["scope"] = _ImageScope(tag, frame["scope"], len(self.headings))
+                frame["owns_scope"] = True
+            if tag in self.HEADINGS:
+                heading = _ImageHeading(self._position, frame["scope"])
+                self.headings.append(heading)
+                frame["scope"].headings.append(heading)
+                frame["heading"] = heading.text
+            if tag == "figure":
+                frame["figure"] = {"captions": []}
+                frame["caption"] = None
+            if tag == "figcaption" and frame["figure"] is not None:
+                frame["caption"] = []
+                frame["figure"]["captions"].append(frame["caption"])
+            if tag == "picture":
+                frame["picture"] = {"variants": [], "descriptors": [], "graphics": markers,
+                                    "images": 0}
+            if tag in ("picture", "source") and frame["picture"] is not None:
+                frame["picture"]["descriptors"].extend(
+                    attrs.get(key, "") for key in ("alt", "title", "aria-label"))
+            if tag == "source" and frame["picture"] is not None and (
+                    attrs.get("type", "").lower() in ("", "image/jpeg", "image/png", "image/webp")):
+                for key in self.SRCSET_ATTRS:
+                    frame["picture"]["variants"].extend(_srcset(attrs.get(key)))
+            if tag == "img" and not (attrs.get("width") == "1" or attrs.get("height") == "1"):
+                scope = frame["scope"]
+                while scope is not None and scope.first_image is None:
+                    scope.first_image = self._position
+                    scope = scope.parent
+                variants = []
+                if frame["picture"] is not None:
+                    frame["picture"]["images"] += 1
+                    variants.extend(frame["picture"]["variants"])
+                for key in self.SRCSET_ATTRS:
+                    variants.extend(_srcset(attrs.get(key)))
+                variants.extend((attrs[key], 0, 0) for key in self.URL_ATTRS if attrs.get(key))
+                self.images.append(_HTMLImage(
+                    variants, tuple(attrs.get(key, "") for key in ("alt", "title", "aria-label")),
+                    markers, frame["scope"], self._position, frame["figure"], frame["picture"]))
+        if tag not in self.VOID:
+            self._frames.append(frame)
+        # Fail closed rather than choosing from incomplete evidence on pathological pages.
+        if len(self._frames) > 128 or len(self.images) > 1000 or len(self.headings) > 2000:
+            self.invalid = True
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in self.VOID:
+            self.handle_endtag(tag)
 
     def handle_data(self, data):
-        if self._heading is not None:
-            self._heading.append(data)
-        if self._figure is not None:
-            self._figure["text"].append(data)
-        if self._picture is not None:
-            self._picture["context"].append(data)
+        frame = self._frames[-1]
+        if not frame["ignored"]:
+            for key in ("heading", "caption"):
+                if frame[key] is not None:
+                    frame[key].append(data)
 
     def handle_endtag(self, tag):
-        if tag in self.HEADINGS:
-            self._heading = None
-        if tag in self.SCOPES:
-            for index in range(len(self._scopes) - 1, 0, -1):
-                if self._scopes[index]["tag"] == tag:
-                    del self._scopes[index:]
-                    break
-        if tag == "picture":
-            self._picture = None
-        if tag == "figure":
-            self._figure = None
-        if tag == "main":
-            self._main_depth = max(0, self._main_depth - 1)
-        if tag == "article":
-            self._article_depth = max(0, self._article_depth - 1)
+        for index in range(len(self._frames) - 1, 0, -1):
+            if self._frames[index]["tag"] == tag:
+                for frame in self._frames[index:]:
+                    scope = frame["scope"]
+                    if frame["owns_scope"]:
+                        scope.end = len(self.headings)
+                del self._frames[index:]
+                break
+
+    def close(self):
+        super().close()
+        for frame in self._frames[1:]:
+            if frame["owns_scope"]:
+                frame["scope"].end = len(self.headings)
 
 
-_IMAGE_STOP_WORDS = frozenset(("2026", "event", "events", "the", "and", "for", "at", "of", "a",
-                               "image", "images", "photo", "photos", "picture", "pictures",
-                               "upload", "uploads", "wp", "content"))
-_IMAGE_GENERIC = re.compile(r"\b(?:logo|icon|banner|header|footer|site|website|sponsor|map|badge|sprite)\b", re.I)
+_IMAGE_STOP_WORDS = frozenset(("event", "events", "the", "and", "for", "at", "of", "a", "an",
+                               "image", "images", "photo", "photos", "picture", "pictures"))
+_IMAGE_GENERIC = re.compile(
+    r"(?:^|[^a-z0-9])(?:logo|icon|banner|header|footer|site|website|sponsor|map|badge|sprite|"
+    r"advertisement|advertising|advert|ad|placeholder|pixel|spacer|tracking)(?:$|[^a-z0-9])", re.I)
+_IMAGE_ADVERT = re.compile(
+    r"(?:^|[^a-z0-9])(?:advertisement|advertising|advert|ad|sponsor)(?:$|[^a-z0-9])", re.I)
 _IMAGE_GRAPHIC_FILE = re.compile(r"(?:logo|favicon|sprite|site-?icon|wordmark|avatar|placeholder|pixel|spacer|tracking)", re.I)
+_IMAGE_GENERIC_HEADING = re.compile(
+    r"^(?:photo(?:s|graphs)?|image(?:s)?|picture(?:s)?|gallery|event(?:s)?|upcoming|calendar|\s)+$", re.I)
+_IMAGE_OPAQUE_WORD = re.compile(r"(?:[0-9a-f]+|(?:img|dscn?|pxl)[0-9]*|[0-9]+x[0-9]*)$", re.I)
+
+
+def _image_title(text):
+    """Keep every meaningful title word, including short and Unicode words."""
+    return tuple("market" if word == "marketplace" else word
+                 for word in re.findall(r"[^\W_]+", text.casefold())
+                 if word not in _IMAGE_STOP_WORDS)
 
 
 def _usable_event_image_url(url):
-    """Apply the producer's narrow graphic guard without coupling to enrichment."""
-    path = urlsplit(url).path
-    filename = path.rsplit("/", 1)[-1]
-    return not (_IMAGE_GRAPHIC_FILE.search(filename)
-                or filename.lower().endswith((".svg", ".ico", ".gif")))
+    """Only reject known non-photo files; endpoints still need downstream byte checks."""
+    filename = unquote(urlsplit(url).path.rsplit("/", 1)[-1])
+    return not (_IMAGE_GRAPHIC_FILE.search(filename) or _IMAGE_GENERIC.search(filename)
+                or filename.lower().endswith((".svg", ".ico", ".gif", ".avif", ".heic", ".bmp",
+                                             ".tif", ".tiff", ".pdf", ".mp4", ".webm", ".html")))
 
 
-def _event_image(html, page_url, title, event_titles=()):
-    """Pick a responsive image identified by its description, filename or heading."""
-    parser = _EventImages()
-    try:
-        parser.feed(html[:1_500_000])
-    except (ValueError, TypeError):
-        return None
-    normalize = lambda word: "market" if word == "marketplace" else word
-    title_words = {normalize(word) for word in re.findall(r"[a-z0-9]+", title.casefold())
-                   if len(word) >= 4 and word not in _IMAGE_STOP_WORDS}
-    if not title_words:
-        return None
-    other_title_words = [
-        {normalize(word) for word in re.findall(r"[a-z0-9]+", other.casefold())
-         if len(word) >= 4 and word not in _IMAGE_STOP_WORDS}
-        for other in set(event_titles) if other != title]
-    choices = []
-    for image in parser.images:
-        caption = " ".join(image["figure"]["text"]) if image["figure"] else ""
-        image_urls = " ".join(raw for raw, _ in image["variants"])
-        filenames = " ".join(urlsplit(raw).path.rsplit("/", 1)[-1]
-                             for raw, _ in image["variants"])
-        heading = " ".join(image["heading"] or ())
-        own_context = f"{image['context']} {' '.join(image['descriptors'])} {caption} {image_urls}"
-        if _IMAGE_GENERIC.search(own_context):
+def _image_owners(text, titles):
+    words = set(_image_title(text))
+    return {title for title, required in titles.items() if required and required <= words}
+
+
+def _image_heading(image, headings, titles):
+    """Use the nearest structural heading, never text proximity or a sibling card."""
+    scope = image.scope
+    while scope is not None:
+        if scope.headings:
+            # Flat image-before-heading listings have no reliable direction of
+            # ownership. Classify this once per scope, rather than per photograph.
+            if scope.leading_ambiguous is None:
+                named = [(heading, _image_owners("".join(heading.text), titles))
+                         for heading in scope.headings]
+                named = [(heading, owners) for heading, owners in named if owners]
+                scope.leading_ambiguous = bool(
+                    named and len(set.union(*(owners for _, owners in named))) > 1
+                    and scope.first_image is not None and scope.first_image < named[0][0].position)
+            if scope.leading_ambiguous:
+                return None
+            previous = [heading for heading in scope.headings if heading.position < image.position]
+            if previous:
+                return "".join(previous[-1].text)
+            return "".join(scope.headings[0].text) if len(scope.headings) == 1 else None
+        count = scope.end - scope.start
+        if count:
+            if count != 1:
+                return None
+            heading = headings[scope.start]
+            descendant = heading.scope
+            # A heading inside a neighboring article/section/listing is not the
+            # heading of its outer container, even if it is the only one.
+            while descendant is not scope:
+                if descendant.tag in _EventImages.BOUNDARIES:
+                    return None
+                descendant = descendant.parent
+            return "".join(heading.text)
+        if scope.tag in _EventImages.BOUNDARIES:
+            return None
+        scope = scope.parent
+    return None
+
+
+def _event_image(image, page_url, titles, headings):
+    """Resolve one image against ALL titles; independent ownership signals must agree.
+
+    Descriptions and non-generic headings must identify exactly one title. A
+    descriptive filename must agree too; numeric/hash/camera filenames and
+    dynamic image endpoints add no ownership. Recurrences share a title identity.
+    """
+    variants = []
+    for raw, width, density in image.variants:
+        try:
+            if raw.startswith("#"):
+                continue
+            url = _url(urljoin(page_url, raw.strip()))
+        except (ValueError, AttributeError):
             continue
-        descriptions = [{normalize(word) for word in re.findall(r"[a-z0-9]+", text.casefold())
-                         if len(word) >= 4 and word not in _IMAGE_STOP_WORDS}
-                        for text in (*image['descriptors'], caption)]
-        needed = min(2, len(title_words))
-        # Check each explicit description independently, before considering filenames
-        # or headings. Neither can override an image labeled as another event.
-        if any(words and len(title_words & words) < needed for words in descriptions):
-            continue
-        filename_words = {normalize(word) for word in re.findall(r"[a-z0-9]+", filenames.casefold())
-                          if len(word) >= 4 and word not in _IMAGE_STOP_WORDS}
-        heading_words = {normalize(word) for word in re.findall(r"[a-z0-9]+", heading.casefold())
-                         if len(word) >= 4 and word not in _IMAGE_STOP_WORDS}
-        filename_matches = len(title_words & filename_words)
-        heading_matches = len(title_words & heading_words)
-        if not any(descriptions):
-            # A strongly identified different event in the heading or filename
-            # disqualifies the image. Neither signal may override the other.
-            if any(words and len(words & heading_words) >= min(2, len(words))
-                   for words in other_title_words) and heading_matches < needed:
-                continue
-            if any(words and len(words & filename_words) >= min(2, len(words))
-                   for words in other_title_words) and filename_matches < needed:
-                continue
-            # An opaque filename requires an unambiguous owning heading.
-            if filename_matches < needed and heading_matches < needed:
-                continue
-        variants = []
-        for raw_url, width in image["variants"]:
-            try:
-                resolved = _url(urljoin(page_url, raw_url.strip()))
-            except (ValueError, AttributeError):
-                continue
-            if _usable_event_image_url(resolved):
-                variants.append((width, resolved))
-        if variants:
-            # Prefer a source-sized photo near the existing 2 MB fetch limit; use the
-            # nearest larger variant only when no 1024w-or-smaller source is available.
-            within_limit = [item for item in variants if 0 < item[0] <= 1024]
-            if within_limit:
-                choices.append(max(within_limit, key=lambda item: item[0]))
-            else:
-                larger = [item for item in variants if item[0] > 1024]
-                choices.append(min(larger, key=lambda item: item[0]) if larger
-                               else max(variants, key=lambda item: item[0]))
-    # Responsive variants belong to one image. Distinct matching images without
-    # enough evidence to choose between them must remain unset.
-    urls = {url for _, url in choices}
-    return urls.pop() if len(urls) == 1 else None
+        if _usable_event_image_url(url):
+            variants.append((url, width, density))
+    if not variants:
+        return None
+    urls = frozenset(url for url, _, _ in variants)
+    rejected = _ImageAssociation(urls)
+    if image.picture is not None and image.picture["images"] != 1:
+        return rejected
+
+    signals = []
+    descriptions = list(image.descriptors)
+    if image.picture is not None:
+        descriptions.extend(image.picture["descriptors"])
+    if image.figure is not None:
+        descriptions.extend("".join(caption) for caption in image.figure["captions"])
+    if _IMAGE_GENERIC.search(" ".join([image.graphics, *descriptions])) or (
+            image.picture is not None and _IMAGE_GENERIC.search(image.picture["graphics"])):
+        return rejected
+    for text in descriptions:
+        if _image_title(text):
+            signals.append(_image_owners(text, titles))  # An unrelated description is a veto.
+    heading = _image_heading(image, headings, titles)
+    if heading and not _IMAGE_GENERIC_HEADING.fullmatch(heading.strip()):
+        signals.append(_image_owners(heading, titles))
+    for url, _, _ in variants:
+        filename = unquote(urlsplit(url).path.rsplit("/", 1)[-1])
+        stem, _, extension = filename.rpartition(".")
+        identified = _image_owners(stem or filename, titles)
+        if identified:
+            signals.append(identified)
+        elif extension.lower() in ("jpg", "jpeg", "png", "webp") and any(
+                not _IMAGE_OPAQUE_WORD.fullmatch(word) for word in _image_title(stem)):
+            signals.append(set())  # Unrecognized descriptive filenames are questionable too.
+    if not signals:
+        return None
+    if any(len(signal) != 1 for signal in signals):
+        return rejected
+    identified = set.union(*signals)
+    if len(identified) != 1:
+        return rejected
+    # Width describes layout, not byte size. Existing safe-fetch and enrichment
+    # limits still validate the bytes; prefer <=1024w, then the smallest larger.
+    widths = [variant for variant in variants if variant[1] > 0]
+    within = [variant for variant in widths if variant[1] <= 1024]
+    densities = [variant for variant in variants if variant[2] > 0]
+    if within:
+        chosen = max(within, key=lambda variant: variant[1])
+    elif widths:
+        chosen = min(widths, key=lambda variant: variant[1])
+    elif densities:
+        chosen = min(densities, key=lambda variant: variant[2])
+    else:
+        chosen = variants[0]  # Lazy-loading attributes precede the fallback src.
+    return _ImageAssociation(urls, identified.pop(), chosen[0])
 
 
 def _attach_event_images(events, html, page_url):
-    updated = []
-    titles = {event.title for event in events}
+    """Parse once; require one owner per photo and one distinct photo per title.
+
+    JSON-LD images are authoritative. HTML cannot override them or reuse their
+    URL for another title. Multiple equally plausible photos remain unset.
+    """
+    if not events or all(event.image_url for event in events) or len(html) > 1_500_000:
+        return events
+
+    def identity(title):
+        return tuple(re.findall(r"[^\W_]+", title.casefold()))
+
+    titles = {identity(event.title): frozenset(_image_title(event.title)) for event in events}
+    parser = _EventImages()
+    try:
+        parser.feed(html)
+        parser.close()
+    except (ValueError, TypeError):
+        return events
+    if parser.invalid:
+        return events
+    images = {title: {} for title in titles}
+    url_owners = {}
+    rejected_urls = set()
     for event in events:
         if event.image_url:
-            updated.append(event)
+            url_owners.setdefault(event.image_url, set()).add(identity(event.title))
+    for image in parser.images:
+        resolved = _event_image(image, page_url, titles, parser.headings)
+        if resolved is None:
             continue
-        image = _event_image(html, page_url, event.title, titles)
-        if not image:
+        if resolved.owner is None:
+            rejected_urls.update(resolved.urls)
+            continue
+        images[resolved.owner].setdefault(resolved.chosen, set()).update(resolved.urls)
+        for url in resolved.urls:
+            url_owners.setdefault(url, set()).add(resolved.owner)
+    updated = []
+    for event in events:
+        title = identity(event.title)
+        choices = images[title]
+        image = next(iter(choices)) if len(choices) == 1 else None
+        # Check every responsive alias and every occurrence of the URL. Rejected
+        # evidence must not disappear just because another occurrence resolved.
+        if event.image_url or not image or any(
+                url in rejected_urls or len(url_owners[url]) != 1 for url in choices[image]):
             updated.append(event)
             continue
         evidence = tuple(event.verification.evidence) + (f"Event-specific article image at {page_url}",)
