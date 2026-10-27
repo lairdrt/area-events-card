@@ -245,6 +245,22 @@ class ThroughRealPersistence(Fixture):
         self.assertEqual(outcomes["exact"], (2, 0, 2), "a description with no address is never matched by the conservative default")
         self.assertEqual(outcomes["tolerant"], (1, 1, 1), "the alternative links it to the event that states the same venue; Persistence, processing and the API are unchanged")
 
+    def test_v1_decide_only_plugin_still_processes_events(self):
+        class DecideOnlyV1:
+            name, version = "legacy-v1", 1
+
+            def decide(self, incoming, lookup):
+                return Decision("create", reason="a valid v1-only strategy")
+
+        strategy = DecideOnlyV1()
+        self.assertFalse(hasattr(strategy, "matches"))
+        self.assertFalse(hasattr(strategy, "anchors"))
+        built = self.build(deduplication=strategy)
+        self.add_candidate(built, "sandiego_gov", "sandiego_gov:legacy-v1", document("Legacy Plugin Event"))
+        self.drain(built)
+        self.assertEqual(self.count("events"), 1)
+        built.close()
+
     def test_a_strategy_object_can_be_registered_instead_of_a_name(self):
         built = self.build(deduplication=TolerantMatch(window_s=3600))
         self.add_candidate(built, "sandiego_gov", "sandiego_gov:one", document("Harbor Concert"))

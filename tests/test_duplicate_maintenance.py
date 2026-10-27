@@ -119,6 +119,17 @@ class DuplicateMaintenanceTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM event_candidates WHERE role='primary'").fetchone()[0], 5)
             self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
 
+    def test_v1_decide_only_plugin_is_rejected_only_for_maintenance(self):
+        class DecideOnlyV1:
+            name, version = "legacy-v1", 1
+
+            def decide(self, incoming, lookup):
+                return None  # maintenance must reject before any decision is requested
+
+        with self.assertRaisesRegex(DuplicateMaintenanceError, "discovery.dedup.maintenance.v1"):
+            app_module.duplicate_maintenance(self.db_path, DecideOnlyV1())
+        self.assertEqual(len(self.maintenance.scan()), 2, "rejection does not modify stored events")
+
     def test_selected_pair_must_be_explicit_and_currently_unambiguous(self):
         for group in ((), (("missing-a", "missing-b"),), (("ev-maintenance-1",),)):
             with self.subTest(group=group), self.assertRaises(DuplicateMaintenanceError):
