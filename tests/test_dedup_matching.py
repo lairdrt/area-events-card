@@ -54,6 +54,7 @@ CASES = [
     ("end times ten minutes apart", event(ends_at=START + 7200), event(ends_at=START + 7800), True, False, True),
     ("title reworded at the same time and place", event(title="Harbor Concert Series"), event(title="Harbor Concert Series Night"), True, False, True),
     ("no place on either side, identical title and start", event(venue=None, address=None), event(venue=None, address=None), True, True, True),
+    ("no place, both ends stated and equal", event(ends_at=START + 7200, venue=None, address=None), event(ends_at=START + 7200, venue=None, address=None), True, True, True),
     ("no place, a scraped 'Date:' label on one title", event(title="Christmas on the Farm Arts & Crafts Fair", venue=None, address=None),
      event(title="Christmas on the Farm Arts & Crafts Fair Date: Sat.", venue=None, address=None), True, True, True),
     ("no place, a scraped 'Date & Time' label and agreeing descriptions", event(title="Christmas in Valley Center", description="Lights, music and crafts.", venue=None, address=None),
@@ -83,6 +84,7 @@ CASES = [
     ("no place, ends differ", event(ends_at=START + 7200, venue=None, address=None), event(ends_at=START + 10800, venue=None, address=None), False, False, False),
     ("no place, same title and start but other descriptions", event(description="Live music on the harbor stage all evening.", venue=None, address=None),
      event(description="Annual clam chowder tasting with local chefs and judges.", venue=None, address=None), False, False, False),
+    ("no place, an end stated on one side only", event(ends_at=START + 7200, venue=None, address=None), event(venue=None, address=None), False, False, False),
     ("no place, men's and women's", event(title="Men's Swimming and Diving at the Harbor Pool", venue=None, address=None),
      event(title="Women's Swimming and Diving at the Harbor Pool", venue=None, address=None), False, False, False),
     ("same title, one with no place", BASE, event(venue=None, address=None), False, False, False),
@@ -286,6 +288,39 @@ class BatesListing(unittest.TestCase):
                        None, None, "https://batesnutfarm.biz/pages/events", None)
         for strategy in self.strategies():
             self.assertFalse(compare(placed, bates("Christmas on the Farm Arts & Crafts Fair", "2026-11-07", "09:00:00", "16:00:00"), strategy.profile).matched)
+
+
+class TitleLabels(unittest.TestCase):
+    """A scraped field label is removed only with explicit evidence; a legitimate title containing the word "Date" is never altered."""
+
+    def titles(self, left, right):
+        from area_events.deduplication.scoring import _titles
+        return _titles(left, right)
+
+    def test_scraped_labels_are_removed(self):
+        for left, right in (("Christmas on the Farm Arts & Crafts Fair Date: Sat.", "Christmas on the Farm Arts & Crafts Fair"),
+                            ("Christmas in Valley Center Date & Time:", "Christmas in Valley Center"),
+                            ("The 2026 Pumpkin Patch Date: Thurs., Sept. 17 to Sat.", "The 2026 Pumpkin Patch"),
+                            ("Halloween Finale Date", "Halloween Finale"), ("Christmas in Valley Center Date & Time", "Christmas in Valley Center")):
+            a, b = self.titles(left, right)
+            self.assertEqual(a, b, (left, right))
+
+    def test_legitimate_titles_are_not_altered(self):
+        from area_events.deduplication.scoring import normalize
+        for title in ("The Date Night Dinner", "Dinner Date at the Museum", "Save the Date Festival", "Save the Date: Festival of Lights", "Save the Date", "Blind Date"):
+            for other in ("Harbor Concert", "Dinner", "Festival of Lights"):
+                a, b = self.titles(title, other)
+                self.assertEqual((a, b), (normalize(title), normalize(other)), (title, other))
+
+    def test_a_bare_trailing_label_needs_the_other_title_to_be_the_same_title_without_it(self):
+        self.assertEqual(self.titles("Save the Date", "Save the Date Festival"), ("save the date", "save the date festival"))
+        self.assertEqual(self.titles("Dinner Date", "Dinner Party"), ("dinner date", "dinner party"))
+
+    def test_legitimate_titles_do_not_match_a_different_event_on_the_strength_of_a_stripped_word(self):
+        for strategy in (ExactMatch(), TolerantMatch()):
+            for left, right in (("Dinner Date at the Museum", "Dinner at the Museum"), ("Save the Date Festival", "Save the Festival")):
+                a, b = event(left, venue=None, address=None), event(right, venue=None, address=None)
+                self.assertFalse(compare(a, b, strategy.profile).matched, (left, right))
 
 
 class Decisions(unittest.TestCase):

@@ -420,10 +420,12 @@ _LOCATION = re.compile(r"^(?:location|venue|where|place)\s*:\s*(.*)$", re.I)
 _DATE_LABEL = re.compile(r"^(?:dates?|when)\s*:\s*", re.I)
 _TIME_LABEL = re.compile(r"^(?:times?|hours?)\s*:\s*", re.I)
 _WEEKDAY = re.compile(r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b", re.I)
-# A field label ("Date:", "Date & Time", "When:") and abbreviated weekdays that sit between a title and its date in card text belong to the listing, not to the title.
-_TITLE_TAIL = re.compile(
-    r"(?:\s+(?:dates?|when)\s*(?:(?:&|and)\s*times?)?\s*:?(?:\s+.*)?|"
-    r"[\s,]+(?:Mon|Tue|Tues|Wed|Thu|Thur|Thurs|Fri|Sat|Sun)\.?)$", re.I)
+# A field label in card text ("Date: Sat. Nov. 7", "Date & Time: Fri., Dec. 11") sits between the title and its date. It is a label only with explicit field evidence: the
+# label word is followed by a colon, and what follows the colon is a date (a weekday, a month or a digit) or nothing. "Save the Date Festival", "Dinner Date at the Museum"
+# and "Save the Date: Festival of Lights" carry no such evidence and stay whole.
+_FIELD_LABEL = re.compile(
+    r"\s+(?:dates?|when)(?:\s*(?:&|and)\s*times?)?\s*:\s*(?=$|(?:mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?|"
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\d).*$", re.I)
 
 
 class _VisibleEventText(HTMLParser):
@@ -505,12 +507,8 @@ class _VisibleEventText(HTMLParser):
 
 
 def _listing_title(text):
-    """The title in the text that precedes a card's date: trailing day names and a field label such as "Date:" or "Date & Time" are not part of it."""
-    previous = None
-    while previous != text:
-        previous = text
-        text = _TITLE_TAIL.sub("", text).strip(" ,-–—|:")
-    return text
+    """The title in the text that precedes a card's date, without a scraped field label (and the partial date after it) such as "Date: Sat." or "Date & Time:"."""
+    return _FIELD_LABEL.sub("", text).strip(" ,-–—|:")
 
 
 def _visible_lines(text):
@@ -683,13 +681,13 @@ def _plain_text_events(html, page_url, source_name, retrieved_at, zone):
         if not (_TEXT_DATE.search(row) or _TEXT_DATES_ISO.search(row) or _TEXT_DATES_NUMERIC.search(row)):
             continue
         date_match = _TEXT_DATE.search(row) or _TEXT_DATES_ISO.search(row) or _TEXT_DATES_NUMERIC.search(row)
-        title = row[:date_match.start()].rstrip(" ,-–—|:")
+        title = _listing_title(row[:date_match.start()]).rstrip(" ,-–—|:")
         title = re.sub(r"(?:\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday))\s*,?$",
                        "", title, flags=re.I).strip(" ,-–—|:")
         if " — " in title:
             title = title.split(" — ", 1)[0].strip()
         # A card that carries its own heading is titled by it (the text before the date also holds field labels); otherwise the labels are trimmed off.
-        title = card_heading if card_heading and title.startswith(card_heading) else _listing_title(title)
+        title = card_heading if card_heading and title.startswith(card_heading) else title
         if not title or _UNHELPFUL_HEADINGS.fullmatch(title):
             continue
         extracted, skipped = _text_event_group(title[:120], [row], page_title,

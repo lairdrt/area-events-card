@@ -72,18 +72,37 @@ def normalize(text):
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
 
-# A trailing field label that a listing scraped into a title: "... Date", "... Date: Sat.", "... Date & Time", "... When:".
-LABEL_TAIL = re.compile(r"\s+(?:dates?|when)\s*(?:(?:&|and)\s*times?)?\s*(?::.*)?$", re.I)
+# A field label that a listing scraped into a title. With explicit field evidence (a colon, then a date or nothing) it is a label wherever it stands:
+# "... Date: Sat.", "... Date & Time:". A bare trailing "... Date" / "... Date & Time" (a stored title whose colon was already trimmed) is a label only when the OTHER
+# title is exactly the title without it: "Halloween Finale Date" beside "Halloween Finale". A lone "Save the Date", "Dinner Date at the Museum" or "The Date Night Dinner"
+# is never altered.
+FIELD_LABEL = re.compile(
+    r"\s+(?:dates?|when)(?:\s*(?:&|and)\s*times?)?\s*:\s*(?=$|(?:mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?|"
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\d).*$", re.I)
+BARE_LABEL = re.compile(r"\s+(?:dates?|when)(?:\s*(?:&|and)\s*times?)?\s*:?$", re.I)
 
 
-def title_key(text):
-    """The comparable form of a title (see `_title`), for a strategy that has to bucket events that state no place."""
-    return _title(text)
+def _fielded(text):
+    return FIELD_LABEL.sub("", (text or "").strip())
 
 
-def _title(text):
-    """A title for comparison: normalized, without a scraped trailing field label ("Date: Sat.", "Date & Time")."""
-    return normalize(LABEL_TAIL.sub("", (text or "").strip()))
+def title_keys(text):
+    """The normalized forms under which a title may meet its twin, for a strategy that buckets events which state no place: the title, and the title without a bare
+    trailing field label."""
+    fielded = _fielded(text)
+    return tuple(dict.fromkeys(key for key in (normalize(fielded), normalize(BARE_LABEL.sub("", fielded))) if key))
+
+
+def _titles(left, right):
+    """Both titles, normalized for comparison, without a scraped field label (see FIELD_LABEL)."""
+    a, b = _fielded(left), _fielded(right)
+    na, nb = normalize(a), normalize(b)
+    core_a, core_b = normalize(BARE_LABEL.sub("", a)), normalize(BARE_LABEL.sub("", b))
+    if core_a != na and core_a == nb:
+        na = core_a
+    elif core_b != nb and core_b == na:
+        nb = core_b
+    return na, nb
 
 
 def _place(text):
@@ -174,7 +193,7 @@ def _same_day(left, right):
 
 def compare(left, right, profile, same_page=None):
     """Score one pair under a profile. `matched` is True only when no veto applies and the confidence, coverage and place evidence all pass."""
-    a_title, b_title = _title(left.title), _title(right.title)
+    a_title, b_title = _titles(left.title, right.title)
     if not a_title or not b_title:
         return Score(False, 0.0, "a title is missing")
     gap = abs(int(left.starts_at) - int(right.starts_at))
@@ -223,11 +242,11 @@ def compare(left, right, profile, same_page=None):
     unplaced = False
     if not agreed:
         # Nothing states a place on either side: only an exceptionally strong identity may stand in for the missing location. The start (and end) must be
-        # exactly equal, the titles near-identical, the descriptions (when both exist) in agreement; every veto above still applies.
+        # exactly equal (both ends absent, or both stated and equal), the titles near-identical, the descriptions (when both exist) in agreement; every veto above still applies.
         stated = any(_place(getattr(event, field, None)) for event in (left, right) for field, _, _ in PLACE_FIELDS)
         if stated or not profile.no_place_title_min:
             return Score(False, title, "no comparable place fact agrees")
-        if gap or end_gap or title < profile.no_place_title_min:
+        if gap or (left.ends_at is None) != (right.ends_at is None) or end_gap or title < profile.no_place_title_min:   # ends: both absent, or both stated and equal
             return Score(False, title, "no place is stated and the events are not identical enough to match without one")
         if description_left and description_right and _similarity(description_left, description_right, partial=True) < profile.no_place_description_min:
             return Score(False, title, "no place is stated and the descriptions differ")

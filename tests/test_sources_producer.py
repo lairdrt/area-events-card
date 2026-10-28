@@ -368,10 +368,22 @@ END:VCALENDAR"""
     def test_field_labels_and_day_abbreviations_are_trimmed_from_a_headingless_card_title(self):
         page = "https://events.example/list"
         html = ("<ul><li>Harbor Craft Fair Date: Sat. Nov 7, 2026 Time: 9:00am to 4:00pm</li>"
-                "<li>Winter Lights Date &amp; Time Dec 5, 2026 6:00pm</li>"
+                "<li>Winter Lights Date &amp; Time: Dec 5, 2026 6:00pm</li>"
+                "<li>Spring Fling Date: Thurs., Mar. 12 to Sat., Mar. 14, 2026 Time: 10:00am</li>"
                 "<li>Date Night Dinner Nov 9, 2026 7:00pm</li></ul>")
         result, _ = run_crawl({page: html}, urls=(page,), timezone="America/Los_Angeles", max_depth=0)
-        self.assertEqual(sorted(c.title for c in result.candidates), ["Date Night Dinner", "Harbor Craft Fair", "Winter Lights"])
+        self.assertEqual(sorted({c.title for c in result.candidates}), ["Date Night Dinner", "Harbor Craft Fair", "Spring Fling", "Winter Lights"])
+
+    def test_legitimate_titles_containing_the_word_date_are_never_truncated(self):
+        page = "https://events.example/list"
+        titles = ["The Date Night Dinner", "Dinner Date at the Museum", "Save the Date Festival", "Save the Date: Festival of Lights", "Blind Date", "Mayor's Date: Mayor's Gala",
+                  "When Harry Met Sally Screening"]
+        html = "<ul>" + "".join(f"<li>{title} Nov {9 + n}, 2026 7:00pm</li>" for n, title in enumerate(titles)) + "</ul>"
+        result, _ = run_crawl({page: html}, urls=(page,), timezone="America/Los_Angeles", max_depth=0)
+        self.assertEqual(sorted(c.title for c in result.candidates), sorted(titles))
+        labelled = "<ul>" + "".join(f"<li>{title} Date: Sat. Nov {9 + n}, 2026 7:00pm</li>" for n, title in enumerate(titles)) + "</ul>"
+        result, _ = run_crawl({page: labelled}, urls=(page,), timezone="America/Los_Angeles", max_depth=0)
+        self.assertEqual(sorted(c.title for c in result.candidates), sorted(titles), "a real 'Date:' field after any of them is still removed")
 
     def test_bad_timezone_option_is_rejected(self):
         with self.assertRaises(ValueError):
