@@ -114,5 +114,107 @@ class Rename(Fixture):
         self.assertEqual(self.rows("SELECT candidate_id, payload_hash FROM candidates ORDER BY candidate_id"), before)
 
 
+class ExistingRename(Rename):
+    """A source that was renamed BEFORE renames reconciled their records: sources.name is new, the stored copies are not."""
+
+    OLD = "Mission Trails Marketplace"
+
+    def legacy_rename(self, key=SOURCE, name="Texas Campus Calendar"):
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("UPDATE sources SET name=?, revision=revision+1 WHERE source_key=?", (name, key))
+            connection.commit()
+        finally:
+            connection.close()
+        return name
+
+    def state(self):
+        return {"candidates": self.rows("SELECT candidate_id, payload_json, payload_hash FROM candidates ORDER BY candidate_id"),
+                "media": self.rows("SELECT candidate_id, payload_hash, media_json FROM candidate_media ORDER BY candidate_id"),
+                "work": self.rows("SELECT candidate_id, done_hash, last_fail_hash FROM processing_work ORDER BY candidate_id"),
+                "changes": self.count("changes")}
+
+    def test_the_dry_run_reports_the_stale_copies_and_writes_nothing(self):
+        old = self.prepare()
+        name = self.legacy_rename()
+        before = self.state()
+        report = {item["source_key"]: item for item in self.built.persistence.display_names.preview()}
+        self.assertEqual(self.state(), before, "a dry run writes nothing")
+        self.assertEqual(report[SOURCE]["name"], name)
+        self.assertGreater(report[SOURCE]["candidates"], 0)
+        self.assertGreater(report[SOURCE]["image_credits"], 0)
+        self.assertGreater(report[SOURCE]["bookkeeping_rebased"], 0)
+        self.assertEqual(report[SOURCE]["stale_names"], [old])
+        self.assertTrue(all(item["candidates"] == 0 for key, item in report.items() if key != SOURCE), "other sources have nothing stale")
+
+    def test_reconciliation_restores_consistent_names_without_touching_identity_or_reprocessing(self):
+        self.prepare()
+        name = self.legacy_rename()
+        identity = self.identity()
+        self.assertNotEqual(self.names(), ({name}, {name}))
+        result = {item["source_key"]: item for item in self.built.persistence.display_names.apply()}
+        self.assertGreater(result[SOURCE]["candidates"], 0)
+        self.assertEqual(self.names(), ({name}, {name}))
+        self.assertEqual(self.identity(), identity, "events, candidates, associations and recorded extractions are untouched")
+        self.assertEqual(self.built.enrichment._work.pending(50), [], "no enrichment is due")
+        self.assertEqual(self.built.extraction.run_once().claimed, 0, "no extraction is due")
+        self.assertEqual(self.rows("SELECT COUNT(*) FROM candidate_media m JOIN candidates c USING (candidate_id) WHERE m.payload_hash<>c.payload_hash"), [(0,)])
+
+    def test_running_it_twice_changes_nothing_the_second_time(self):
+        self.prepare()
+        self.legacy_rename()
+        self.built.persistence.display_names.apply()
+        settled = self.state()
+        again = self.built.persistence.display_names.apply()
+        self.assertEqual(self.state(), settled)
+        self.assertTrue(all(item["candidates"] == item["image_credits"] == item["bookkeeping_rebased"] == 0 and item["stale_names"] == [] for item in again))
+        self.assertTrue(all(item["candidates"] == 0 for item in self.built.persistence.display_names.preview()))
+
+    def test_one_source_can_be_selected_and_an_unknown_one_is_refused(self):
+        self.prepare()
+        self.legacy_rename()
+        only = self.built.persistence.display_names.preview(SOURCE)
+        self.assertEqual([item["source_key"] for item in only], [SOURCE])
+        with self.assertRaises(ValueError):
+            self.built.persistence.display_names.preview("no_such_source")
+
+    def test_ownership_follows_the_source_not_the_name_found_in_a_record(self):
+        self.prepare()
+        sandiego = self.rows("SELECT name FROM sources WHERE source_key='sandiego_gov'")[0][0]
+        self.legacy_rename()
+        self.built.persistence.display_names.apply()
+        stale = self.rows("SELECT COUNT(*) FROM candidates c JOIN sources s USING (source_id) WHERE s.source_key='sandiego_gov'")[0][0]
+        self.assertGreater(stale, 0)
+        names = {json.loads(p)["provenance"]["source_name"] for (p,) in self.rows("SELECT payload_json FROM candidates c JOIN sources s USING (source_id) WHERE s.source_key='sandiego_gov'")}
+        self.assertEqual(names, {sandiego}, "another source's records keep their own name")
+
+    def test_the_command_reports_by_default_and_applies_only_after_a_verified_backup(self):
+        import contextlib
+        import io
+        import os
+        import tempfile
+        from area_events import cli
+        self.prepare()
+        name = self.legacy_rename()
+        self.built.close()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(["sources", "--db", self.db, "reconcile-names", SOURCE]), 0)
+        self.assertIn("dry run (nothing written)", out.getvalue())
+        self.assertIn("stale candidates", out.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(cli.main(["sources", "--db", self.db, "reconcile-names", SOURCE, "--apply"]), 2)
+        self.assertIn("--backup-dir", err.getvalue())
+        with tempfile.TemporaryDirectory() as backups, tempfile.TemporaryDirectory() as root:
+            os.environ["AREA_EVENTS_APP_ROOT"] = root
+            self.addCleanup(os.environ.pop, "AREA_EVENTS_APP_ROOT", None)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(cli.main(["sources", "--db", self.db, "reconcile-names", SOURCE, "--apply", "--backup-dir", backups]), 0)
+            self.assertIn("verified backup:", out.getvalue())
+            self.assertTrue(any(f.endswith(".sqlite3") for f in os.listdir(backups)))
+        self.assertEqual(self.names(), ({name}, {name}))
+
+
 if __name__ == "__main__":
     unittest.main()

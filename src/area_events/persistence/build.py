@@ -11,6 +11,7 @@ from .areas import AreaRepository, SettingsRepository
 from .control import SqliteControlStorage
 from .crawl import SqliteCrawlStorage
 from .events import DuplicateMaintenance, EventRepository, SqliteEventQueries
+from .naming import DisplayNames
 from .media import LocalMediaFiles, LocalMediaWork, MediaRepository, SqliteMediaStore
 from .ports import MediaCache
 from .processing import ProcessingRepository, SqliteProcessingStorage
@@ -38,6 +39,7 @@ class Persistence:
     media_work: object
     media_files: object
     source_cleanup: object
+    display_names: object
     _store: object
 
     @property
@@ -66,4 +68,5 @@ def open_persistence(db_path, deduplicator, clock=time.time, store_options=None,
         media_work=LocalMediaWork(store, media_repository, clock),
         media_files=LocalMediaFiles(media_store),
         source_cleanup=SourceCleanup(store, clock, reserved_source_keys),
+        display_names=DisplayNames(store, changes, clock),
         _store=store)

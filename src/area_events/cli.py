@@ -391,6 +391,39 @@ def cmd_inspect(args):
     return 0
 
 
+def cmd_sources(args):
+    return cmd_reconcile_names(args) if args.source_action == "reconcile-names" else cmd_source_cleanup(args)
+
+
+def cmd_reconcile_names(args):
+    """Bring stored copies of a producer's display name up to date with sources.name (dry run unless --apply, which takes a verified backup first)."""
+    if args.apply:
+        if not args.backup_dir:
+            print("--apply requires --backup-dir outside the active application tree", file=sys.stderr)
+            return 2
+        try:
+            app_root = os.environ.get("AREA_EVENTS_APP_ROOT", os.path.abspath(os.path.join(os.path.dirname(args.db), os.pardir, os.pardir)))
+            backup = create_verified_database_backup(args.db, args.backup_dir, app_root)
+        except (OSError, ValueError) as error:
+            print(f"refused: {error}", file=sys.stderr)
+            return 2
+        print(f"verified backup: {backup}")
+    app = build(args.db, deduplication=args.deduplication)
+    try:
+        names = app.persistence.display_names
+        report = names.apply(args.source_key) if args.apply else names.preview(args.source_key)
+        print(("applied" if args.apply else "dry run (nothing written)") + f": {len(report)} source(s)")
+        for item in report:
+            print(f"{item['source_key']}  name {item['name']!r}  stale candidates {item['candidates']}  stale image credits {item['image_credits']}  "
+                  f"bookkeeping rows rebased {item['bookkeeping_rebased']}  old names {item['stale_names'] or '-'}")
+        return 0
+    except ValueError as error:
+        print(f"refused: {error}", file=sys.stderr)
+        return 2
+    finally:
+        app.close()
+
+
 def cmd_source_cleanup(args):
     if args.apply:
         if not args.backup_dir:
@@ -582,6 +615,10 @@ def main(argv=None):
     events.add_argument("--event")
     sources = add("sources", "operator-only maintenance for configured sources")
     source_actions = sources.add_subparsers(dest="source_action", required=True)
+    reconcile = source_actions.add_parser("reconcile-names", help="preview or apply the update of stored copies of a renamed producer's display name")
+    reconcile.add_argument("source_key", nargs="?", help="one source (default: every source)")
+    reconcile.add_argument("--apply", action="store_true", help="create and verify an external SQLite backup, then reconcile")
+    reconcile.add_argument("--backup-dir", help="required for --apply; must be outside the active application tree")
     cleanup = source_actions.add_parser("cleanup", help="preview or transactionally remove one source and its exclusively owned records")
     cleanup.add_argument("source_key")
     cleanup.add_argument("--apply", action="store_true", help="create and verify an external SQLite backup, then remove the source")
@@ -625,7 +662,7 @@ def main(argv=None):
             parser.error("areas update needs --revision")
     handlers = {"run": cmd_run, "serve": cmd_serve, "stop": cmd_stop, "status": cmd_status, "areas": cmd_areas, "settings": cmd_settings,
                 "pause": cmd_pause_resume, "resume": cmd_pause_resume, "changes": cmd_changes, "inspect": cmd_inspect, "extract": cmd_extract,
-                "events": cmd_events, "sources": cmd_source_cleanup}
+                "events": cmd_events, "sources": cmd_sources}
     if args.command == "duplicates":
         return cmd_duplicates(args)
     return handlers[args.command](args)

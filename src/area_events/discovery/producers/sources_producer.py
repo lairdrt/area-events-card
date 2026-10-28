@@ -759,6 +759,50 @@ def _plain_text_events(html, page_url, source_name, retrieved_at, zone, links=No
 
 
 
+class _Frontier:
+    """The pages still to be fetched. Every starting URL comes first, in order. After them the websites take turns, one page each, and a website offers its event-detail links
+    (a listing card's own link) before its generic discovery links, so that a website with many links cannot use up the budget of another."""
+
+    def __init__(self, starts):
+        self._starts = deque((url, 0, url, None) for url in starts)
+        self._known = set(starts)
+        self._sites = {url: (deque(), deque()) for url in starts}   # starting URL -> (event-detail links, generic links), in the order the sites were configured
+        self._turn = 0
+
+    def __len__(self):
+        return len(self._starts) + sum(len(a) + len(b) for a, b in self._sites.values())
+
+    def __contains__(self, url):
+        return url in self._known
+
+    def pending(self, seed):
+        events, generic = self._sites[seed]
+        return len(events) + len(generic)
+
+    def push(self, url, depth, seed, found_on, event):
+        if url in self._known:
+            return False
+        self._known.add(url)
+        self._sites[seed][0 if event else 1].append((url, depth, seed, found_on))
+        return True
+
+    def pop(self):
+        if self._starts:
+            return self._starts.popleft()
+        seeds = list(self._sites)
+        for step in range(len(seeds)):
+            index = (self._turn + step) % len(seeds)
+            events, generic = self._sites[seeds[index]]
+            queue = events or generic
+            if queue:
+                self._turn = (index + 1) % len(seeds)
+                return queue.popleft()
+        raise IndexError("no page is waiting")
+
+    def waiting(self):
+        return list(self._starts) + [item for events, generic in self._sites.values() for item in (*events, *generic)]
+
+
 class SourcesProducer:
     adapter = "sources_producer"
     extractor = "producers/sources_producer@v1"
@@ -831,7 +875,12 @@ class SourcesProducer:
                                          if k not in ("source_key", "name")})
         name = options.get("name", "Website event sources")
         retrieved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        queue = deque((url, 0, url, None) for url in cfg["urls"])
+        frontier = _Frontier(cfg["urls"])
+        per_site = {}        # website -> what this scan did there (reported in the notes)
+
+        def site_of(url):
+            return per_site.setdefault(urlsplit(url).hostname, {"pages_attempted": 0, "pages_fetched": 0, "pages_failed": 0, "event_pages_followed": 0, "event_pages_failed": 0,
+                                                                 "pages_skipped": 0})
         seen = set()
         candidates = {}
         leads = []
@@ -865,22 +914,30 @@ class SourcesProducer:
                     origin[match] = (depth, site)
                     detail_stats["merged"] += 1
 
-        while queue and len(seen) < limit and len(candidates) < cfg["max_events"]:
-            page_url, depth, seed, found_on = queue.popleft()
+        for url in cfg["urls"]:
+            site_of(url)
+        while frontier and len(seen) < limit and len(candidates) < cfg["max_events"]:
+            page_url, depth, seed, found_on = frontier.pop()
             if page_url in seen:
                 continue
             seen.add(page_url)
+            stats = site_of(seed)
+            stats["pages_attempted"] += 1
             if page_url in card_pages:
                 detail_stats["followed"] += 1
+                stats["event_pages_followed"] += 1
             try:
                 response = fetcher.fetch(page_url)
             except FetchError as error:
+                stats["pages_failed"] += 1
                 if page_url in card_pages:
                     detail_stats["failed"] += 1   # the listing's own facts stand
+                    stats["event_pages_failed"] += 1
                 errors.append(str(error)[:200])
                 leads.append(SourceLead(page_url, "seed" if found_on is None else "event",
                     "rejected", (str(error)[:200],), found_on=found_on, fetched=False))
                 continue
+            stats["pages_fetched"] += 1
             page = response.text
             media = (response.content_type or "").lower()
             before = len(candidates)
@@ -935,15 +992,16 @@ class SourcesProducer:
                 continue
             added = 0
             for target in card_targets:   # evidence-backed event links first: a card's own link needs no keyword
-                if added >= MAX_LINKS or len(seen) + len(queue) >= limit * 3:
+                if added >= MAX_LINKS or stats["pages_attempted"] + frontier.pending(seed) >= limit * 3:
                     break
-                if target in seen or any(row[0] == target for row in queue):
+                if target in seen or target in frontier:
                     continue
                 card_pages.add(target)
-                queue.append((target, depth + 1, seed, page_url))
+                frontier.push(target, depth + 1, seed, page_url, True)
                 added += 1
+            stats["pages_skipped"] += sum(1 for target in card_targets if target not in seen and target not in frontier)   # event links beyond the per-page / per-site cap
             for link, title in discovered:
-                if added >= MAX_LINKS or len(seen) + len(queue) >= limit * 3:
+                if added >= MAX_LINKS or stats["pages_attempted"] + frontier.pending(seed) >= limit * 3:
                     break
                 if not EVENT_WORDS.search(link + " " + title):
                     continue
@@ -954,20 +1012,22 @@ class SourcesProducer:
                 # Do not crawl arbitrary external websites linked from a seed.
                 if urlsplit(target).hostname != urlsplit(seed).hostname:
                     continue
-                if target in seen or any(row[0] == target for row in queue):
+                if target in seen or target in frontier:
                     continue
-                queue.append((target, depth + 1, seed, page_url))
+                frontier.push(target, depth + 1, seed, page_url, False)
                 added += 1
         if not any(lead.fetched for lead in leads) and errors:
             raise FetchError("all configured websites failed: " + "; ".join(errors[:2]))
-        unvisited = [row for row in queue if row[0] not in seen]
+        unvisited = [row for row in frontier.waiting() if row[0] not in seen]
+        for row in unvisited:
+            site_of(row[2])["pages_skipped"] += 1
         exhausted = bool(unvisited) and len(seen) >= limit
         notes = {"sites": len(cfg["urls"]), "pages": sum(v.fetched for v in leads),
                  "candidates": len(candidates), "invalid_or_ambiguous_event_dates": rejected_dates,
-                 "failed_pages": len(errors), "links_remaining": len(queue),
+                 "failed_pages": len(errors), "links_remaining": len(frontier),
                  "unstructured_candidates": unstructured_events,
                  "page_budget": limit, "pages_attempted": len(seen), "page_budget_exhausted": exhausted, "pages_unvisited": len(unvisited) if exhausted else 0,
-                 "event_pages_followed": detail_stats["followed"], "event_pages_failed": detail_stats["failed"], "event_pages_merged": detail_stats["merged"]}
+                 "event_pages_followed": detail_stats["followed"], "event_pages_failed": detail_stats["failed"], "event_pages_merged": detail_stats["merged"], "by_website": json.dumps(per_site, sort_keys=True)}   # a JSON text: run notes are flat
         if warnings:
             notes["configuration_warning"] = " ".join(warnings)
         return ProducerResult(tuple(candidates.values()), tuple(leads), notes)

@@ -66,7 +66,7 @@ ALLOWED = {
     f"{PERSISTENCE}.events": {"contracts.models", DEDUPLICATION, "api.events"}, f"{PERSISTENCE}.media": {"contracts.models"},
     f"{PERSISTENCE}.processing": {"contracts.evidence", "contracts.models", f"{PERSISTENCE}.events"}, f"{PERSISTENCE}.reading": {"contracts.models"},
     f"{PERSISTENCE}.repositories": {"contracts.models", "discovery.producer", "discovery.urls"}, f"{PERSISTENCE}.scheduling": {"contracts.models"}, f"{PERSISTENCE}.schema": set(),
-    f"{PERSISTENCE}.store": {"contracts.models", f"{PERSISTENCE}.schema"}, BUILD: {f"{PERSISTENCE}.{n}" for n in ("areas", "control", "crawl", "events", "media", "processing", "reading", "repositories", "scheduling", "store")} | {PORTS},
+    f"{PERSISTENCE}.store": {"contracts.models", f"{PERSISTENCE}.schema"}, BUILD: {f"{PERSISTENCE}.{n}" for n in ("areas", "control", "crawl", "events", "media", "naming", "processing", "reading", "repositories", "scheduling", "store")} | {PORTS},
     "validation": set(), "validation.processing": {"contracts.models", PORTS},
 }
 
