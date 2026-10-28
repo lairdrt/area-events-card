@@ -311,6 +311,24 @@ class Enrichment(Fixture):
             release.set()
             enrichment.stop(10)
 
+    def test_cached_photographs_survive_a_restart_and_pruning(self):
+        self.discover_and_extract()
+        self.enrich()
+        with database(self.built).read() as connection:
+            names = {json.loads(r["media_json"])["image"]["url"].rsplit("/", 1)[-1] for r in connection.execute("SELECT media_json FROM candidate_media")
+                     if "image" in json.loads(r["media_json"]) and json.loads(r["media_json"])["image"].get("cached")}
+        self.assertTrue(names, "photographs were cached")
+        folder = self.built.enrichment._resolver.store.files
+        self.assertTrue(all(os.path.isfile(os.path.join(folder, n)) for n in names))
+        with database(self.built).read() as connection:
+            saved = {json.loads(r["record_json"])["photo"]["file"] for r in connection.execute("SELECT record_json FROM media_records WHERE record_json LIKE '%event_photo%'")}
+        self.assertEqual(names, saved, "every advertised photograph has its record in the database before the pass ends")
+        restarted = self.build()   # a new process: its cache index is loaded from the database alone
+        restarted.enrichment._resolver.store.prune()
+        self.assertTrue(all(os.path.isfile(os.path.join(folder, n)) for n in names), "pruning after a restart kept every advertised photograph")
+        with database(restarted).read() as connection:
+            self.assertEqual({r[0] for r in connection.execute("SELECT name FROM media_files")} & names, names)
+
     def test_the_cache_is_bounded(self):
         self.discover_and_extract()
         self.enrich()

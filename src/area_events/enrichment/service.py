@@ -112,6 +112,11 @@ class SourcePhotos:
         self._store.put_record(key, record)
         return self._entry(record), True
 
+    def persist(self):
+        """Write the photograph records (and so which files are in use) to the database."""
+        self._store.mark_saved(int(self._clock()))
+        self._store.save()
+
     @staticmethod
     def _hotlink(event, source_name, url):
         if not url.lower().startswith("https://"):
@@ -160,6 +165,7 @@ class MediaEnrichmentService:
                 results.append({"candidate_id": item["candidate_id"], "payload_hash": item["payload_hash"], "media": media, "version": ENRICHMENT_VERSION, "illustration": event.get("illustration"),
                                 "complete": finished and places_done})
         if results:
+            self._photos.persist()   # a cached photograph's record is saved before its candidate is marked finished, so a restart or a prune cannot orphan the file
             self._work.finish(results)
         self._note(passes=1, enriched=len(results), last_pass_at=int(self._clock()))
         return len(results)
