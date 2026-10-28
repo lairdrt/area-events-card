@@ -57,8 +57,8 @@ CASES = [
     ("no place, both ends stated and equal", event(ends_at=START + 7200, venue=None, address=None), event(ends_at=START + 7200, venue=None, address=None), True, True, True),
     ("no place, a scraped 'Date:' label on one title", event(title="Christmas on the Farm Arts & Crafts Fair", venue=None, address=None),
      event(title="Christmas on the Farm Arts & Crafts Fair Date: Sat.", venue=None, address=None), True, True, True),
-    ("no place, a scraped 'Date & Time' label and agreeing descriptions", event(title="Christmas in Valley Center", description="Lights, music and crafts.", venue=None, address=None),
-     event(title="Christmas in Valley Center Date & Time", description="Lights, music, and crafts", venue=None, address=None), True, True, True),
+    ("no place, a scraped 'Date & Time:' label and agreeing descriptions", event(title="Christmas in Valley Center", description="Lights, music and crafts.", venue=None, address=None),
+     event(title="Christmas in Valley Center Date & Time:", description="Lights, music, and crafts", venue=None, address=None), True, True, True),
     # --- different events -------------------------------------------------------------------------------------------------------------------------------------
     ("another day", BASE, event(starts_at=START + 86400), False, False, False),
     ("a week later (recurring)", BASE, event(starts_at=START + 7 * 86400), False, False, False),
@@ -85,6 +85,10 @@ CASES = [
     ("no place, same title and start but other descriptions", event(description="Live music on the harbor stage all evening.", venue=None, address=None),
      event(description="Annual clam chowder tasting with local chefs and judges.", venue=None, address=None), False, False, False),
     ("no place, an end stated on one side only", event(ends_at=START + 7200, venue=None, address=None), event(venue=None, address=None), False, False, False),
+    ("a real title ending in Date", event(title="Blind Date"), event(title="Blind"), False, False, False),
+    ("a real title ending in Date, no place", event(title="Save the Date", venue=None, address=None), event(title="Save the", venue=None, address=None), False, False, False),
+    ("a real title ending in Date & Time", event(title="Dinner Date"), event(title="Dinner"), False, False, False),
+    ("a real title ending in When", event(title="Sally Knows When", venue=None, address=None), event(title="Sally Knows", venue=None, address=None), False, False, False),
     ("no place, men's and women's", event(title="Men's Swimming and Diving at the Harbor Pool", venue=None, address=None),
      event(title="Women's Swimming and Diving at the Harbor Pool", venue=None, address=None), False, False, False),
     ("same title, one with no place", BASE, event(venue=None, address=None), False, False, False),
@@ -244,26 +248,39 @@ BATES = [
 ]
 
 
+EXPLICIT = [row for row in BATES if ":" in row[1]]    # the stored variants that still carry their "Date:" field colon
+BARE = [row for row in BATES if ":" not in row[1]]    # the stored variants whose colon was trimmed ("Halloween Finale Date"): not matchable without weakening the matcher
+
+
 class BatesListing(unittest.TestCase):
     """The duplicate canonical events visible in the Home Assistant card on 28 October: a clean title and a "Date: ..." variant of every occurrence, no place stated."""
 
     def strategies(self):
         return (ExactMatch(), TolerantMatch())
 
-    def test_each_polluted_variant_is_the_same_event_as_its_clean_twin(self):
+    def test_each_explicitly_labelled_variant_is_the_same_event_as_its_clean_twin(self):
+        self.assertEqual(len(EXPLICIT), 3)
         for strategy in self.strategies():
-            for clean, polluted, day, start, end in BATES:
+            for clean, polluted, day, start, end in EXPLICIT:
                 a, b = bates(clean, day, start, end), bates(polluted, day, start, end)
                 for left, right in ((a, b), (b, a)):
                     score = compare(left, right, strategy.profile)
                     self.assertTrue(score.matched, (strategy.name, polluted, score))
 
-    def test_other_occurrences_and_other_events_never_match(self):
-        events = [bates(clean, day, start, end) for clean, _, day, start, end in BATES] + [bates(polluted, day, start, end) for _, polluted, day, start, end in BATES]
+    def test_a_bare_trailing_label_is_never_stripped_so_those_variants_need_reviewed_reconciliation(self):
+        """"Halloween Finale Date" cannot be told from a real title such as "Blind Date" by the matcher: it does not match "Halloween Finale"."""
+        self.assertEqual(len(BARE), 10)
         for strategy in self.strategies():
-            for i, a in enumerate(events):
-                for b in events[i + 1:]:
-                    twin = (i % len(BATES)) == (events.index(b) % len(BATES))
+            for clean, polluted, day, start, end in BARE:
+                self.assertFalse(compare(bates(clean, day, start, end), bates(polluted, day, start, end), strategy.profile).matched, (strategy.name, polluted))
+
+    def test_other_occurrences_and_other_events_never_match(self):
+        events = [(n, bates(clean, day, start, end), True) for n, (clean, _, day, start, end) in enumerate(BATES)] + \
+                 [(n, bates(polluted, day, start, end), ":" in polluted) for n, (_, polluted, day, start, end) in enumerate(BATES)]
+        for strategy in self.strategies():
+            for i, (n, a, a_ok) in enumerate(events):
+                for m, b, b_ok in events[i + 1:]:
+                    twin = n == m and a_ok and b_ok
                     self.assertEqual(compare(a, b, strategy.profile).matched, twin, (strategy.name, a.title, a.starts_at, b.title, b.starts_at))
 
     def test_unrelated_events_sharing_a_start_are_not_merged(self):
@@ -276,12 +293,13 @@ class BatesListing(unittest.TestCase):
             self.assertFalse(compare(cruisers, fair, strategy.profile).matched)
             self.assertFalse(compare(pumpkin, finale, strategy.profile).matched)
 
-    def test_a_polluted_candidate_links_to_its_own_clean_event_among_all_of_them(self):
+    def test_a_labelled_candidate_links_to_its_own_clean_event_among_all_of_them(self):
         known_events = [known(f"ev-{n:02d}", bates(clean, day, start, end)) for n, (clean, _, day, start, end) in enumerate(BATES)]
         for strategy in self.strategies():
             for n, (_, polluted, day, start, end) in enumerate(BATES):
                 decision = strategy.decide(Incoming("mission_trails:new", bates(polluted, day, start, end), None), Lookup(*known_events))
-                self.assertEqual((decision.action, decision.event_key), ("link", f"ev-{n:02d}"), (strategy.name, polluted))
+                expected = ("link", f"ev-{n:02d}") if ":" in polluted else ("create", None)
+                self.assertEqual((decision.action, decision.event_key), expected, (strategy.name, polluted))
 
     def test_two_events_with_a_place_missing_on_one_side_are_still_not_merged(self):
         placed = event("Christmas on the Farm Arts & Crafts Fair", local("2026-11-07", "09:00:00"), local("2026-11-07", "16:00:00"), "Bates Nut Farm", "15954 Woods Valley Rd",
@@ -297,11 +315,11 @@ class TitleLabels(unittest.TestCase):
         from area_events.deduplication.scoring import _titles
         return _titles(left, right)
 
-    def test_scraped_labels_are_removed(self):
+    def test_explicitly_scraped_labels_are_removed(self):
         for left, right in (("Christmas on the Farm Arts & Crafts Fair Date: Sat.", "Christmas on the Farm Arts & Crafts Fair"),
                             ("Christmas in Valley Center Date & Time:", "Christmas in Valley Center"),
                             ("The 2026 Pumpkin Patch Date: Thurs., Sept. 17 to Sat.", "The 2026 Pumpkin Patch"),
-                            ("Halloween Finale Date", "Halloween Finale"), ("Christmas in Valley Center Date & Time", "Christmas in Valley Center")):
+                            ("Sally's Show When: Fri., Nov. 6", "Sally's Show")):
             a, b = self.titles(left, right)
             self.assertEqual(a, b, (left, right))
 
@@ -312,13 +330,16 @@ class TitleLabels(unittest.TestCase):
                 a, b = self.titles(title, other)
                 self.assertEqual((a, b), (normalize(title), normalize(other)), (title, other))
 
-    def test_a_bare_trailing_label_needs_the_other_title_to_be_the_same_title_without_it(self):
-        self.assertEqual(self.titles("Save the Date", "Save the Date Festival"), ("save the date", "save the date festival"))
-        self.assertEqual(self.titles("Dinner Date", "Dinner Party"), ("dinner date", "dinner party"))
+    def test_a_bare_trailing_word_is_never_a_label_whatever_the_other_title_is(self):
+        from area_events.deduplication.scoring import normalize
+        for title, other in (("Blind Date", "Blind"), ("Save the Date", "Save the"), ("Dinner Date", "Dinner"), ("Halloween Finale Date", "Halloween Finale"),
+                             ("Christmas in Valley Center Date & Time", "Christmas in Valley Center"), ("Sally Knows When", "Sally Knows")):
+            self.assertEqual(self.titles(title, other), (normalize(title), normalize(other)), (title, other))
 
     def test_legitimate_titles_do_not_match_a_different_event_on_the_strength_of_a_stripped_word(self):
         for strategy in (ExactMatch(), TolerantMatch()):
-            for left, right in (("Dinner Date at the Museum", "Dinner at the Museum"), ("Save the Date Festival", "Save the Festival")):
+            for left, right in (("Dinner Date at the Museum", "Dinner at the Museum"), ("Save the Date Festival", "Save the Festival"), ("Blind Date", "Blind"),
+                                ("Save the Date", "Save the"), ("Dinner Date", "Dinner")):
                 a, b = event(left, venue=None, address=None), event(right, venue=None, address=None)
                 self.assertFalse(compare(a, b, strategy.profile).matched, (left, right))
 

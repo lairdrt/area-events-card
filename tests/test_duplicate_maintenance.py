@@ -75,11 +75,12 @@ class DuplicateMaintenanceTests(unittest.TestCase):
             return {**base, **more}
         start = epoch("2026-11-07T09:00:00-08:00")
         rows = [row(1, "Christmas on the Farm Arts & Crafts Fair", start), row(2, "East County Cruisers Car Show and Toy Drive", start),
-                row(3, "Christmas on the Farm Arts & Crafts Fair Date: Sat.", start), row(4, "East County Cruisers Car Show and Toy Drive Date", start),
+                row(3, "Christmas on the Farm Arts & Crafts Fair Date: Sat.", start), row(4, "East County Cruisers Car Show and Toy Drive Date: Sat.", start),
                 row(5, "Christmas on the Farm Arts & Crafts Fair", start + 86400), row(6, "Christmas on the Farm Arts & Crafts Fair Date: Sat.", start + 86400),
-                row(7, "Lone event", start), row(8, "Harbor Concert", start, venue_name="Harbor Hall"), row(9, "Harbor Concert", start)]
+                row(7, "Lone event", start), row(8, "Harbor Concert", start, venue_name="Harbor Hall"), row(9, "Harbor Concert", start),
+                row(10, "Blind Date", start), row(11, "Blind", start), row(12, "East County Cruisers Car Show and Toy Drive Date", start)]
         groups = self.maintenance._eligible_pairs(rows)
-        self.assertEqual([group["event_ids"] for group in groups], [(1, 3), (2, 4), (5, 6)])
+        self.assertEqual([group["event_ids"] for group in groups], [(1, 3), (2, 4), (5, 6)], "a bare trailing 'Date' (10, 11, 12) is never paired")
         self.assertTrue(all(group["eligible"] for group in groups))
 
     def test_read_only_scan_finds_only_the_high_confidence_pair(self):

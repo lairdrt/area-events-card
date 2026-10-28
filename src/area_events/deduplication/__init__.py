@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Optional, Protocol
 
 from ..contracts.models import CleanEvent
-from .scoring import MatchProfile, best_match, compare, normalize, title_keys
+from .scoring import MatchProfile, best_match, compare, normalize, title_key
 
 DEDUP_SCHEMA = "discovery.dedup.v1"
 DEDUP_MAINTENANCE_SCHEMA = "discovery.dedup.maintenance.v1"  # optional extension for database duplicate scans
@@ -31,7 +31,7 @@ def anchors(event):
     """What a maintenance scan may bucket an event by (together with its start): its stated places, or, when it states none, its title (such events can only ever match on an
     exceptionally strong identity, and the title is that identity)."""
     places = tuple((field, value) for field in ("address", "venue_name", "location_text") if (value := normalize(getattr(event, field))))
-    return places or tuple(("title", key) for key in title_keys(event.title))
+    return places or ((("title", title_key(event.title)),) if title_key(event.title) else ())
 
 
 def same_event_facts(left, right, profile=None):

@@ -72,37 +72,26 @@ def normalize(text):
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
 
-# A field label that a listing scraped into a title. With explicit field evidence (a colon, then a date or nothing) it is a label wherever it stands:
-# "... Date: Sat.", "... Date & Time:". A bare trailing "... Date" / "... Date & Time" (a stored title whose colon was already trimmed) is a label only when the OTHER
-# title is exactly the title without it: "Halloween Finale Date" beside "Halloween Finale". A lone "Save the Date", "Dinner Date at the Museum" or "The Date Night Dinner"
-# is never altered.
+# A field label that a listing scraped into a title is removed only with explicit field evidence: the label word, a colon, then a date (or nothing): "... Date: Sat.",
+# "... Date & Time:". A bare trailing "Date"/"When" is never removed, however the other title reads: "Blind Date", "Save the Date" and "Dinner Date" are real titles, and a
+# stored title whose colon was already trimmed ("Halloween Finale Date") cannot be told from them by the matcher.
 FIELD_LABEL = re.compile(
     r"\s+(?:dates?|when)(?:\s*(?:&|and)\s*times?)?\s*:\s*(?=$|(?:mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?|"
     r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\d).*$", re.I)
-BARE_LABEL = re.compile(r"\s+(?:dates?|when)(?:\s*(?:&|and)\s*times?)?\s*:?$", re.I)
 
 
 def _fielded(text):
     return FIELD_LABEL.sub("", (text or "").strip())
 
 
-def title_keys(text):
-    """The normalized forms under which a title may meet its twin, for a strategy that buckets events which state no place: the title, and the title without a bare
-    trailing field label."""
-    fielded = _fielded(text)
-    return tuple(dict.fromkeys(key for key in (normalize(fielded), normalize(BARE_LABEL.sub("", fielded))) if key))
+def title_key(text):
+    """The normalized title (without an explicitly scraped field label): what a strategy buckets events by when they state no place."""
+    return normalize(_fielded(text))
 
 
 def _titles(left, right):
-    """Both titles, normalized for comparison, without a scraped field label (see FIELD_LABEL)."""
-    a, b = _fielded(left), _fielded(right)
-    na, nb = normalize(a), normalize(b)
-    core_a, core_b = normalize(BARE_LABEL.sub("", a)), normalize(BARE_LABEL.sub("", b))
-    if core_a != na and core_a == nb:
-        na = core_a
-    elif core_b != nb and core_b == na:
-        nb = core_b
-    return na, nb
+    """Both titles, normalized for comparison, without an explicitly scraped field label (see FIELD_LABEL)."""
+    return title_key(left), title_key(right)
 
 
 def _place(text):
