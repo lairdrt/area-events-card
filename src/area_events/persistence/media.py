@@ -31,6 +31,11 @@ def content_type_of(name):
     return CONTENT_TYPES[name.rsplit(".", 1)[1]] if match else None
 
 
+def _picture(media):
+    image = (media or {}).get("image")
+    return isinstance(image, dict) and isinstance(image.get("url"), str) and bool(image["url"])
+
+
 class MediaRepository:
     def records(self, connection):
         return {r["key"]: json.loads(r["record_json"]) for r in connection.execute("SELECT key, record_json FROM media_records")}
@@ -60,12 +65,23 @@ class MediaRepository:
                    (candidate_id, payload_hash, json.dumps(media, ensure_ascii=False), json.dumps(illustration, ensure_ascii=False) if illustration else None, 1 if complete else 0, now, version))
 
     def for_event(self, connection, event_id):
-        """The media of an event's primary candidate: (media dict, illustration dict) or (None, None)."""
+        """The media of an event's primary candidate: (media dict, illustration dict) or (None, None).
+
+        Temporary fallback: when the primary has no usable picture, the picture (only the picture) of the first linked non-primary candidate
+        whose enrichment is current for its revision is used, in candidate_id order. Maps, illustration and every other field stay the primary's."""
         row = connection.execute("""SELECT m.media_json, m.illustration_json FROM event_candidates l JOIN candidate_media m USING (candidate_id)
                                     WHERE l.event_id=? AND l.role='primary'""", (event_id,)).fetchone()
-        if row is None:
-            return None, None
-        return json.loads(row["media_json"]) or None, json.loads(row["illustration_json"]) if row["illustration_json"] else None
+        media = (json.loads(row["media_json"]) or None) if row else None
+        illustration = json.loads(row["illustration_json"]) if row and row["illustration_json"] else None
+        if not _picture(media):
+            for other in connection.execute("""SELECT m.media_json FROM event_candidates l JOIN candidates c USING (candidate_id) JOIN candidate_media m USING (candidate_id)
+                                               WHERE l.event_id=? AND l.role<>'primary' AND m.payload_hash=c.payload_hash AND m.version>=?
+                                               ORDER BY l.candidate_id""", (event_id, ENRICHMENT_VERSION)):
+                picture = (json.loads(other["media_json"]) or {}).get("image")
+                if _picture({"image": picture}):
+                    media = {**(media or {}), "image": picture}
+                    break
+        return media, illustration
 
     def pending(self, connection, floor, retry_before, limit):
         """Upcoming candidates of enabled areas that have no media yet, were enriched for an older revision, or are unfinished and due for another look."""
