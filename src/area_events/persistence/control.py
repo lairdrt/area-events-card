@@ -6,6 +6,7 @@ depends on the stored state (the expected revision, a radius against the area's 
 import json
 import sqlite3
 
+from .naming import reconcile_display_name
 from ..contracts.models import (CONTROL_SCHEMA, ControlResult, ControlStatus, NotFound, RevisionConflict, SourceControlResult, SourceExists, SourceSpec,
                                 SourceStatus, ValidationFailed, digest_of)
 
@@ -103,6 +104,8 @@ class SqliteControlStorage:
                 source = self._sources.configuration(row)
                 return SourceControlResult(CONTROL_SCHEMA, source.revision, None, True, source)
             self._sources.update_configured(tx, row["source_id"], spec, enabled, now)
+            if row["name"] != spec.name:   # the key is the identity; the stored copies of the old display name follow the rename, in this transaction
+                reconcile_display_name(tx, row["source_id"], spec.name, self._changes, now)
             source = self._sources.configuration(self._sources.by_id(tx, row["source_id"]))
             seq = self._changes.append(tx, "source", source.source_key, digest_of(source), now, kind="source.configuration_changed")
         return SourceControlResult(CONTROL_SCHEMA, source.revision, seq, False, source)

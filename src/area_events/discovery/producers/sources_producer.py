@@ -417,6 +417,10 @@ _JUNK_TITLES = re.compile(
     r"^(?:visitor center|park hours|opening hours|hours of operation|"
     r"contact us|event registration|related events)$", re.I)
 _LOCATION = re.compile(r"^(?:location|venue|where|place)\s*:\s*(.*)$", re.I)
+_ADDRESS_LABEL = re.compile(r"^(?:street\s+)?address\s*:\s*", re.I)
+_DESCRIPTION_LABEL = re.compile(r"^description\s*:\s*(.*)$", re.I)
+_FIELD_LINE = re.compile(r"^[A-Z][A-Za-z ]{1,24}:(?:\s|$)")
+_CITY_LINE = re.compile(r"\b[A-Za-z][A-Za-z .]+,\s*[A-Z]{2}\b")
 _DATE_LABEL = re.compile(r"^(?:dates?|when)\s*:\s*", re.I)
 _TIME_LABEL = re.compile(r"^(?:times?|hours?)\s*:\s*", re.I)
 _WEEKDAY = re.compile(r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b", re.I)
@@ -445,6 +449,7 @@ class _VisibleEventText(HTMLParser):
         self._ignored = []
         self._cards = []
         self.card_headings = []
+        self.card_hrefs = []
         self.first_heading = ""
 
     def _section_flush(self):
@@ -466,8 +471,12 @@ class _VisibleEventText(HTMLParser):
         elif tag in self.BLOCKS:
             self._section.append("\n")
         if tag in ("li", "article", "tr"):
-            self._cards.append([tag, [], ""])
-        elif tag in ("td", "th") and self._cards and self._cards[-1][0] == "tr":
+            self._cards.append([tag, [], "", ""])
+        if tag == "a" and self._cards:
+            href = dict(attrs).get("href")
+            for card in self._cards:
+                card[3] = card[3] or (href or "")
+        if tag in ("td", "th") and self._cards and self._cards[-1][0] == "tr":
             self._cards[-1][1].append(" — ")
 
     def handle_data(self, data):
@@ -500,6 +509,7 @@ class _VisibleEventText(HTMLParser):
             if lines:
                 self.cards.append(lines)
                 self.card_headings.append(card[2])
+                self.card_hrefs.append(card[3])
 
     def finish(self):
         self._section_flush()
@@ -627,10 +637,29 @@ def _text_event_group(heading, lines, page_title, page_url, source_name, retriev
             venue = _clean(match.group(1), 160)
             # Only use a nearby explicit street/city line, never a footer address.
             following = lines[index+1:index+3]
-            address_lines = [v for v in following if re.search(r"\b\d{1,5}\s+[A-Za-z]|\b[A-Za-z][A-Za-z ]+,\s*[A-Z]{2}\b", v)]
+            address_lines = [_ADDRESS_LABEL.sub("", v) for v in following if re.search(r"\b\d{1,5}\s+[A-Za-z]|\b[A-Za-z][A-Za-z ]+,\s*[A-Z]{2}\b", v)]
             address = _clean(", ".join(address_lines), 250) if address_lines else None
             break
-    description = next((line for line in lines[:15] if len(line) > 55 and not
+    if address is None:   # a labelled "Address:" field stands on its own (its city line may follow)
+        for index, line in enumerate(lines[:35]):
+            if _ADDRESS_LABEL.match(line):
+                parts = [_ADDRESS_LABEL.sub("", line)]
+                if index + 1 < len(lines) and _CITY_LINE.search(lines[index + 1]) and not _FIELD_LINE.match(lines[index + 1]):
+                    parts.append(lines[index + 1])
+                address = _clean(", ".join(part for part in parts if part), 250) or None
+                break
+    description = None
+    for index, line in enumerate(lines[:35]):   # a labelled "Description:" field is the description, whatever times it mentions
+        match = _DESCRIPTION_LABEL.match(line)
+        if match:
+            parts = [match.group(1)] if match.group(1) else []
+            for extra in lines[index + 1:index + 4]:
+                if _FIELD_LINE.match(extra) or sum(len(part) for part in parts) >= 300:
+                    break
+                parts.append(extra)
+            description = " ".join(parts) or None
+            break
+    description = description or next((line for line in lines[:15] if len(line) > 55 and not
                        (_TEXT_DATE.search(line) or _TEXT_DATES_ISO.search(line) or _TEXT_DATES_NUMERIC.search(line))
                        and not _CLOCK.search(line)), None)
     result = []
@@ -658,11 +687,31 @@ def _text_event_group(heading, lines, page_title, page_url, source_name, retriev
     return result, len(raw_date_lines) - int(bool(result))
 
 
+def _merge_detail(listing, detail, detail_url):
+    """One candidate for an occurrence the listing and its own event page both describe. The event page's verified facts win; any fact it omits keeps the listing's value.
+    The listing candidate's identity (local_id) and listing attribution are kept, and the event page becomes the event's URL."""
+    same_start = listing.starts_at == detail.starts_at
+    ends_at = detail.ends_at or (listing.ends_at if same_start else None)
+    venue, address = detail.venue or listing.venue, detail.address or listing.address
+    description = detail.description or listing.description
+    image_url = detail.image_url or listing.image_url
+    evidence = tuple(dict.fromkeys(tuple(listing.verification.evidence) + tuple(detail.verification.evidence)
+                                   + (f"Facts read from the event page {detail_url}, which take precedence over the listing {listing.provenance.listing_url or listing.url}",)))
+    return replace(
+        detail, local_id=listing.local_id, ends_at=ends_at, venue=venue, address=address, description=description, url=detail.url or detail_url,
+        image_url=image_url, image_source=detail.image_source if detail.image_url else listing.image_source, timezone=detail.timezone or listing.timezone,
+        categories=detail.categories or listing.categories, organizer=detail.organizer or listing.organizer, price=detail.price or listing.price, geo=detail.geo or listing.geo,
+        provenance=Provenance(listing.provenance.source_name, listing.provenance.listing_url, detail.provenance.retrieved_at,
+                              tuple(dict.fromkeys(tuple(listing.provenance.found_on) + tuple(detail.provenance.found_on) + (detail_url,)))),
+        verification=stated(evidence, same_start, ends_at, venue, address, description, image_url))
+
+
 def _title_key(title):
     return re.sub(r"[^a-z0-9]+", " ", title.casefold()).strip()
 
 
-def _plain_text_events(html, page_url, source_name, retrieved_at, zone):
+def _plain_text_events(html, page_url, source_name, retrieved_at, zone, links=None):
+    """Events read from visible text. When `links` (a dict) is given it is filled with {local_id: href} for events read from a listing card that links to a page."""
     parser = _VisibleEventText()
     try:
         parser.feed(html[:1_500_000])
@@ -676,7 +725,8 @@ def _plain_text_events(html, page_url, source_name, retrieved_at, zone):
         events.extend(extracted)
         missing += skipped
     # Listing cards often have no headings, e.g. <li>Craft Fair — Nov 14 at 9am</li>.
-    for card, card_heading in zip(cards[:120], parser.card_headings[:120]):
+    card_links = {}
+    for card, card_heading, card_href in zip(cards[:120], parser.card_headings[:120], parser.card_hrefs[:120]):
         row = " ".join(card)
         if not (_TEXT_DATE.search(row) or _TEXT_DATES_ISO.search(row) or _TEXT_DATES_NUMERIC.search(row)):
             continue
@@ -694,10 +744,17 @@ def _plain_text_events(html, page_url, source_name, retrieved_at, zone):
                                                page_url, source_name, retrieved_at, zone)
         events.extend(extracted)
         missing += skipped
+        if card_href:
+            for e in extracted:
+                card_links.setdefault((_title_key(e.title), e.starts_at), card_href)
     # A page can expose the same event in text, JSON-LD, a list item and a heading.
     distinct = {}
     for e in events:
         distinct.setdefault((_title_key(e.title), e.starts_at), e)
+    if links is not None:
+        for key, e in distinct.items():
+            if key in card_links:
+                links[e.local_id] = card_links[key]
     return list(distinct.values())[:MAX_EVENTS], missing
 
 
@@ -712,9 +769,9 @@ class SourcesProducer:
          "placeholder": "https://example.org/events\nhttps://another.org/calendar"},
         {"name": "timezone", "label": "Local timezone for page text", "kind": "text",
          "placeholder": "America/Los_Angeles"},
-        {"name": "max_pages", "label": "Maximum pages per scan (all websites)", "kind": "integer",
+        {"name": "max_pages", "label": "Page budget per scan: the starting URLs AND every page followed from them, all websites together", "kind": "integer",
          "default": 12, "min": 1, "max": MAX_PAGES},
-        {"name": "max_depth", "label": "Link levels to follow", "kind": "integer",
+        {"name": "max_depth", "label": "Link levels to follow (0 = only the starting URLs; 1 = also the event pages they link to)", "kind": "integer",
          "default": 1, "min": 0, "max": MAX_DEPTH},
         {"name": "max_events", "label": "Maximum events per scan", "kind": "integer",
          "default": 75, "min": 1, "max": MAX_EVENTS},
@@ -746,8 +803,18 @@ class SourcesProducer:
             "max_events": _integer(options.get("max_events"), "max_events", 75, 1, MAX_EVENTS),
         }
         if values["max_pages"] < len(urls):
-            raise ValueError("max_pages must be at least the number of website URLs, so every site can be checked")
+            raise ValueError(f"max_pages ({values['max_pages']}) is the page budget for the whole scan, starting URLs included, so it must be at least the number of "
+                             f"starting URLs ({len(urls)}); to follow links as well it must be larger")
         return urls[0], values
+
+    @staticmethod
+    def configuration_warnings(options):
+        """Valid but ineffective settings, in plain words (never an error: an existing source keeps running)."""
+        urls, max_pages, max_depth = options.get("urls") or (), options.get("max_pages", 12), options.get("max_depth", 1)
+        if isinstance(max_pages, int) and max_depth and max_pages <= len(urls):
+            return (f"max_depth is {max_depth} but max_pages ({max_pages}) leaves no budget beyond the {len(urls)} starting URL(s): no linked event page can be fetched. "
+                    f"Raise max_pages (it counts starting URLs plus followed pages, all websites together).",)
+        return ()
 
     @staticmethod
     def page_role(url, base_url):
@@ -773,15 +840,43 @@ class SourcesProducer:
         unstructured_events = 0
         limit = cfg["max_pages"]
         max_depth = cfg["max_depth"]
+        origin = {}          # local_id -> (depth of the page that supplied the candidate, its site): a deeper page of the same site is the more authoritative
+        linked_from = {}     # absolute event-page URL -> local_ids of the listing candidates whose card links to it
+        card_pages = set()   # event pages reached through a listing card
+        detail_stats = {"followed": 0, "merged": 0, "failed": 0}
+        warnings = SourcesProducer.configuration_warnings(cfg)
+
+        def absorb(page_events, page_url, depth, site):
+            """Add a page's events. An event the site already described on a less specific page (a listing) is MERGED into that candidate instead of duplicating it."""
+            owners = [lid for lid in linked_from.get(page_url, ()) if lid in candidates]
+            by_key = {(_title_key(c.title), c.starts_at): lid for lid, c in candidates.items() if origin.get(lid, (0, None))[1] == site}
+            for event in page_events:
+                if event.local_id in candidates:
+                    continue
+                match = next((lid for lid in owners if candidates[lid].starts_at == event.starts_at), None) or by_key.get((_title_key(event.title), event.starts_at))
+                if match is None and len(page_events) == 1 and len(owners) == 1 and candidates[owners[0]].starts_at[:10] == event.starts_at[:10]:
+                    match = owners[0]   # the event page states the one occurrence its listing card linked to, at a corrected time
+                if match is None:
+                    if len(candidates) < cfg["max_events"]:
+                        candidates[event.local_id] = event
+                        origin[event.local_id] = (depth, site)
+                elif depth > origin[match][0]:
+                    candidates[match] = _merge_detail(candidates[match], event, page_url)
+                    origin[match] = (depth, site)
+                    detail_stats["merged"] += 1
 
         while queue and len(seen) < limit and len(candidates) < cfg["max_events"]:
             page_url, depth, seed, found_on = queue.popleft()
             if page_url in seen:
                 continue
             seen.add(page_url)
+            if page_url in card_pages:
+                detail_stats["followed"] += 1
             try:
                 response = fetcher.fetch(page_url)
             except FetchError as error:
+                if page_url in card_pages:
+                    detail_stats["failed"] += 1   # the listing's own facts stand
                 errors.append(str(error)[:200])
                 leads.append(SourceLead(page_url, "seed" if found_on is None else "event",
                     "rejected", (str(error)[:200],), found_on=found_on, fetched=False))
@@ -790,6 +885,7 @@ class SourcesProducer:
             media = (response.content_type or "").lower()
             before = len(candidates)
             discovered = []
+            page_links = {}
             if (page_url.lower().split("?", 1)[0].endswith((".ics", ".ical"))
                     or "text/calendar" in media or "begin:vcalendar" in page[:500].lower()):
                 events, rejected = _ics_events(page, page_url, name, retrieved_at)
@@ -809,7 +905,7 @@ class SourcesProducer:
                         rejected += discarded
                     discovered = parser.links
                     visible, from_text = _plain_text_events(page, page_url, name, retrieved_at,
-                                                            cfg.get("timezone"))
+                                                            cfg.get("timezone"), page_links)
                     # Favor exact structured source claims when the same event is also visible as text.
                     existing = {(e.title.casefold(), e.starts_at) for e in events}
                     text_events = [e for e in visible if (e.title.casefold(), e.starts_at) not in existing]
@@ -820,15 +916,32 @@ class SourcesProducer:
                 except (ValueError, TypeError):
                     events, rejected = [], 0
             rejected_dates += rejected
-            for event in events:
-                if event.local_id not in candidates and len(candidates) < cfg["max_events"]:
-                    candidates[event.local_id] = event
+            site = urlsplit(seed).hostname
+            absorb(events, page_url, depth, site)
+            card_targets = []
+            for local_id, href in page_links.items():   # the event pages the listing cards link to, in page order
+                try:
+                    target = _url(urljoin(page_url, href))
+                except ValueError:
+                    continue
+                if urlsplit(target).hostname == site and target != page_url:
+                    linked_from.setdefault(target, []).append(local_id)
+                    if target not in card_targets:
+                        card_targets.append(target)
             leads.append(SourceLead(page_url, "seed" if found_on is None else "event",
                 "accepted", ("public page inspected for offset-aware event data",),
                 score=10 if events else 0, found_on=found_on, events=len(candidates)-before, fetched=True))
             if depth >= max_depth:
                 continue
             added = 0
+            for target in card_targets:   # evidence-backed event links first: a card's own link needs no keyword
+                if added >= MAX_LINKS or len(seen) + len(queue) >= limit * 3:
+                    break
+                if target in seen or any(row[0] == target for row in queue):
+                    continue
+                card_pages.add(target)
+                queue.append((target, depth + 1, seed, page_url))
+                added += 1
             for link, title in discovered:
                 if added >= MAX_LINKS or len(seen) + len(queue) >= limit * 3:
                     break
@@ -847,8 +960,14 @@ class SourcesProducer:
                 added += 1
         if not any(lead.fetched for lead in leads) and errors:
             raise FetchError("all configured websites failed: " + "; ".join(errors[:2]))
-        return ProducerResult(tuple(candidates.values()), tuple(leads),
-            {"sites": len(cfg["urls"]), "pages": sum(v.fetched for v in leads),
-             "candidates": len(candidates), "invalid_or_ambiguous_event_dates": rejected_dates,
-             "failed_pages": len(errors), "links_remaining": len(queue),
-             "unstructured_candidates": unstructured_events})
+        unvisited = [row for row in queue if row[0] not in seen]
+        exhausted = bool(unvisited) and len(seen) >= limit
+        notes = {"sites": len(cfg["urls"]), "pages": sum(v.fetched for v in leads),
+                 "candidates": len(candidates), "invalid_or_ambiguous_event_dates": rejected_dates,
+                 "failed_pages": len(errors), "links_remaining": len(queue),
+                 "unstructured_candidates": unstructured_events,
+                 "page_budget": limit, "pages_attempted": len(seen), "page_budget_exhausted": exhausted, "pages_unvisited": len(unvisited) if exhausted else 0,
+                 "event_pages_followed": detail_stats["followed"], "event_pages_failed": detail_stats["failed"], "event_pages_merged": detail_stats["merged"]}
+        if warnings:
+            notes["configuration_warning"] = " ".join(warnings)
+        return ProducerResult(tuple(candidates.values()), tuple(leads), notes)

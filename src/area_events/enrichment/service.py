@@ -85,7 +85,7 @@ class SourcePhotos:
         now = self._clock()
         record = self._store.get_record(key)
         if record and now - record.get("at", 0) < (PHOTO_TTL if record.get("ok") else REFUSAL_TTL) and (not record.get("ok") or self._store.intact(record)):
-            return (self._entry(record) if record.get("ok") else self._hotlink(event, source_name, url) if record.get("blocked") else None), True
+            return (self._entry(record, source_name) if record.get("ok") else self._hotlink(event, source_name, url) if record.get("blocked") else None), True
         if self._work.titles_sharing_image(url) >= self._config.shared_image_titles:
             self._store.put_record(key, {"at": now, "ok": False, "reason": "the same picture is attached to several unrelated events: a default image, not this event's photograph"})
             return None, True
@@ -110,7 +110,7 @@ class SourcePhotos:
         record = {"at": now, "ok": True, "kind": "event_photo", "photo": {"file": name, "bytes": len(body)}, "source_url": url,
                   "page_url": event.get("url"), "credit": source_name, "license": "as published by the source"}
         self._store.put_record(key, record)
-        return self._entry(record), True
+        return self._entry(record, source_name), True
 
     def persist(self):
         """Write the photograph records (and so which files are in use) to the database."""
@@ -124,10 +124,11 @@ class SourcePhotos:
         return {"url": url, "credit": source_name, "license": "as published by the source", "source_url": event.get("url") or url, "original_url": url, "cached": False}
 
     @staticmethod
-    def _entry(record):
+    def _entry(record, source_name):
+        """The credit is the source's CURRENT display name (a cached record keeps the name it was made under, which a rename makes stale)."""
         if not record.get("ok"):
             return None
-        return {"url": f"{MEDIA_URL}/{record['photo']['file']}", "credit": record["credit"], "license": record["license"], "source_url": record["page_url"] or record["source_url"],
+        return {"url": f"{MEDIA_URL}/{record['photo']['file']}", "credit": source_name or record["credit"], "license": record["license"], "source_url": record["page_url"] or record["source_url"],
                 "original_url": record["source_url"], "cached": True}
 
 
