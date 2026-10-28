@@ -371,7 +371,7 @@ Check 'Goose3 installation and self-check cover rehearsal, deployment, recovery 
   $source=Get-Section 'function Test-CubiInstalledSource {' 'function Invoke-DeploymentPlan('
   $recovery=Get-Section "Write-Warning 'Restoring Cubi code only" "elseif (`$phase -eq 'Home Assistant installation')"
   foreach($case in @(@{N='rehearsal';T=$rehearsal},@{N='deployment';T=$deploy},@{N='recovery';T=$recovery},@{N='verification';T=$health},@{N='installed-source check';T=$source})) {
-    if ($case.T -notmatch '\$script:ImageDepsPy\+@') { throw "$($case.N) does not include the image dependency helper" }
+    if ($case.T -notmatch '\$script:ImageDepsPy\+"`n"\+@') { throw "$($case.N) does not include the image dependency helper" }
   }
   foreach($case in @(@{N='rehearsal';T=$rehearsal},@{N='deployment';T=$deploy},@{N='recovery';T=$recovery})) {
     if ($case.T -notmatch 'ae_install_images\(') { throw "$($case.N) does not install the pinned image dependencies" }

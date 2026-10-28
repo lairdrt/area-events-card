@@ -280,7 +280,7 @@ function Test-CubiInstalledSource {
     throw 'Committed Cubi source manifest is incomplete.'
   }
   $manifest=ConvertTo-Json -InputObject $files -Compress -Depth 3
-  $py=$script:ImageDepsPy+@'
+  $py=$script:ImageDepsPy+"`n"+@'
 import glob,hashlib,json,os,re,shlex,subprocess
 root='/home/robohobo/area-events-discovery'; venv=os.path.join(root,'.venv'); python=os.path.join(venv,'bin','python')
 expected=json.loads(os.environ['AE_EXPECTED'])
@@ -479,7 +479,7 @@ function Invoke-Rehearsal($state) {
   $migrate=($state.Remote.schema -lt $script:TargetSchema)
   $archive="/home/robohobo/.cache/ae-rehearsal-$([guid]::NewGuid().ToString('N')).tar"
   $null=Invoke-Bounded 'scp.exe' (@(Get-SshBase)+@($script:Archive,"$($script:Cubi):$archive")) 120
-  $py=$script:ImageDepsPy+@'
+  $py=$script:ImageDepsPy+"`n"+@'
 import json,os,sqlite3,subprocess,tarfile,tempfile,shutil
 stage=tempfile.mkdtemp(prefix='ae-rehearsal-'); snap=os.environ['AE_BACKUP']+'/discovery.db'; migrate=os.environ['AE_MIGRATE']=='1'
 try:
@@ -515,7 +515,7 @@ finally:
 function Invoke-CubiDeploy($state) {
   $archive="/home/robohobo/.cache/ae-deploy-$([guid]::NewGuid().ToString('N')).tar"
   $null=Invoke-Bounded 'scp.exe' (@(Get-SshBase)+@($script:Archive,"$($script:Cubi):$archive")) 120
-  $py=$script:ImageDepsPy+@'
+  $py=$script:ImageDepsPy+"`n"+@'
 import json,os,re,shlex,shutil,sqlite3,subprocess,tarfile,tempfile
 root='/home/robohobo/area-events-discovery'; run=os.path.basename(os.environ['AE_ARCHIVE']).replace('.tar',''); stage=root+'/.ae-stage-'+run
 working=subprocess.run(['systemctl','--user','show','area-events-discovery.service','--property=WorkingDirectory','--value'],capture_output=True,text=True,timeout=12,check=True).stdout.strip()
@@ -607,7 +607,7 @@ for area in ('San Diego','Austin'):
 print(json.dumps({'state':state,'samples':samples}))
 '@
   # A missing or broken image engine fails verification (and so triggers recovery) instead of silently disabling image extraction.
-  $imagePy=$script:ImageDepsPy+@'
+  $imagePy=$script:ImageDepsPy+"`n"+@'
 import json
 root='/home/robohobo/area-events-discovery'
 print(json.dumps({'ok':True,'result':json.loads(ae_image_smoke(root+'/.venv/bin/python',root))}))
@@ -913,7 +913,7 @@ function Invoke-Recovery($phase,$state,$schemaChanged,$haChanged) {
       return
     }
     Write-Warning 'Restoring Cubi code only; database is untouched.'
-    $py=$script:ImageDepsPy+@'
+    $py=$script:ImageDepsPy+"`n"+@'
 import json,os,re,shutil,sqlite3,ssl,subprocess,tarfile,tempfile,time,urllib.request
 root='/home/robohobo/area-events-discovery'; t=tempfile.mkdtemp(dir=root,prefix='.ae-restore-')
 subprocess.run(['systemctl','--user','stop','area-events-discovery.service'],timeout=45,check=True)

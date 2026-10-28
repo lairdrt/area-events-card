@@ -12,7 +12,12 @@ import unittest
 REPO = pathlib.Path(__file__).resolve().parents[1]
 DEPLOYER = REPO / "scripts" / "deploy-area-events.ps1"
 BLOCKS = re.compile(
-    r"(?m)^[ \t]*\$(?:py|cleanup|imagePy|script:ImageDepsPy)=(?:\$script:ImageDepsPy\+)?@'\r?\n([\s\S]*?)\r?\n'@"
+    r"(?m)^[ \t]*\$(?:py|cleanup|imagePy|script:ImageDepsPy)=(?:\$script:ImageDepsPy\+\"`n\"\+)?@'\r?\n([\s\S]*?)\r?\n'@"
+)
+# A here-string drops its final newline, so PowerShell glues the helper's last line to the body's first unless a newline is added explicitly.
+HELPER = re.compile(r"(?m)^[ \t]*\$script:ImageDepsPy=@'\r?\n([\s\S]*?)\r?\n'@")
+COMPOSED = re.compile(
+    r"(?m)^[ \t]*\$(\w+)=\$script:ImageDepsPy\+\"`n\"\+@'\r?\n([\s\S]*?)\r?\n'@"
 )
 
 class EmbeddedDeploymentPythonTests(unittest.TestCase):
@@ -23,6 +28,19 @@ class EmbeddedDeploymentPythonTests(unittest.TestCase):
         for n, block in enumerate(blocks, 1):
             with self.subTest(block=n):
                 ast.parse(block, filename=f"embedded_{n}.py")
+
+    def test_helper_composed_scripts_parse_as_powershell_assembles_them(self):
+        text = DEPLOYER.read_text(encoding="utf-8")
+        helper = HELPER.search(text).group(1)  # a here-string value has no trailing newline
+        composed = COMPOSED.findall(text)
+        self.assertEqual(5, len(composed), "installed-source, rehearsal, deployment, verification and recovery")
+        self.assertEqual(5, text.count("$script:ImageDepsPy+"), "every use of the helper must add the newline")
+        for variable, body in composed:
+            with self.subTest(variable=variable, first_line=body.splitlines()[0]):
+                ast.parse(helper + "\n" + body, filename=f"assembled_{variable}.py")
+        # The defect itself: without the newline the same pieces are not valid Python.
+        with self.assertRaises(SyntaxError):
+            ast.parse(helper + composed[0][1])
 
     def test_blob_comparison_accepts_only_line_ending_differences(self):
         # Execute only the extracted pure hash helper; never the remote deployment.
