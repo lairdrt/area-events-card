@@ -450,6 +450,7 @@ class _VisibleEventText(HTMLParser):
         self._cards = []
         self.card_headings = []
         self.card_hrefs = []
+        self._anchors = []
         self.first_heading = ""
 
     def _section_flush(self):
@@ -471,11 +472,9 @@ class _VisibleEventText(HTMLParser):
         elif tag in self.BLOCKS:
             self._section.append("\n")
         if tag in ("li", "article", "tr"):
-            self._cards.append([tag, [], "", ""])
-        if tag == "a" and self._cards:
-            href = dict(attrs).get("href")
-            for card in self._cards:
-                card[3] = card[3] or (href or "")
+            self._cards.append([tag, [], "", []])
+        if tag == "a":
+            self._anchors.append([dict(attrs).get("href") or "", []])
         if tag in ("td", "th") and self._cards and self._cards[-1][0] == "tr":
             self._cards[-1][1].append(" — ")
 
@@ -485,6 +484,8 @@ class _VisibleEventText(HTMLParser):
         if self._heading_tag:
             self._heading += data
         self._section.append(data)
+        for anchor in self._anchors:
+            anchor[1].append(data)
         for card in self._cards:
             card[1].append(data)
 
@@ -493,6 +494,10 @@ class _VisibleEventText(HTMLParser):
             if tag == self._ignored[-1]:
                 self._ignored.pop()
             return
+        if tag == "a" and self._anchors:
+            href, text = self._anchors.pop()
+            for card in self._cards:
+                card[3].append((href, " ".join(text)))
         if tag in self.HEADINGS and tag == self._heading_tag:
             self._heading = _clean(self._heading, 160) or ""
             if self._heading and not self.first_heading:
@@ -509,7 +514,7 @@ class _VisibleEventText(HTMLParser):
             if lines:
                 self.cards.append(lines)
                 self.card_headings.append(card[2])
-                self.card_hrefs.append(card[3])
+                self.card_hrefs.append(_event_link(card[3], card[2]))
 
     def finish(self):
         self._section_flush()
@@ -595,42 +600,82 @@ def _local_instant(day, clock, zone):
     return _timestamp(f"{day.isoformat()}T{clock[0]:02d}:{clock[1]:02d}:00", zone)
 
 
-def _text_event_group(heading, lines, page_title, page_url, source_name, retrieved_at, zone):
-    """Return only candidates with independently visible heading + explicit date + time."""
-    candidate_title = re.sub(r"^\s*20\d{2}\s+", "", heading or "").strip(" :–—")
-    if candidate_title.isupper() and len(candidate_title) > 6:
-        candidate_title = candidate_title.title()
-    if not candidate_title or _UNHELPFUL_HEADINGS.fullmatch(candidate_title):
-        candidate_title = page_title
-    if not candidate_title or _UNHELPFUL_HEADINGS.fullmatch(candidate_title) or _JUNK_TITLES.fullmatch(candidate_title):
-        return [], 0
-    raw_date_lines = [(i, line) for i, line in enumerate(lines[:35])
-                      if _TEXT_DATE.search(line) or _TEXT_DATES_ISO.search(line)
-                      or _TEXT_DATES_NUMERIC.search(line)]
-    if not raw_date_lines:
-        return [], 0
-    # Avoid combining unrelated body paragraphs: time should be nearby a stated date.
-    dates = []
-    evidence = []
-    clock_start = clock_end = clock_line = None
-    for pos, line in raw_date_lines[:6]:
-        if re.match(r"\s*(?:published|posted|updated|last updated|article date|news date)\s*:?\s*", line, re.I):
-            continue  # Publication timestamps are not event dates.
-        expanded = _text_dates(line, heading + " " + page_title)
-        if not expanded:
-            continue
-        adjacent = lines[max(0, pos-2):min(len(lines), pos+4)]
-        start, end, time_line = _text_clock(adjacent)
-        if not start:
-            continue
-        dates.extend(expanded)
-        if clock_line is None:
-            clock_start, clock_end, clock_line = start, end, time_line
-        evidence.append((line, time_line))
-    dates = list(dict.fromkeys(dates))[:10]
-    if not dates or clock_start is None:
-        return [], len(raw_date_lines)
-    venue = address = None
+_LEARN_LINK = re.compile(r"\b(?:learn more|more info(?:rmation)?|details?|read more|view event|event page|see event)\b", re.I)
+_NOT_THE_EVENT = re.compile(r"(?:register|registration|buy|ticket|rsvp|cart|checkout|log ?in|sign ?(?:in|up)|share|facebook|twitter|instagram|youtube|map|directions|calendar feed|subscribe)", re.I)
+_STOPWORDS = frozenset(("the", "a", "an", "at", "on", "of", "and", "in", "for", "to", "with", "s"))
+
+
+def _event_link(links, heading):
+    """The link of a listing card that leads to ITS event: the one around the event's name, else a "learn more" style link, else the first link that is not a registration, ticket,
+    share or social link. Links that go nowhere (fragments, mail, scripts) are never chosen."""
+    usable = [(href, text) for href, text in links if href and not href.startswith(("#", "mailto:", "tel:", "javascript:"))]
+    name = _title_key(heading or "")
+    for href, text in usable:
+        label = _title_key(text)
+        if name and label and (label == name or (len(label) >= 5 and (label in name or name in label))):
+            return href
+    for href, text in usable:
+        if _LEARN_LINK.search(text or ""):
+            return href
+    for href, text in usable:
+        if not _NOT_THE_EVENT.search((text or "") + " " + href):
+            return href
+    return ""
+
+
+def _instant(iso):
+    try:
+        value = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return None
+    return value if value.tzinfo is not None else None
+
+
+def _same_instant(left, right):
+    """Equal as points in time: "2026-11-07T09:00:00-08:00" and "2026-11-07T17:00:00+00:00" are the same instant."""
+    a, b = _instant(left), _instant(right)
+    return a == b if a is not None and b is not None else bool(left) and left == right
+
+
+def _same_day(left, right):
+    a, b = _instant(left), _instant(right)
+    return a.date() == b.astimezone(a.tzinfo).date() if a is not None and b is not None else False
+
+
+def _title_tokens(title):
+    return {token for token in _title_key(title).split() if token not in _STOPWORDS}
+
+
+def _related(left, right):
+    """Are two titles plausibly the same event (equal, one a subset of the other, or sharing a third of their words)? Different events at the same time are not."""
+    a, b = _title_tokens(left), _title_tokens(right)
+    if not a or not b:
+        return False
+    return a <= b or b <= a or len(a & b) / len(a | b) >= 0.34
+
+
+def _line_groups(line, title):
+    """Split a date line into its occurrences: each date (or consecutive dates of a range) with the first clock that FOLLOWS it in the same line. [(dates, clock-or-None)]."""
+    starts = sorted({m.start() for pattern in (_TEXT_DATE, _TEXT_DATES_ISO, _TEXT_DATES_NUMERIC) for m in pattern.finditer(line[:350])})
+    if not starts:
+        return []
+    bounds = starts + [len(line)]
+    groups, pending = [], []
+    for index in range(len(starts)):
+        segment = line[0 if index == 0 else starts[index]:bounds[index + 1]]
+        pending.append(segment)
+        clock = _text_clock([segment])
+        if clock[0]:
+            groups.append((_text_dates(" ".join(pending), title), clock))
+            pending = []
+    if pending:
+        groups.append((_text_dates(" ".join(pending), title), (None, None, None)))
+    return [(dates, clock) for dates, clock in groups if dates]
+
+
+def _labelled_facts(lines):
+    """The place and description a page states in labelled fields (Location/Venue/Where, Address, Description): (venue, address, description) with None for what it omits."""
+    venue = address = description = None
     for index, line in enumerate(lines[:35]):
         match = _LOCATION.match(line)
         if match:
@@ -648,7 +693,6 @@ def _text_event_group(heading, lines, page_title, page_url, source_name, retriev
                     parts.append(lines[index + 1])
                 address = _clean(", ".join(part for part in parts if part), 250) or None
                 break
-    description = None
     for index, line in enumerate(lines[:35]):   # a labelled "Description:" field is the description, whatever times it mentions
         match = _DESCRIPTION_LABEL.match(line)
         if match:
@@ -659,11 +703,46 @@ def _text_event_group(heading, lines, page_title, page_url, source_name, retriev
                 parts.append(extra)
             description = " ".join(parts) or None
             break
-    description = description or next((line for line in lines[:15] if len(line) > 55 and not
-                       (_TEXT_DATE.search(line) or _TEXT_DATES_ISO.search(line) or _TEXT_DATES_NUMERIC.search(line))
-                       and not _CLOCK.search(line)), None)
+    return venue, address, description
+
+
+def _text_event_group(heading, lines, page_title, page_url, source_name, retrieved_at, zone):
+    """Return only candidates with independently visible heading + explicit date + time. Every occurrence takes the time stated WITH its own date."""
+    candidate_title = re.sub(r"^\s*20\d{2}\s+", "", heading or "").strip(" :–—")
+    if candidate_title.isupper() and len(candidate_title) > 6:
+        candidate_title = candidate_title.title()
+    if not candidate_title or _UNHELPFUL_HEADINGS.fullmatch(candidate_title):
+        candidate_title = page_title
+    if not candidate_title or _UNHELPFUL_HEADINGS.fullmatch(candidate_title) or _JUNK_TITLES.fullmatch(candidate_title):
+        return [], 0
+    raw_date_lines = [(i, line) for i, line in enumerate(lines[:35])
+                      if _TEXT_DATE.search(line) or _TEXT_DATES_ISO.search(line)
+                      or _TEXT_DATES_NUMERIC.search(line)]
+    if not raw_date_lines:
+        return [], 0
+    has_date = lambda value: bool(_TEXT_DATE.search(value) or _TEXT_DATES_ISO.search(value) or _TEXT_DATES_NUMERIC.search(value))   # noqa: E731
+    slots = {}   # day -> (clock start, clock end, date line, time line): the first statement of an occurrence wins
+    for pos, line in raw_date_lines[:6]:
+        if re.match(r"\s*(?:published|posted|updated|last updated|article date|news date)\s*:?\s*", line, re.I):
+            continue  # Publication timestamps are not event dates.
+        for dates, (start, end, time_line) in _line_groups(line, heading + " " + page_title):
+            if not start:   # the time is on a following line of this occurrence (never on another date's line), else just before
+                following = [v for v in lines[pos + 1:pos + 4] if not has_date(v)]
+                before = [v for v in lines[max(0, pos - 2):pos] if not has_date(v)]
+                start, end, time_line = _text_clock(following) if _text_clock(following)[0] else _text_clock(before)
+            if not start:
+                continue
+            for day in dates:
+                slots.setdefault(day, (start, end, line, time_line))
+    slots = dict(list(slots.items())[:10])
+    if not slots:
+        return [], len(raw_date_lines)
+    venue, address, labelled = _labelled_facts(lines)
+    description = labelled or next((line for line in lines[:15] if len(line) > 55 and not
+                                    (_TEXT_DATE.search(line) or _TEXT_DATES_ISO.search(line) or _TEXT_DATES_NUMERIC.search(line))
+                                    and not _CLOCK.search(line)), None)
     result = []
-    for day in dates:
+    for day, (clock_start, clock_end, date_line, clock_line) in slots.items():
         begin = _local_instant(day, clock_start, zone)
         if begin is None:
             continue
@@ -680,30 +759,93 @@ def _text_event_group(heading, lines, page_title, page_url, source_name, retriev
             provenance=Provenance(source_name, page_url, retrieved_at, (page_url,)),
             verification=stated((
                 f"Heading on {page_url}: {heading or page_title}",
-                f"Date shown: {evidence[0][0][:180]}",
+                f"Date shown: {date_line[:180]}",
                 f"Time shown: {clock_line[:180]}",
                 "Local timezone supplied by configured source: " + str(zone),
             ), False, until, venue, address, description)))
     return result, len(raw_date_lines) - int(bool(result))
 
 
-def _merge_detail(listing, detail, detail_url):
-    """One candidate for an occurrence the listing and its own event page both describe. The event page's verified facts win; any fact it omits keeps the listing's value.
-    The listing candidate's identity (local_id) and listing attribution are kept, and the event page becomes the event's URL."""
-    same_start = listing.starts_at == detail.starts_at
+def _page_facts(html):
+    """The labelled place and description of a page that states no date (an event page whose date is only on its listing): (venue, address, description)."""
+    parser = _VisibleEventText()
+    try:
+        parser.feed(html[:1_500_000])
+        groups, _, _ = parser.finish()
+    except (ValueError, TypeError):
+        return None, None, None
+    return _labelled_facts([line for _, lines in groups[:30] for line in lines][:120])
+
+
+def _merge_detail(listing, detail, detail_url, dated=True):
+    """One candidate for an occurrence the listing and its own event page both describe. The event page's facts win; any fact it omits keeps the listing's value, and every
+    disagreement is kept in the evidence. The listing candidate's identity (local_id) and listing attribution are kept, and the event page becomes the event's URL.
+    `dated` is False for an event page that states no date (it then corroborates nothing about when)."""
+    same_start = _same_instant(listing.starts_at, detail.starts_at)
     ends_at = detail.ends_at or (listing.ends_at if same_start else None)
     venue, address = detail.venue or listing.venue, detail.address or listing.address
     description = detail.description or listing.description
     image_url = detail.image_url or listing.image_url
+    disagreements = []
+    if dated and not same_start:
+        disagreements.append(f"start: the listing says {listing.starts_at}, the event page {detail.starts_at}")
+    if dated and listing.ends_at and detail.ends_at and not _same_instant(listing.ends_at, detail.ends_at):
+        disagreements.append(f"end: the listing says {listing.ends_at}, the event page {detail.ends_at}")
+    for label, old, new in (("venue", listing.venue, detail.venue), ("address", listing.address, detail.address)):
+        if old and new and _title_key(old) != _title_key(new):
+            disagreements.append(f"{label}: the listing says {old!r}, the event page {new!r}")
     evidence = tuple(dict.fromkeys(tuple(listing.verification.evidence) + tuple(detail.verification.evidence)
-                                   + (f"Facts read from the event page {detail_url}, which take precedence over the listing {listing.provenance.listing_url or listing.url}",)))
+                                   + (f"Facts read from the event page {detail_url}, which take precedence over the listing {listing.provenance.listing_url or listing.url}",)
+                                   + tuple("Listing and event page disagree on " + line for line in disagreements)))
     return replace(
         detail, local_id=listing.local_id, ends_at=ends_at, venue=venue, address=address, description=description, url=detail.url or detail_url,
         image_url=image_url, image_source=detail.image_source if detail.image_url else listing.image_source, timezone=detail.timezone or listing.timezone,
         categories=detail.categories or listing.categories, organizer=detail.organizer or listing.organizer, price=detail.price or listing.price, geo=detail.geo or listing.geo,
         provenance=Provenance(listing.provenance.source_name, listing.provenance.listing_url, detail.provenance.retrieved_at,
                               tuple(dict.fromkeys(tuple(listing.provenance.found_on) + tuple(detail.provenance.found_on) + (detail_url,)))),
-        verification=stated(evidence, same_start, ends_at, venue, address, description, image_url))
+        verification=stated(evidence, dated and same_start and not disagreements, ends_at, venue, address, description, image_url),
+        state={"detail_url": detail_url, "listing_starts_at": listing.starts_at})
+
+
+def _carry_forward(candidate, old):
+    """The event page could not be read this time (failed, rate-limited, over budget): keep the facts it gave on an earlier scan instead of erasing them from the stored record."""
+    unchanged = _same_instant(candidate.starts_at, old.state.get("listing_starts_at", ""))
+    starts_at, ends_at = (old.starts_at, old.ends_at or candidate.ends_at) if unchanged else (candidate.starts_at, candidate.ends_at)
+    venue, address, description = candidate.venue or old.venue, candidate.address or old.address, candidate.description or old.description
+    image_url = candidate.image_url or old.image_url
+    note = f"Facts from the event page {old.state['detail_url']} are those of an earlier scan: the page was not read this time"
+    return replace(
+        candidate, starts_at=starts_at, ends_at=ends_at, venue=venue, address=address, description=description, url=old.url or candidate.url,
+        image_url=image_url, image_source=candidate.image_source if candidate.image_url else old.image_source,
+        provenance=Provenance(candidate.provenance.source_name, candidate.provenance.listing_url, candidate.provenance.retrieved_at,
+                              tuple(dict.fromkeys(tuple(candidate.provenance.found_on) + (old.state["detail_url"],)))),
+        verification=stated(tuple(candidate.verification.evidence) + (note,), False, ends_at, venue, address, description, image_url),
+        state=dict(old.state))
+
+
+def _stabilize_ids(candidates, previous):
+    """An occurrence whose stated time was corrected would get a new id (ids are made from the time). When exactly ONE earlier record of the same listing, title and day exists and
+    nothing now claims its id, the corrected occurrence keeps that earlier id, so the stored candidate is updated instead of a second one being created.
+    Returns how many ids were kept and how many ambiguous corrections could not be matched."""
+    known = {old.local_id: old for old in previous}
+    free = {old.local_id: old for old in previous if old.local_id not in candidates}
+    kept = unmatched = 0
+    for local_id, candidate in list(candidates.items()):
+        if local_id in known:
+            continue
+        options = [old for old in free.values() if old.provenance.listing_url == candidate.provenance.listing_url
+                   and _title_key(old.title) == _title_key(candidate.title) and _same_day(old.starts_at, candidate.starts_at)]
+        rivals = [other for lid, other in candidates.items() if lid not in known and other.provenance.listing_url == candidate.provenance.listing_url
+                  and _title_key(other.title) == _title_key(candidate.title) and _same_day(other.starts_at, candidate.starts_at)]
+        if len(options) == 1 and len(rivals) == 1:
+            old = options[0]
+            del candidates[local_id]
+            candidates[old.local_id] = replace(candidate, local_id=old.local_id)
+            free.pop(old.local_id, None)
+            kept += 1
+        elif options:
+            unmatched += 1
+    return kept, unmatched
 
 
 def _title_key(title):
@@ -759,13 +901,19 @@ def _plain_text_events(html, page_url, source_name, retrieved_at, zone, links=No
 
 
 
+def _page_key(url):
+    """What makes two addresses the same page for crawling: "/events" and "/events/" are one page."""
+    parts = urlsplit(url)
+    return (parts.scheme, parts.netloc, parts.path.rstrip("/") or "/", parts.query)
+
+
 class _Frontier:
     """The pages still to be fetched. Every starting URL comes first, in order. After them the websites take turns, one page each, and a website offers its event-detail links
     (a listing card's own link) before its generic discovery links, so that a website with many links cannot use up the budget of another."""
 
     def __init__(self, starts):
         self._starts = deque((url, 0, url, None) for url in starts)
-        self._known = set(starts)
+        self._known = {_page_key(url) for url in starts}
         self._sites = {url: (deque(), deque()) for url in starts}   # starting URL -> (event-detail links, generic links), in the order the sites were configured
         self._turn = 0
 
@@ -773,16 +921,16 @@ class _Frontier:
         return len(self._starts) + sum(len(a) + len(b) for a, b in self._sites.values())
 
     def __contains__(self, url):
-        return url in self._known
+        return _page_key(url) in self._known
 
     def pending(self, seed):
         events, generic = self._sites[seed]
         return len(events) + len(generic)
 
     def push(self, url, depth, seed, found_on, event):
-        if url in self._known:
+        if _page_key(url) in self._known:
             return False
-        self._known.add(url)
+        self._known.add(_page_key(url))
         self._sites[seed][0 if event else 1].append((url, depth, seed, found_on))
         return True
 
@@ -879,9 +1027,11 @@ class SourcesProducer:
         per_site = {}        # website -> what this scan did there (reported in the notes)
 
         def site_of(url):
-            return per_site.setdefault(urlsplit(url).hostname, {"pages_attempted": 0, "pages_fetched": 0, "pages_failed": 0, "event_pages_followed": 0, "event_pages_failed": 0,
-                                                                 "pages_skipped": 0})
+            return per_site.setdefault(urlsplit(url).hostname, {
+                "pages_attempted": 0, "pages_fetched": 0, "pages_failed": 0, "event_pages_followed": 0, "event_pages_failed": 0,
+                "links_over_cap": 0, "pages_unvisited": 0, "pages_skipped_candidate_limit": 0})
         seen = set()
+        read_ok = set()      # pages that were fetched and read
         candidates = {}
         leads = []
         errors = []
@@ -889,55 +1039,103 @@ class SourcesProducer:
         unstructured_events = 0
         limit = cfg["max_pages"]
         max_depth = cfg["max_depth"]
-        origin = {}          # local_id -> (depth of the page that supplied the candidate, its site): a deeper page of the same site is the more authoritative
+        cap = cfg["max_events"]
+        origin = {}          # local_id -> (depth, site, page) of the page that supplied the candidate
         linked_from = {}     # absolute event-page URL -> local_ids of the listing candidates whose card links to it
+        page_targets = {}    # page -> the event pages its cards link to
         card_pages = set()   # event pages reached through a listing card
-        detail_stats = {"followed": 0, "merged": 0, "failed": 0}
+        counts = {"followed": 0, "merged": 0, "failed": 0, "not_added": 0, "ignored": 0, "detail_only": 0, "facts_only": 0}
         warnings = SourcesProducer.configuration_warnings(cfg)
 
+        def add(event, depth, site, page_url):
+            if len(candidates) >= cap:
+                counts["not_added"] += 1
+                return False
+            candidates[event.local_id] = event
+            origin[event.local_id] = (depth, site, page_url)
+            return True
+
+        def merge_into(local_id, event, depth, site, page_url, dated=True):
+            candidates[local_id] = _merge_detail(candidates[local_id], event, page_url, dated)
+            origin[local_id] = (depth, site, page_url)
+            counts["merged"] += 1
+
+        def swap_in_listing(old_id, event, depth, site, page_url):
+            """`event` is the listing of a candidate that an event page supplied first (a starting URL that is also linked): the listing's id is the stable one."""
+            old, old_page = candidates.pop(old_id), origin.pop(old_id)[2]
+            candidates[event.local_id] = _merge_detail(event, old, old_page)
+            origin[event.local_id] = (depth, site, page_url)
+            for owners in linked_from.values():
+                owners[:] = [event.local_id if lid == old_id else lid for lid in owners]
+            counts["merged"] += 1
+
         def absorb(page_events, page_url, depth, site):
-            """Add a page's events. An event the site already described on a less specific page (a listing) is MERGED into that candidate instead of duplicating it."""
+            """Add a page's events. An event the site already described on its listing is MERGED into that candidate instead of duplicating it; an event page speaks only for the
+            occurrences whose cards linked to it. Returns how many of its events were used."""
             owners = [lid for lid in linked_from.get(page_url, ()) if lid in candidates]
-            by_key = {(_title_key(c.title), c.starts_at): lid for lid, c in candidates.items() if origin.get(lid, (0, None))[1] == site}
+            used, claimed = 0, set()
             for event in page_events:
                 if event.local_id in candidates:
                     continue
-                match = next((lid for lid in owners if candidates[lid].starts_at == event.starts_at), None) or by_key.get((_title_key(event.title), event.starts_at))
-                if match is None and len(page_events) == 1 and len(owners) == 1 and candidates[owners[0]].starts_at[:10] == event.starts_at[:10]:
-                    match = owners[0]   # the event page states the one occurrence its listing card linked to, at a corrected time
-                if match is None:
-                    if len(candidates) < cfg["max_events"]:
-                        candidates[event.local_id] = event
-                        origin[event.local_id] = (depth, site)
-                elif depth > origin[match][0]:
-                    candidates[match] = _merge_detail(candidates[match], event, page_url)
-                    origin[match] = (depth, site)
-                    detail_stats["merged"] += 1
+                if owners:
+                    match = next((lid for lid in owners if lid not in claimed and _same_instant(candidates[lid].starts_at, event.starts_at)
+                                  and _related(candidates[lid].title, event.title)), None)
+                    if match is None and len(page_events) == 1:   # the one occurrence the card linked to, at a corrected time
+                        near = [lid for lid in owners if lid not in claimed and _same_day(candidates[lid].starts_at, event.starts_at) and _related(candidates[lid].title, event.title)]
+                        match = near[0] if len(near) == 1 else None
+                    if match is not None:
+                        merge_into(match, event, depth, site, page_url)
+                        claimed.add(match)
+                        used += 1
+                    elif any(_related(candidates[lid].title, event.title) for lid in owners):   # another date of the same event that only its page lists
+                        used += 1
+                        counts["detail_only"] += add(event, depth, site, page_url)
+                    else:   # a related event, a navigation item or other text of the page: not this event
+                        counts["ignored"] += 1
+                    continue
+                twin = next((lid for lid, c in candidates.items() if origin[lid][1] == site and _title_key(c.title) == _title_key(event.title)
+                             and _same_instant(c.starts_at, event.starts_at)), None)
+                if twin is None:
+                    used += add(event, depth, site, page_url)
+                    continue
+                twin_page = origin[twin][2]
+                if page_url in page_targets.get(twin_page, ()):
+                    merge_into(twin, event, depth, site, page_url)
+                elif twin_page in page_targets.get(page_url, ()):
+                    swap_in_listing(twin, event, depth, site, page_url)
+                elif depth > origin[twin][0]:
+                    merge_into(twin, event, depth, site, page_url)
+                used += 1
+            return used
 
         for url in cfg["urls"]:
             site_of(url)
-        while frontier and len(seen) < limit and len(candidates) < cfg["max_events"]:
+        while frontier and len(seen) < limit:
             page_url, depth, seed, found_on = frontier.pop()
-            if page_url in seen:
+            if _page_key(page_url) in seen:
                 continue
-            seen.add(page_url)
             stats = site_of(seed)
+            if depth > 0 and len(candidates) >= cap and page_url not in card_pages:
+                stats["pages_skipped_candidate_limit"] += 1   # nothing new can be added there; only the event pages of known candidates are still read
+                continue
+            seen.add(_page_key(page_url))
             stats["pages_attempted"] += 1
             if page_url in card_pages:
-                detail_stats["followed"] += 1
+                counts["followed"] += 1
                 stats["event_pages_followed"] += 1
             try:
                 response = fetcher.fetch(page_url)
             except FetchError as error:
                 stats["pages_failed"] += 1
                 if page_url in card_pages:
-                    detail_stats["failed"] += 1   # the listing's own facts stand
+                    counts["failed"] += 1   # the listing's own facts stand
                     stats["event_pages_failed"] += 1
                 errors.append(str(error)[:200])
                 leads.append(SourceLead(page_url, "seed" if found_on is None else "event",
                     "rejected", (str(error)[:200],), found_on=found_on, fetched=False))
                 continue
             stats["pages_fetched"] += 1
+            read_ok.add(page_url)
             page = response.text
             media = (response.content_type or "").lower()
             before = len(candidates)
@@ -964,8 +1162,8 @@ class SourcesProducer:
                     visible, from_text = _plain_text_events(page, page_url, name, retrieved_at,
                                                             cfg.get("timezone"), page_links)
                     # Favor exact structured source claims when the same event is also visible as text.
-                    existing = {(e.title.casefold(), e.starts_at) for e in events}
-                    text_events = [e for e in visible if (e.title.casefold(), e.starts_at) not in existing]
+                    existing = {(_title_key(e.title), _instant(e.starts_at) or e.starts_at) for e in events}
+                    text_events = [e for e in visible if (_title_key(e.title), _instant(e.starts_at) or e.starts_at) not in existing]
                     events.extend(text_events)
                     events = _attach_page_image(events, page, page_url, fetcher, self.image_extractor)
                     unstructured_events += len(text_events)
@@ -974,17 +1172,30 @@ class SourcesProducer:
                     events, rejected = [], 0
             rejected_dates += rejected
             site = urlsplit(seed).hostname
-            absorb(events, page_url, depth, site)
             card_targets = []
             for local_id, href in page_links.items():   # the event pages the listing cards link to, in page order
                 try:
                     target = _url(urljoin(page_url, href))
                 except ValueError:
                     continue
-                if urlsplit(target).hostname == site and target != page_url:
+                if urlsplit(target).hostname == site and _page_key(target) != _page_key(page_url):
                     linked_from.setdefault(target, []).append(local_id)
                     if target not in card_targets:
                         card_targets.append(target)
+            page_targets[page_url] = set(card_targets)
+            used = absorb(events, page_url, depth, site)
+            owners = [lid for lid in linked_from.get(page_url, ()) if lid in candidates and lid in origin and origin[lid][2] != page_url]
+            if page_url in card_pages and owners and not used:   # an event page that states no usable date can still describe the occurrences that linked to it
+                venue, address, description = _page_facts(page)
+                if venue or address or description:
+                    pseudo = [replace(candidates[lid], venue=venue or candidates[lid].venue, address=address or candidates[lid].address,
+                                      description=_clean(description, 600) or candidates[lid].description, url=page_url,
+                                      provenance=Provenance(candidates[lid].provenance.source_name, candidates[lid].provenance.listing_url, retrieved_at, (page_url,)),
+                                      verification=stated((f"Labelled facts on {page_url}",), False, candidates[lid].ends_at, venue, address, description, candidates[lid].image_url))
+                              for lid in owners]
+                    for lid, detail in zip(owners, _attach_page_image(pseudo, page, page_url, fetcher, self.image_extractor)):
+                        merge_into(lid, detail, depth, site, page_url, dated=False)
+                        counts["facts_only"] += 1
             leads.append(SourceLead(page_url, "seed" if found_on is None else "event",
                 "accepted", ("public page inspected for offset-aware event data",),
                 score=10 if events else 0, found_on=found_on, events=len(candidates)-before, fetched=True))
@@ -994,14 +1205,14 @@ class SourcesProducer:
             for target in card_targets:   # evidence-backed event links first: a card's own link needs no keyword
                 if added >= MAX_LINKS or stats["pages_attempted"] + frontier.pending(seed) >= limit * 3:
                     break
-                if target in seen or target in frontier:
+                if _page_key(target) in seen or target in frontier:
                     continue
                 card_pages.add(target)
                 frontier.push(target, depth + 1, seed, page_url, True)
                 added += 1
-            stats["pages_skipped"] += sum(1 for target in card_targets if target not in seen and target not in frontier)   # event links beyond the per-page / per-site cap
+            stats["links_over_cap"] += sum(1 for target in card_targets if _page_key(target) not in seen and target not in frontier)   # event links beyond the per-page / per-site cap
             for link, title in discovered:
-                if added >= MAX_LINKS or stats["pages_attempted"] + frontier.pending(seed) >= limit * 3:
+                if len(candidates) >= cap or added >= MAX_LINKS or stats["pages_attempted"] + frontier.pending(seed) >= limit * 3:
                     break
                 if not EVENT_WORDS.search(link + " " + title):
                     continue
@@ -1012,22 +1223,37 @@ class SourcesProducer:
                 # Do not crawl arbitrary external websites linked from a seed.
                 if urlsplit(target).hostname != urlsplit(seed).hostname:
                     continue
-                if target in seen or target in frontier:
+                if _page_key(target) in seen or target in frontier:
                     continue
                 frontier.push(target, depth + 1, seed, page_url, False)
                 added += 1
         if not any(lead.fetched for lead in leads) and errors:
             raise FetchError("all configured websites failed: " + "; ".join(errors[:2]))
-        unvisited = [row for row in frontier.waiting() if row[0] not in seen]
+        unvisited = [row for row in frontier.waiting() if _page_key(row[0]) not in seen]
         for row in unvisited:
-            site_of(row[2])["pages_skipped"] += 1
+            site_of(row[2])["pages_unvisited"] += 1
         exhausted = bool(unvisited) and len(seen) >= limit
+        # Stable identities: a corrected time keeps the stored candidate's id, and event pages that could not be read this time keep what an earlier scan learned from them.
+        kept, ambiguous = _stabilize_ids(candidates, previous or ())
+        earlier = {old.local_id: old for old in previous or ()}
+        carried = 0
+        for local_id, candidate in list(candidates.items()):
+            old = earlier.get(local_id)
+            if old is not None and not candidate.state.get("detail_url") and old.state.get("detail_url") and old.state["detail_url"] not in read_ok:
+                candidates[local_id] = _carry_forward(candidate, old)
+                carried += 1
+        for stats in per_site.values():
+            stats["pages_skipped"] = stats["links_over_cap"] + stats["pages_unvisited"] + stats["pages_skipped_candidate_limit"]
         notes = {"sites": len(cfg["urls"]), "pages": sum(v.fetched for v in leads),
                  "candidates": len(candidates), "invalid_or_ambiguous_event_dates": rejected_dates,
                  "failed_pages": len(errors), "links_remaining": len(frontier),
                  "unstructured_candidates": unstructured_events,
                  "page_budget": limit, "pages_attempted": len(seen), "page_budget_exhausted": exhausted, "pages_unvisited": len(unvisited) if exhausted else 0,
-                 "event_pages_followed": detail_stats["followed"], "event_pages_failed": detail_stats["failed"], "event_pages_merged": detail_stats["merged"], "by_website": json.dumps(per_site, sort_keys=True)}   # a JSON text: run notes are flat
+                 "candidate_limit": cap, "candidate_limit_reached": len(candidates) >= cap, "events_not_added": counts["not_added"],
+                 "event_pages_followed": counts["followed"], "event_pages_failed": counts["failed"], "event_pages_merged": counts["merged"],
+                 "event_pages_facts_only": counts["facts_only"], "event_page_unrelated_events_ignored": counts["ignored"], "event_page_only_occurrences": counts["detail_only"],
+                 "identities_kept_after_correction": kept, "identity_corrections_ambiguous": ambiguous, "event_page_facts_carried_forward": carried,
+                 "by_website": json.dumps(per_site, sort_keys=True)}   # a JSON text: run notes are flat
         if warnings:
             notes["configuration_warning"] = " ".join(warnings)
         return ProducerResult(tuple(candidates.values()), tuple(leads), notes)

@@ -46,11 +46,11 @@ class SiteClient(ImageClient):
         return super().fetch(url, binary=binary)
 
 
-def crawl(pages, urls=(PAGE,), images=None, engine=None, name="Local Craft Fairs", **options):
+def crawl(pages, urls=(PAGE,), images=None, engine=None, name="Local Craft Fairs", previous=(), **options):
     producer = SourcesProducer(image_extractor=engine)
     base, clean = producer.validate_options({"urls": list(urls), "timezone": LA, **options})
     client = SiteClient(pages, images)
-    result = producer.crawl(RecordingFetcher(client, 15, 60), (), {**clean, "url": base, "source_key": "mission_trails", "name": name})
+    result = producer.crawl(RecordingFetcher(client, 15, 60), previous, {**clean, "url": base, "source_key": "mission_trails", "name": name})
     return result, client
 
 

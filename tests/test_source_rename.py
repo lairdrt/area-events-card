@@ -114,6 +114,111 @@ class Rename(Fixture):
         self.assertEqual(self.rows("SELECT candidate_id, payload_hash FROM candidates ORDER BY candidate_id"), before)
 
 
+class RenameWhileBusy(Rename):
+    """D29/D30/D33: a rename in the middle of extraction or enrichment work, and a rename that fails half way."""
+
+    def consistent(self):
+        stale_media = self.rows("SELECT COUNT(*) FROM candidate_media m JOIN candidates c USING (candidate_id) WHERE m.payload_hash<>c.payload_hash")[0][0]
+        stale_work = self.rows("SELECT COUNT(*) FROM processing_work w JOIN candidates c USING (candidate_id) WHERE w.state='done' AND w.done_hash<>c.payload_hash")[0][0]
+        return stale_media, stale_work
+
+    def test_D29_a_result_made_before_a_rename_is_discarded_safely_and_the_work_is_done_again(self):
+        from area_events.contracts.models import StaleResult
+        self.built.service.run_until_idle(10)
+        client, extractor = self.built.extraction._client, self.built.extraction._extractor
+        items = []
+        while True:
+            batch = client.claim("worker-1", extractor.name, extractor.version, 20, 600)
+            if not batch:
+                break
+            items.extend(batch)
+        self.assertGreater(len(items), 0)
+        results = [(item, extractor.extract(item)) for item in items]
+        self.rename("Texas Campus Calendar")   # while every item is leased
+        stale = accepted = 0
+        for item, result in results:
+            try:
+                client.submit("worker-1", extractor.name, extractor.version, item["candidate_key"], item["lease_token"], result)
+                accepted += 1
+            except StaleResult:
+                stale += 1
+        self.assertGreater(stale, 0, "the renamed source's candidates changed after they were leased")
+        self.assertGreater(accepted, 0, "other sources' results are unaffected")
+        while self.built.extraction.run_once().claimed:
+            pass
+        self.assertEqual(self.rows("SELECT COUNT(*) FROM processing_work WHERE state<>'done'"), [(0,)], "no work was lost")
+        self.assertEqual(self.consistent(), (0, 0))
+        events, linked = self.rows("SELECT COUNT(*) FROM events")[0][0], self.rows("SELECT COUNT(DISTINCT event_id) FROM event_candidates")[0][0]
+        self.assertEqual(events, linked)
+        self.assertEqual(self.rows("SELECT COUNT(*) FROM (SELECT title, starts_at FROM events GROUP BY title, starts_at HAVING COUNT(*) > 1)"), self.duplicate_groups_baseline)
+
+    def setUp(self):
+        super().setUp()
+        self.duplicate_groups_baseline = [(0,)]
+
+    def test_D29_an_enrichment_result_made_before_a_rename_is_replaced_not_trusted(self):
+        self.discover_and_extract()
+        work = self.built.enrichment._work
+        item = next(i for i in work.pending(500) if i["source_key"] == SOURCE)
+        self.rename("Texas Campus Calendar")
+        old_hash = item["payload_hash"]
+        work.finish([{"candidate_id": item["candidate_id"], "payload_hash": old_hash, "media": {"image": {"url": "/area_events/media/pxxxxxxxxxxxxxxxxxxxxxxxx.jpg", "credit": "Old Name"}},
+                      "illustration": None, "complete": True, "version": 99}])
+        self.assertNotEqual(self.consistent()[0], 0, "the late result is keyed to the old hash, so the candidate is due again")
+        self.enrich()
+        self.assertEqual(self.consistent(), (0, 0))
+        credits = self.names()[1]
+        self.assertEqual(credits - {"Texas Campus Calendar"}, set(), credits)
+
+    def test_D33_a_rename_that_fails_part_way_changes_nothing(self):
+        self.prepare()
+        before = {"sources": self.rows("SELECT source_key, name, revision FROM sources ORDER BY 1"), "candidates": self.rows("SELECT candidate_id, payload_json, payload_hash FROM candidates ORDER BY 1"),
+                  "media": self.rows("SELECT candidate_id, payload_hash, media_json FROM candidate_media ORDER BY 1"), "work": self.rows("SELECT candidate_id, done_hash FROM processing_work ORDER BY 1"),
+                  "changes": self.count("changes")}
+        control = self.built.persistence.control
+        real = control._changes
+
+        class Failing:
+            calls = 0
+
+            def append(self, tx, *args, **kwargs):
+                Failing.calls += 1
+                if Failing.calls == 3:
+                    raise RuntimeError("the disk filled up")
+                return real.append(tx, *args, **kwargs)
+        control._changes = Failing()
+        try:
+            with self.assertRaises(RuntimeError):
+                self.rename("Texas Campus Calendar")
+        finally:
+            control._changes = real
+        after = {"sources": self.rows("SELECT source_key, name, revision FROM sources ORDER BY 1"), "candidates": self.rows("SELECT candidate_id, payload_json, payload_hash FROM candidates ORDER BY 1"),
+                 "media": self.rows("SELECT candidate_id, payload_hash, media_json FROM candidate_media ORDER BY 1"), "work": self.rows("SELECT candidate_id, done_hash FROM processing_work ORDER BY 1"),
+                 "changes": self.count("changes")}
+        self.assertEqual(after, before, "the whole rename rolled back")
+        self.rename("Texas Campus Calendar")   # and it can simply be done again
+        self.assertEqual(self.names(), ({"Texas Campus Calendar"}, {"Texas Campus Calendar"}))
+        self.assertEqual(self.consistent(), (0, 0))
+
+    def test_D30_the_hash_keyed_tables_agree_after_every_rename(self):
+        self.prepare()
+        for name in ("A Calendar", "B Calendar"):
+            self.rename(name)
+            self.assertEqual(self.consistent(), (0, 0), name)
+
+    def test_D32_the_api_credit_follows_the_current_name_even_for_a_cached_record_made_under_an_older_one(self):
+        self.prepare()
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.execute("UPDATE media_records SET record_json=REPLACE(record_json, ?, 'Ancient Name')", (self.built.control.get_source(SOURCE).name,))
+            connection.execute("DELETE FROM candidate_media")
+            connection.commit()
+        finally:
+            connection.close()
+        self.enrich()
+        self.assertEqual(self.names()[1], {self.built.control.get_source(SOURCE).name})
+
+
 class ExistingRename(Rename):
     """A source that was renamed BEFORE renames reconciled their records: sources.name is new, the stored copies are not."""
 
