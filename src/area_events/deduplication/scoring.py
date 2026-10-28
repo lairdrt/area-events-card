@@ -54,6 +54,8 @@ class MatchProfile:
     venue_alone_agrees: bool = False      # may a matching venue name (without an address or location text) be the place evidence?
     ambiguity_margin: float = 0.005       # a runner-up this close to the best match makes the answer ambiguous
     max_compared: int = 1000              # events examined for one decision (bounded lookup)
+    no_place_title_min: float = 0.0       # 0 = off. When NEITHER event states any place, the least title similarity that still counts as the same event, provided
+    no_place_description_min: float = 0.80   # the start (and end) are exactly equal and, when both state a description, the descriptions agree to this degree
 
     def with_(self, **changes):
         return replace(self, **changes)
@@ -68,6 +70,20 @@ class Score:
 
 def normalize(text):
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+# A trailing field label that a listing scraped into a title: "... Date", "... Date: Sat.", "... Date & Time", "... When:".
+LABEL_TAIL = re.compile(r"\s+(?:dates?|when)\s*(?:(?:&|and)\s*times?)?\s*(?::.*)?$", re.I)
+
+
+def title_key(text):
+    """The comparable form of a title (see `_title`), for a strategy that has to bucket events that state no place."""
+    return _title(text)
+
+
+def _title(text):
+    """A title for comparison: normalized, without a scraped trailing field label ("Date: Sat.", "Date & Time")."""
+    return normalize(LABEL_TAIL.sub("", (text or "").strip()))
 
 
 def _place(text):
@@ -158,7 +174,7 @@ def _same_day(left, right):
 
 def compare(left, right, profile, same_page=None):
     """Score one pair under a profile. `matched` is True only when no veto applies and the confidence, coverage and place evidence all pass."""
-    a_title, b_title = normalize(left.title), normalize(right.title)
+    a_title, b_title = _title(left.title), _title(right.title)
     if not a_title or not b_title:
         return Score(False, 0.0, "a title is missing")
     gap = abs(int(left.starts_at) - int(right.starts_at))
@@ -204,12 +220,22 @@ def compare(left, right, profile, same_page=None):
     if description_left and description_right:
         parts.append((profile.w_description, _similarity(description_left, description_right, partial=True)))
 
+    unplaced = False
     if not agreed:
-        return Score(False, title, "no comparable place fact agrees")
+        # Nothing states a place on either side: only an exceptionally strong identity may stand in for the missing location. The start (and end) must be
+        # exactly equal, the titles near-identical, the descriptions (when both exist) in agreement; every veto above still applies.
+        stated = any(_place(getattr(event, field, None)) for event in (left, right) for field, _, _ in PLACE_FIELDS)
+        if stated or not profile.no_place_title_min:
+            return Score(False, title, "no comparable place fact agrees")
+        if gap or end_gap or title < profile.no_place_title_min:
+            return Score(False, title, "no place is stated and the events are not identical enough to match without one")
+        if description_left and description_right and _similarity(description_left, description_right, partial=True) < profile.no_place_description_min:
+            return Score(False, title, "no place is stated and the descriptions differ")
+        unplaced = True
     possible = (profile.w_title + profile.w_start + profile.w_date + profile.w_end + profile.w_address + profile.w_venue + profile.w_location_text +
                 profile.w_description)
     weight = sum(w for w, _ in parts)
-    if weight <= 0 or weight / possible < profile.min_coverage:
+    if weight <= 0 or (weight / possible < profile.min_coverage and not unplaced):
         return Score(False, 0.0, "too little evidence was comparable")
     confidence = sum(w * s for w, s in parts) / weight
     if confidence < profile.threshold:

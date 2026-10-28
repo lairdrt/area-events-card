@@ -3,11 +3,11 @@
 from . import Decision, Incoming, anchors, decide_by_confidence, same_event_facts
 from .scoring import MatchProfile
 
-PROFILE = MatchProfile(name="exact")
+PROFILE = MatchProfile(name="exact", no_place_title_min=0.97)
 
 
 class ExactMatch:
-    name, version = "exact", 4
+    name, version = "exact", 5
 
     def __init__(self, profile=None, **overrides):
         self.profile = (profile or PROFILE).with_(**overrides)

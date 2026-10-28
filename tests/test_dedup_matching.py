@@ -53,6 +53,11 @@ CASES = [
     ("start five minutes apart", BASE, event(starts_at=START + 300), True, False, True),
     ("end times ten minutes apart", event(ends_at=START + 7200), event(ends_at=START + 7800), True, False, True),
     ("title reworded at the same time and place", event(title="Harbor Concert Series"), event(title="Harbor Concert Series Night"), True, False, True),
+    ("no place on either side, identical title and start", event(venue=None, address=None), event(venue=None, address=None), True, True, True),
+    ("no place, a scraped 'Date:' label on one title", event(title="Christmas on the Farm Arts & Crafts Fair", venue=None, address=None),
+     event(title="Christmas on the Farm Arts & Crafts Fair Date: Sat.", venue=None, address=None), True, True, True),
+    ("no place, a scraped 'Date & Time' label and agreeing descriptions", event(title="Christmas in Valley Center", description="Lights, music and crafts.", venue=None, address=None),
+     event(title="Christmas in Valley Center Date & Time", description="Lights, music, and crafts", venue=None, address=None), True, True, True),
     # --- different events -------------------------------------------------------------------------------------------------------------------------------------
     ("another day", BASE, event(starts_at=START + 86400), False, False, False),
     ("a week later (recurring)", BASE, event(starts_at=START + 7 * 86400), False, False, False),
@@ -69,7 +74,17 @@ CASES = [
     ("roman numeral edition", BASE, event(title="Harbor Concert II"), False, False, False),
     ("a year added", BASE, event(title="Harbor Concert 2030"), False, False, False),
     ("two shows, one stage and time", event(title="Yoga on the Green"), event(title="Used Book Sale"), False, False, False),
-    ("no place on either side", event(venue=None, address=None), event(venue=None, address=None), False, False, False),
+    ("no place on either side, titles reworded", event(title="Harbor Concert Series", venue=None, address=None), event(title="Harbor Concert Series Night", venue=None, address=None),
+     False, False, False),
+    ("no place, same start, different events", event(title="Yoga on the Green", venue=None, address=None), event(title="Used Book Sale", venue=None, address=None), False, False, False),
+    ("no place, numbered nights", event(title="Harbor Concert 1", venue=None, address=None), event(title="Harbor Concert 2", venue=None, address=None), False, False, False),
+    ("no place, a week later", event(venue=None, address=None), event(starts_at=START + 7 * 86400, venue=None, address=None), False, False, False),
+    ("no place, five minutes apart", event(venue=None, address=None), event(starts_at=START + 300, venue=None, address=None), False, False, False),
+    ("no place, ends differ", event(ends_at=START + 7200, venue=None, address=None), event(ends_at=START + 10800, venue=None, address=None), False, False, False),
+    ("no place, same title and start but other descriptions", event(description="Live music on the harbor stage all evening.", venue=None, address=None),
+     event(description="Annual clam chowder tasting with local chefs and judges.", venue=None, address=None), False, False, False),
+    ("no place, men's and women's", event(title="Men's Swimming and Diving at the Harbor Pool", venue=None, address=None),
+     event(title="Women's Swimming and Diving at the Harbor Pool", venue=None, address=None), False, False, False),
     ("same title, one with no place", BASE, event(venue=None, address=None), False, False, False),
     ("same venue name, other city", BASE, event(address="500 Harbor Drive, Seattle, WA"), False, False, False),
     ("similar title, other venue and street", event(title="Holiday Craft Market", venue="Civic Center", address="1 Civic Plaza"),
@@ -195,6 +210,82 @@ class Lookup:
         self.calls.append((earliest, latest, after, limit))
         pool = [e for e in self.events if earliest <= e.starts_at <= latest and (after is None or (e.starts_at, e.event_key) > after)]
         return tuple(pool[:limit])
+
+
+def local(day, clock):
+    """Epoch seconds of a Pacific wall-clock time (the Bates listing states no zone for the stored events, so none is used on the events themselves)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return int(datetime.fromisoformat(f"{day}T{clock}").replace(tzinfo=ZoneInfo(LA)).timestamp())
+
+
+def bates(title, day, clock, end=None):
+    """A Bates Nut Farm listing candidate as production holds it: no venue, address or location text, one listing page."""
+    return event(title, local(day, clock), local(day, end) if end else None, None, None, None, None, "https://batesnutfarm.biz/pages/events", None)
+
+
+# (clean title, polluted variant production holds, day, start, end)
+BATES = [
+    ("The 2026 Pumpkin Patch", "The 2026 Pumpkin Patch Date: Thurs., Sept. 17 to Sat.", "2026-10-31", "09:00:00", "17:00:00"),
+    ("Halloween Finale", "Halloween Finale Date", "2026-10-31", "09:00:00", "17:00:00"),
+    ("Annual Costume Contest & Parade", "Annual Costume Contest & Parade Date", "2026-10-31", "10:00:00", None),
+    ("Howl-o-ween Doggie Costume Contest", "Howl-o-ween Doggie Costume Contest Date", "2026-10-31", "13:00:00", None),
+    ("Alias | Live at Bates on Halloween", "Alias | Live at Bates on Halloween Date", "2026-10-31", "12:00:00", None),
+    ("Christmas on the Farm Arts & Crafts Fair", "Christmas on the Farm Arts & Crafts Fair Date: Sat.", "2026-11-07", "09:00:00", "16:00:00"),
+    ("Christmas on the Farm Arts & Crafts Fair", "Christmas on the Farm Arts & Crafts Fair Date: Sat.", "2026-11-08", "09:00:00", "16:00:00"),
+    ("East County Cruisers Car Show and Toy Drive", "East County Cruisers Car Show and Toy Drive Date", "2026-11-07", "09:00:00", None),
+    ("8th Annual Guns & Hoses Chili Cook-Off Fundraiser", "8th Annual Guns & Hoses Chili Cook-Off Fundraiser Date", "2026-11-08", "12:00:00", "15:00:00"),
+    ("Santa's Coming! Craft Fair", "Santa's Coming! Craft Fair Date", "2026-11-27", "09:00:00", None),
+    ("Santa's Coming! Craft Fair", "Santa's Coming! Craft Fair Date", "2026-11-28", "09:00:00", None),
+    ("Christmas in Valley Center", "Christmas in Valley Center Date & Time", "2026-12-11", "16:00:00", None),
+    ("Christmas in Valley Center", "Christmas in Valley Center Date & Time", "2026-12-12", "16:00:00", None),
+]
+
+
+class BatesListing(unittest.TestCase):
+    """The duplicate canonical events visible in the Home Assistant card on 28 October: a clean title and a "Date: ..." variant of every occurrence, no place stated."""
+
+    def strategies(self):
+        return (ExactMatch(), TolerantMatch())
+
+    def test_each_polluted_variant_is_the_same_event_as_its_clean_twin(self):
+        for strategy in self.strategies():
+            for clean, polluted, day, start, end in BATES:
+                a, b = bates(clean, day, start, end), bates(polluted, day, start, end)
+                for left, right in ((a, b), (b, a)):
+                    score = compare(left, right, strategy.profile)
+                    self.assertTrue(score.matched, (strategy.name, polluted, score))
+
+    def test_other_occurrences_and_other_events_never_match(self):
+        events = [bates(clean, day, start, end) for clean, _, day, start, end in BATES] + [bates(polluted, day, start, end) for _, polluted, day, start, end in BATES]
+        for strategy in self.strategies():
+            for i, a in enumerate(events):
+                for b in events[i + 1:]:
+                    twin = (i % len(BATES)) == (events.index(b) % len(BATES))
+                    self.assertEqual(compare(a, b, strategy.profile).matched, twin, (strategy.name, a.title, a.starts_at, b.title, b.starts_at))
+
+    def test_unrelated_events_sharing_a_start_are_not_merged(self):
+        cruisers = bates(BATES[7][0], BATES[7][2], BATES[7][3])
+        fair = bates(BATES[5][0], BATES[5][2], BATES[5][3], BATES[5][4])
+        self.assertEqual(cruisers.starts_at, fair.starts_at)
+        pumpkin, finale = bates(BATES[0][0], BATES[0][2], BATES[0][3], BATES[0][4]), bates(BATES[1][0], BATES[1][2], BATES[1][3], BATES[1][4])
+        self.assertEqual(pumpkin.starts_at, finale.starts_at)
+        for strategy in self.strategies():
+            self.assertFalse(compare(cruisers, fair, strategy.profile).matched)
+            self.assertFalse(compare(pumpkin, finale, strategy.profile).matched)
+
+    def test_a_polluted_candidate_links_to_its_own_clean_event_among_all_of_them(self):
+        known_events = [known(f"ev-{n:02d}", bates(clean, day, start, end)) for n, (clean, _, day, start, end) in enumerate(BATES)]
+        for strategy in self.strategies():
+            for n, (_, polluted, day, start, end) in enumerate(BATES):
+                decision = strategy.decide(Incoming("mission_trails:new", bates(polluted, day, start, end), None), Lookup(*known_events))
+                self.assertEqual((decision.action, decision.event_key), ("link", f"ev-{n:02d}"), (strategy.name, polluted))
+
+    def test_two_events_with_a_place_missing_on_one_side_are_still_not_merged(self):
+        placed = event("Christmas on the Farm Arts & Crafts Fair", local("2026-11-07", "09:00:00"), local("2026-11-07", "16:00:00"), "Bates Nut Farm", "15954 Woods Valley Rd",
+                       None, None, "https://batesnutfarm.biz/pages/events", None)
+        for strategy in self.strategies():
+            self.assertFalse(compare(placed, bates("Christmas on the Farm Arts & Crafts Fair", "2026-11-07", "09:00:00", "16:00:00"), strategy.profile).matched)
 
 
 class Decisions(unittest.TestCase):

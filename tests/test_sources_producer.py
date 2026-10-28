@@ -334,6 +334,45 @@ END:VCALENDAR"""
         self.assertEqual([c.local_id for c in a.candidates],
                          [c.local_id for c in b.candidates])
 
+    def test_listing_cards_with_a_heading_yield_one_clean_candidate_per_occurrence(self):
+        """A page whose listing cards each hold a heading and "Date:"/"Time:" fields (Bates Nut Farm, a real copy) used to yield each event twice: once titled by its
+        heading and once by the card text, which carried the field label ("... Fair Date: Sat.", "... Finale Date", "... Valley Center Date & Time")."""
+        page = "https://batesnutfarm.biz/pages/events"
+        html = __import__("pathlib").Path(os.path.dirname(__file__), "data", "bates_events_excerpt.html").read_text(encoding="utf-8")
+        result, _ = run_crawl({page: html}, urls=(page,), timezone="America/Los_Angeles", max_depth=0)
+        titles = [(c.title, c.starts_at) for c in result.candidates]
+        self.assertEqual(len(titles), 13, titles)
+        self.assertEqual(len(set(titles)), 13)
+        for title, _ in titles:
+            self.assertNotRegex(title, r"\bDate\b|\bSat\.|\bThurs\.|Time$", title)
+        self.assertEqual(sorted(set(t for t, _ in titles)), sorted([
+            "The 2026 Pumpkin Patch", "Halloween Finale", "Annual Costume Contest & Parade", "Howl-o-ween Doggie Costume Contest", "Alias | Live at Bates on Halloween",
+            "Christmas on the Farm Arts & Crafts Fair", "East County Cruisers Car Show and Toy Drive", "8th Annual Guns & Hoses Chili Cook-Off Fundraiser",
+            "Santa's Coming! Craft Fair", "Christmas in Valley Center"]))
+        fair = [c.starts_at for c in result.candidates if c.title.startswith("Christmas on the Farm")]
+        self.assertEqual(fair, ["2026-11-07T09:00:00-08:00", "2026-11-08T09:00:00-08:00"], "separate dates stay separate occurrences")
+        again, _ = run_crawl({page: html}, urls=(page,), timezone="America/Los_Angeles", max_depth=0)
+        self.assertEqual([c.local_id for c in result.candidates], [c.local_id for c in again.candidates], "identities are stable across crawls")
+
+    def test_the_candidate_identities_of_the_already_clean_listing_are_unchanged(self):
+        """The candidates that were already clean keep the ids production holds, so the fix creates no new identities for them."""
+        page = "https://batesnutfarm.biz/pages/events"
+        html = __import__("pathlib").Path(os.path.dirname(__file__), "data", "bates_events_excerpt.html").read_text(encoding="utf-8")
+        result, _ = run_crawl({page: html}, urls=(page,), timezone="America/Los_Angeles", max_depth=0)
+        ids = {(c.title, c.starts_at): c.local_id for c in result.candidates}
+        self.assertEqual(ids[("Christmas on the Farm Arts & Crafts Fair", "2026-11-07T09:00:00-08:00")][:8], "566d43f9")
+        self.assertEqual(ids[("Christmas on the Farm Arts & Crafts Fair", "2026-11-08T09:00:00-08:00")][:8], "5bd4fd24")
+        self.assertEqual(ids[("8th Annual Guns & Hoses Chili Cook-Off Fundraiser", "2026-11-08T12:00:00-08:00")][:8], "db13469d")
+        self.assertEqual(ids[("East County Cruisers Car Show and Toy Drive", "2026-11-07T09:00:00-08:00")][:8], "768a51db")
+
+    def test_field_labels_and_day_abbreviations_are_trimmed_from_a_headingless_card_title(self):
+        page = "https://events.example/list"
+        html = ("<ul><li>Harbor Craft Fair Date: Sat. Nov 7, 2026 Time: 9:00am to 4:00pm</li>"
+                "<li>Winter Lights Date &amp; Time Dec 5, 2026 6:00pm</li>"
+                "<li>Date Night Dinner Nov 9, 2026 7:00pm</li></ul>")
+        result, _ = run_crawl({page: html}, urls=(page,), timezone="America/Los_Angeles", max_depth=0)
+        self.assertEqual(sorted(c.title for c in result.candidates), ["Date Night Dinner", "Harbor Craft Fair", "Winter Lights"])
+
     def test_bad_timezone_option_is_rejected(self):
         with self.assertRaises(ValueError):
             SourcesProducer.validate_options({"urls": [SEED], "timezone": "Somewhere/Nowhere"})

@@ -67,6 +67,21 @@ class DuplicateMaintenanceTests(unittest.TestCase):
             return {table: db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                     for table in ("sources", "candidates", "events", "event_candidates", "extractions", "event_revisions")}
 
+    def test_events_that_state_no_place_are_scanned_by_title_and_start(self):
+        """The Bates listing duplicates (a clean title and a "Date: Sat." variant, no place stated) must be found; unrelated events at the same start must not."""
+        def row(event_id, title, start, **more):
+            base = {"event_id": event_id, "event_key": f"ev-{event_id}", "title": title, "starts_at": start, "ends_at": None, "venue_name": None, "address": None, "location_text": None,
+                    "revision": 1, "source_url": "https://batesnutfarm.biz/pages/events", "description": None, "timezone": None}
+            return {**base, **more}
+        start = epoch("2026-11-07T09:00:00-08:00")
+        rows = [row(1, "Christmas on the Farm Arts & Crafts Fair", start), row(2, "East County Cruisers Car Show and Toy Drive", start),
+                row(3, "Christmas on the Farm Arts & Crafts Fair Date: Sat.", start), row(4, "East County Cruisers Car Show and Toy Drive Date", start),
+                row(5, "Christmas on the Farm Arts & Crafts Fair", start + 86400), row(6, "Christmas on the Farm Arts & Crafts Fair Date: Sat.", start + 86400),
+                row(7, "Lone event", start), row(8, "Harbor Concert", start, venue_name="Harbor Hall"), row(9, "Harbor Concert", start)]
+        groups = self.maintenance._eligible_pairs(rows)
+        self.assertEqual([group["event_ids"] for group in groups], [(1, 3), (2, 4), (5, 6)])
+        self.assertTrue(all(group["eligible"] for group in groups))
+
     def test_read_only_scan_finds_only_the_high_confidence_pair(self):
         before = os.stat(self.db_path).st_mtime_ns
         groups = self.maintenance.scan()

@@ -420,6 +420,10 @@ _LOCATION = re.compile(r"^(?:location|venue|where|place)\s*:\s*(.*)$", re.I)
 _DATE_LABEL = re.compile(r"^(?:dates?|when)\s*:\s*", re.I)
 _TIME_LABEL = re.compile(r"^(?:times?|hours?)\s*:\s*", re.I)
 _WEEKDAY = re.compile(r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b", re.I)
+# A field label ("Date:", "Date & Time", "When:") and abbreviated weekdays that sit between a title and its date in card text belong to the listing, not to the title.
+_TITLE_TAIL = re.compile(
+    r"(?:\s+(?:dates?|when)\s*(?:(?:&|and)\s*times?)?\s*:?(?:\s+.*)?|"
+    r"[\s,]+(?:Mon|Tue|Tues|Wed|Thu|Thur|Thurs|Fri|Sat|Sun)\.?)$", re.I)
 
 
 class _VisibleEventText(HTMLParser):
@@ -438,6 +442,7 @@ class _VisibleEventText(HTMLParser):
         self._section = []
         self._ignored = []
         self._cards = []
+        self.card_headings = []
         self.first_heading = ""
 
     def _section_flush(self):
@@ -459,7 +464,7 @@ class _VisibleEventText(HTMLParser):
         elif tag in self.BLOCKS:
             self._section.append("\n")
         if tag in ("li", "article", "tr"):
-            self._cards.append([tag, []])
+            self._cards.append([tag, [], ""])
         elif tag in ("td", "th") and self._cards and self._cards[-1][0] == "tr":
             self._cards[-1][1].append(" — ")
 
@@ -481,6 +486,8 @@ class _VisibleEventText(HTMLParser):
             self._heading = _clean(self._heading, 160) or ""
             if self._heading and not self.first_heading:
                 self.first_heading = self._heading
+            for card in self._cards:
+                card[2] = card[2] or self._heading
             self._heading_tag = None
             self._section.append("\n")
         elif tag in self.BLOCKS:
@@ -490,10 +497,20 @@ class _VisibleEventText(HTMLParser):
             lines = _visible_lines(" ".join(card[1]))
             if lines:
                 self.cards.append(lines)
+                self.card_headings.append(card[2])
 
     def finish(self):
         self._section_flush()
         return self.sections, self.cards, self.first_heading
+
+
+def _listing_title(text):
+    """The title in the text that precedes a card's date: trailing day names and a field label such as "Date:" or "Date & Time" are not part of it."""
+    previous = None
+    while previous != text:
+        previous = text
+        text = _TITLE_TAIL.sub("", text).strip(" ,-–—|:")
+    return text
 
 
 def _visible_lines(text):
@@ -643,6 +660,10 @@ def _text_event_group(heading, lines, page_title, page_url, source_name, retriev
     return result, len(raw_date_lines) - int(bool(result))
 
 
+def _title_key(title):
+    return re.sub(r"[^a-z0-9]+", " ", title.casefold()).strip()
+
+
 def _plain_text_events(html, page_url, source_name, retrieved_at, zone):
     parser = _VisibleEventText()
     try:
@@ -657,7 +678,7 @@ def _plain_text_events(html, page_url, source_name, retrieved_at, zone):
         events.extend(extracted)
         missing += skipped
     # Listing cards often have no headings, e.g. <li>Craft Fair — Nov 14 at 9am</li>.
-    for card in cards[:120]:
+    for card, card_heading in zip(cards[:120], parser.card_headings[:120]):
         row = " ".join(card)
         if not (_TEXT_DATE.search(row) or _TEXT_DATES_ISO.search(row) or _TEXT_DATES_NUMERIC.search(row)):
             continue
@@ -667,6 +688,8 @@ def _plain_text_events(html, page_url, source_name, retrieved_at, zone):
                        "", title, flags=re.I).strip(" ,-–—|:")
         if " — " in title:
             title = title.split(" — ", 1)[0].strip()
+        # A card that carries its own heading is titled by it (the text before the date also holds field labels); otherwise the labels are trimmed off.
+        title = card_heading if card_heading and title.startswith(card_heading) else _listing_title(title)
         if not title or _UNHELPFUL_HEADINGS.fullmatch(title):
             continue
         extracted, skipped = _text_event_group(title[:120], [row], page_title,
@@ -674,7 +697,9 @@ def _plain_text_events(html, page_url, source_name, retrieved_at, zone):
         events.extend(extracted)
         missing += skipped
     # A page can expose the same event in text, JSON-LD, a list item and a heading.
-    distinct = {(e.title.casefold(), e.starts_at): e for e in events}
+    distinct = {}
+    for e in events:
+        distinct.setdefault((_title_key(e.title), e.starts_at), e)
     return list(distinct.values())[:MAX_EVENTS], missing
 
 

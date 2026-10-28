@@ -65,7 +65,7 @@ class Interface(unittest.TestCase):
         for name, make in STRATEGIES.items():
             with self.subTest(name):
                 strategy = make()
-                self.assertEqual((strategy.name, strategy.version), (name, 4))
+                self.assertEqual((strategy.name, strategy.version), (name, 5))
                 decision = strategy.decide(Incoming("src:a", clean(), None), Lookup())
                 self.assertIsInstance(decision, Decision)
                 self.assertEqual((decision.action, decision.event_key), ("create", None))
@@ -99,11 +99,13 @@ class Exact(unittest.TestCase):
         decision = ExactMatch().decide(Incoming("other:b", clean(ends_at=START + 10800), None), Lookup(existing))
         self.assertEqual(decision.action, "create")
 
-    def test_incomplete_location_evidence_is_never_matched(self):
-        first = clean(address=None, venue=None)
-        existing = known("ev-1", first)
+    def test_incomplete_location_evidence_matches_only_when_the_identity_is_exceptionally_strong(self):
+        existing = known("ev-1", clean(address=None, venue=None))
+        for other in (clean(address=None, venue=None, starts_at=START + 300), clean(address=None, venue=None, title="Harbor Concert Night"), clean()):
+            decision = ExactMatch().decide(Incoming("other:b", other, None), Lookup(existing))
+            self.assertEqual(decision.action, "create", "nothing is invented to make a placeless description comparable")
         decision = ExactMatch().decide(Incoming("other:b", clean(address=None, venue=None), None), Lookup(existing))
-        self.assertEqual(decision.action, "create", "nothing is invented to make a placeless description comparable")
+        self.assertEqual((decision.action, decision.event_key), ("link", "ev-1"), "identical title and start, and no place on either side")
 
     def test_high_confidence_title_edits_match_with_identical_date_place_and_url(self):
         first = clean(title="Holiday Marketplace at Mission Trails Regional Park")

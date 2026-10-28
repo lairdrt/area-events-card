@@ -4,11 +4,11 @@ from . import Decision, Incoming, anchors, decide_by_confidence, same_event_fact
 from .scoring import MatchProfile
 
 PROFILE = MatchProfile(name="tolerant", start_tolerance_s=600, end_tolerance_s=900, min_title=0.85, min_title_same_page=0.78, min_address=0.85, min_venue=0.75,
-                       url_conflict_vetoes=False, threshold=0.85, min_coverage=0.50, location_agreement=0.80, venue_alone_agrees=True, ambiguity_margin=0.005)
+                       url_conflict_vetoes=False, threshold=0.85, min_coverage=0.50, location_agreement=0.80, venue_alone_agrees=True, ambiguity_margin=0.005, no_place_title_min=0.97)
 
 
 class TolerantMatch:
-    name, version = "tolerant", 4
+    name, version = "tolerant", 5
 
     def __init__(self, window_s=None, profile=None, **overrides):
         if window_s is not None:
