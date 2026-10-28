@@ -1,33 +1,25 @@
-"""Tolerant field matching: similar titles, exact starts and compatible stated place evidence."""
-from . import Decision, Incoming, LOOKUP_PAGE_SIZE, anchors, retain, same_event_facts
+"""Permissive matching: titles and place names that are merely similar, starts that differ by a few minutes, and pages that need not agree, still weighed by confidence.
+More permissive means lower floors and thresholds, never fewer vetoes: differing numbers, distant starts or ends and conflicting places still keep events apart."""
+from . import Decision, Incoming, anchors, decide_by_confidence, same_event_facts
+from .scoring import MatchProfile
+
+PROFILE = MatchProfile(name="tolerant", start_tolerance_s=600, end_tolerance_s=900, min_title=0.85, min_title_same_page=0.78, min_address=0.85, min_venue=0.75,
+                       url_conflict_vetoes=False, threshold=0.85, min_coverage=0.50, location_agreement=0.80, venue_alone_agrees=True, ambiguity_margin=0.005)
 
 
 class TolerantMatch:
-    name, version = "tolerant", 3
+    name, version = "tolerant", 4
 
-    def __init__(self, window_s=900):
-        self.window_s = int(window_s)
+    def __init__(self, window_s=None, profile=None, **overrides):
+        if window_s is not None:
+            overrides["end_tolerance_s"] = int(window_s)
+        self.profile = (profile or PROFILE).with_(**overrides)
 
     def matches(self, left, right):
-        return same_event_facts(left, right, 0, allow_venue_only=True, end_window_s=self.window_s)
+        return same_event_facts(left, right, self.profile)
 
     def anchors(self, event):
         return anchors(event)
 
-    def decide(self, incoming: Incoming, lookup):
-        event = incoming.event
-        known = retain(incoming)
-        if known is not None:
-            return known
-        earliest = latest = event.starts_at
-        after = None
-        while True:
-            page = lookup.starting_between(earliest, latest, after, LOOKUP_PAGE_SIZE)
-            for other in page:
-                if self.matches(event, other):
-                    return Decision("link", other.event_key, "matching title, exact start, and compatible place evidence")
-            if len(page) < LOOKUP_PAGE_SIZE:
-                break
-            last = page[-1]
-            after = (last.starts_at, last.event_key)
-        return Decision("create", reason="no known event states a matching title, exact start and comparable place")
+    def decide(self, incoming: Incoming, lookup) -> Decision:
+        return decide_by_confidence(incoming, lookup, self.profile)

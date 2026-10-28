@@ -21,7 +21,7 @@ class _Lookup:
     @staticmethod
     def _existing(e):
         clean = e["clean"]
-        return ExistingEvent(e["event_key"], clean.title, clean.starts_at, clean.ends_at, clean.venue_name, clean.address, clean.location_text, e["revision"])
+        return ExistingEvent(e["event_key"], clean.title, clean.starts_at, clean.ends_at, clean.venue_name, clean.address, clean.location_text, e["revision"], None, clean.description, clean.timezone)
 
 
 class InMemoryProcessing:

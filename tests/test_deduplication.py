@@ -65,7 +65,7 @@ class Interface(unittest.TestCase):
         for name, make in STRATEGIES.items():
             with self.subTest(name):
                 strategy = make()
-                self.assertEqual((strategy.name, strategy.version), (name, 3))
+                self.assertEqual((strategy.name, strategy.version), (name, 4))
                 decision = strategy.decide(Incoming("src:a", clean(), None), Lookup())
                 self.assertIsInstance(decision, Decision)
                 self.assertEqual((decision.action, decision.event_key), ("create", None))
@@ -137,7 +137,9 @@ class Tolerant(unittest.TestCase):
         existing = self.existing(ends_at=START + 7500)
         decision = TolerantMatch(window_s=900).decide(Incoming("o:b", event, None), Lookup(existing))
         self.assertEqual((decision.action, decision.event_key), ("link", "ev-1"))
-        self.assertEqual(TolerantMatch(window_s=900).decide(Incoming("o:b", clean(starts_at=START + 1), None), Lookup(self.existing())).action, "create")
+        self.assertEqual(TolerantMatch(window_s=900).decide(Incoming("o:b", clean(starts_at=START + 300), None), Lookup(self.existing())).action, "link",
+                         "a start a few minutes apart is within the tolerant strategy's tolerance")
+        self.assertEqual(TolerantMatch(window_s=900).decide(Incoming("o:b", clean(starts_at=START + 3600), None), Lookup(self.existing())).action, "create")
 
     def test_contradicting_places_are_different_events_and_a_missing_address_needs_the_same_venue(self):
         strategy = TolerantMatch()
@@ -150,13 +152,16 @@ class Tolerant(unittest.TestCase):
         existing = self.existing(ends_at=START + 7200)
         self.assertEqual(TolerantMatch(window_s=900).decide(Incoming("o:b", clean(starts_at=START + 300, ends_at=START + 10800), None), Lookup(existing)).action, "create")
 
-    def test_title_edits_need_same_specific_event_url_and_complete_place_identity(self):
+    def test_title_edits_are_weighed_by_similarity_and_never_override_the_place(self):
         original = clean(title="Holiday Marketplace at Mission Trails Regional Park")
         original = dataclasses.replace(original, source_url="https://mtrp.org/marketplace/")
         changed = clean(title="Holiday Marketplace Benefitting Mission Trails Regional Park")
         for url in ("https://mtrp.org/events/", None, "https://other.example/marketplace/"):
             candidate = dataclasses.replace(changed, source_url=url)
-            self.assertEqual(TolerantMatch().decide(Incoming("o:b", candidate, None), Lookup(known("ev-1", original))).action, "create")
+            self.assertEqual(TolerantMatch().decide(Incoming("o:b", candidate, None), Lookup(known("ev-1", original))).action, "link",
+                             "the permissive strategy accepts a similar title at the same time and place without a shared page")
+        for other in (dataclasses.replace(changed, address="900 Other Street, San Diego, CA"), dataclasses.replace(changed, title="Spring Craft Fair at the Park")):
+            self.assertEqual(TolerantMatch().decide(Incoming("o:b", other, None), Lookup(known("ev-1", original))).action, "create")
 
 
 class LookupPagination(unittest.TestCase):
@@ -205,8 +210,8 @@ class ProcessingOnAnotherPersistence(unittest.TestCase):
         groups = {}
         for key, (event_key, _) in tolerant.links.items():
             groups.setdefault(event_key, []).append(key)
-        self.assertEqual(sorted(sorted(g) for g in groups.values()), [["a:1", "b:1", "e:1", "f:1"], ["c:1"], ["d:1"]],
-                         "the alternative also links the placeless descriptions that name the same venue; other days and places stay separate")
+        self.assertEqual(sorted(sorted(g) for g in groups.values()), [["a:1", "b:1"], ["c:1"], ["d:1"], ["e:1"], ["f:1"]],
+                         "a description naming only the venue is ambiguous between two events at that venue, so it is never guessed; other days and places stay separate")
         self.assertEqual(tolerant.extractions, run_in_memory(ExactMatch(), self.candidates()).extractions, "the same extraction work was done for the same candidates")
 
     def test_processing_and_the_in_memory_persistence_import_no_database(self):

@@ -33,11 +33,12 @@ $script:TargetSchema = [int]$schemaVersions[$schemaVersions.Count-1].Groups[1].V
 $script:ImageDepsPy=@'
 import subprocess as _sp,tomllib as _toml
 def ae_install_images(python,root,required=True,timeout=200):
- with open(root+'/pyproject.toml','rb') as f: extra=_toml.load(f).get('project',{}).get('optional-dependencies',{}).get('images')
+ with open(root+'/pyproject.toml','rb') as f: project=_toml.load(f).get('project',{})
+ extra=project.get('optional-dependencies',{}).get('images')
  if not extra:
   if required: raise RuntimeError('pyproject.toml declares no images extra')
   return False
- r=_sp.run([python,'-m','pip','install','--disable-pip-version-check','--only-binary=:all:','--no-binary=langdetect']+list(extra),timeout=timeout,capture_output=True,text=True)
+ r=_sp.run([python,'-m','pip','install','--disable-pip-version-check','--only-binary=:all:','--no-binary=langdetect']+list(project.get('dependencies',[]))+list(extra),timeout=timeout,capture_output=True,text=True)
  if r.returncode: raise RuntimeError('image dependency installation failed: '+(r.stdout+r.stderr)[-1200:])
  return True
 def ae_image_smoke(python,cwd):

@@ -7,7 +7,10 @@ name = "area-events"
 version = "0.2.0"
 description = "Local event discovery service and Home Assistant integration"
 requires-python = ">=3.11"
-dependencies = []
+# RapidFuzz scores event titles, places and descriptions for deduplication. Deployment installs this list (and the `images` extra) with pip --only-binary=:all:.
+dependencies = [
+    "rapidfuzz==3.14.6",
+]
 
 [project.optional-dependencies]
 # Goose3 and its complete dependency tree, pinned exactly (deployment installs this list with pip --only-binary=:all: except langdetect,

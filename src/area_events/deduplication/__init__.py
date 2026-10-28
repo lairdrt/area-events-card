@@ -15,19 +15,16 @@ with no change to Persistence, processing, producers or presentation.
 The strategies in this package are the initial default (`exact`, conservative) and an alternative (`tolerant`); both implement the same `Deduplicator`.
 """
 from dataclasses import dataclass
-import re
 from typing import Optional, Protocol
 
 from ..contracts.models import CleanEvent
+from .scoring import MatchProfile, best_match, compare, normalize
 
 DEDUP_SCHEMA = "discovery.dedup.v1"
 DEDUP_MAINTENANCE_SCHEMA = "discovery.dedup.maintenance.v1"  # optional extension for database duplicate scans
 ACTIONS = ("create", "update", "link", "keep")
 LOOKUP_PAGE_SIZE = 100
-
-
-def normalize(text):
-    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+CONSERVATIVE = MatchProfile(name="exact")
 
 
 def anchors(event):
@@ -35,70 +32,37 @@ def anchors(event):
                  if (value := normalize(getattr(event, field))))
 
 
-def _url_identity(value):
-    if not value:
-        return ""
-    clean = value.strip().split("#", 1)[0]
-    before_query, separator, query = clean.partition("?")
-    scheme, marker, rest = before_query.partition("://")
-    if not marker:
-        return normalize(value)
-    host, slash, path = rest.partition("/")
-    query_parts = []
-    if separator:
-        for pair in query.split("&"):
-            key, equal, item = pair.partition("=")
-            if key.lower() not in {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid"}:
-                query_parts.append((key, item if equal else ""))
-    normalized_query = "&".join(f"{key}={item}" for key, item in sorted(query_parts))
-    return f"{scheme.lower()}://{host.lower()}/{path.rstrip('/')}?{normalized_query}"
+def same_event_facts(left, right, profile=None):
+    """High-confidence event match under a `MatchProfile` (default: the conservative one). Weighted fuzzy comparison with hard vetoes: see `scoring`."""
+    return compare(left, right, profile or CONSERVATIVE).matched
 
 
-def _specific_url(value):
-    identity = _url_identity(value)
-    if not identity or "://" not in identity:
-        return False
-    path = identity.split("://", 1)[1].split("/", 1)
-    segments = path[1].split("?", 1)[0].lower().split("/") if len(path) > 1 else []
-    generic = {"", "event", "events", "calendar", "calendars", "listing", "listings", "home", "index"}
-    return any(segment not in generic for segment in segments)
-
-
-def same_event_facts(left, right, start_window_s=0, allow_venue_only=False, end_window_s=0):
-    """High-confidence event match. Every stated comparable fact must agree."""
-    a, b = normalize(left.title), normalize(right.title)
-    if not a or not b:
-        return False
-    title_changed = a != b
-    if title_changed:
-        a_words, b_words = set(a.split()), set(b.split())
-        shared = a_words & b_words
-        overlap = len(shared) / len(a_words | b_words) if a_words | b_words else 0
-        if len(shared) < 4 or overlap < 0.75:
-            return False
-    if abs(int(left.starts_at) - int(right.starts_at)) > int(start_window_s):
-        return False
-    if left.ends_at is not None and right.ends_at is not None and abs(int(left.ends_at) - int(right.ends_at)) > int(end_window_s):
-        return False
-    if left.source_url and right.source_url and _url_identity(left.source_url) != _url_identity(right.source_url):
-        return False
-    if title_changed and not (left.source_url and right.source_url and _specific_url(left.source_url) and
-                              _url_identity(left.source_url) == _url_identity(right.source_url)):
-        return False
-    agrees = False
-    for field in ("address", "venue_name", "location_text"):
-        left_value, right_value = normalize(getattr(left, field)), normalize(getattr(right, field))
-        if left_value and right_value:
-            if left_value != right_value:
-                return False
-            if field != "venue_name" or allow_venue_only:
-                agrees = True
-    if title_changed:
-        venue_agrees = normalize(left.venue_name) and normalize(left.venue_name) == normalize(right.venue_name)
-        address_agrees = normalize(left.address) and normalize(left.address) == normalize(right.address)
-        location_agrees = normalize(left.location_text) and normalize(left.location_text) == normalize(right.location_text)
-        return bool(agrees and venue_agrees and (address_agrees or location_agrees))
-    return agrees
+def decide_by_confidence(incoming: "Incoming", lookup: "EventLookup", profile: MatchProfile) -> "Decision":
+    """The shared decision loop: an existing place is retained; otherwise every known event inside the start tolerance is scored (bounded pages, bounded count) and the best
+    UNAMBIGUOUS match is linked. An ambiguous or unmatched candidate becomes a new event: never merging is the safe error."""
+    known = retain(incoming)
+    if known is not None:
+        return known
+    event = incoming.event
+    earliest, latest = event.starts_at - profile.start_tolerance_s, event.starts_at + profile.start_tolerance_s
+    seen, after, examined, truncated = [], None, 0, False
+    while True:
+        page = lookup.starting_between(earliest, latest, after, LOOKUP_PAGE_SIZE)
+        seen.extend(page)
+        examined += len(page)
+        if len(page) < LOOKUP_PAGE_SIZE:
+            break
+        if examined >= profile.max_compared:
+            truncated = True
+            break
+        last = page[-1]
+        after = (last.starts_at, last.event_key)
+    match, why = best_match(event, seen, profile)
+    if match is not None and not truncated:
+        return Decision("link", match.event_key, why)
+    if truncated:
+        return Decision("create", reason=f"more than {profile.max_compared} events share this time; no unambiguous match can be certified")
+    return Decision("create", reason=why)
 
 
 @dataclass(frozen=True)
@@ -113,6 +77,8 @@ class ExistingEvent:
     location_text: Optional[str]
     revision: int
     source_url: Optional[str] = None
+    description: Optional[str] = None
+    timezone: Optional[str] = None
 
 
 @dataclass(frozen=True)

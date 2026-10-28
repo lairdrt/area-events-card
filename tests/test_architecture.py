@@ -35,7 +35,7 @@ PERSISTENCE = "persistence"
 PORTS = "persistence.ports"
 BUILD = "persistence.build"
 DEDUPLICATION = "deduplication"
-DEDUP_STDLIB = frozenset(("dataclasses", "typing", "hashlib", "re", "__future__"))
+DEDUP_STDLIB = frozenset(("dataclasses", "typing", "hashlib", "re", "datetime", "zoneinfo", "rapidfuzz", "__future__"))
 PERSISTENCE_CALLS = frozenset(("execute", "executemany", "executescript", "cursor", "commit", "rollback"))
 SQL_TEXT = re.compile(r"\b(SELECT\s.+\sFROM|INSERT\s+(OR\s+\w+\s+)?INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|CREATE\s+(TABLE|INDEX)|ALTER\s+TABLE|PRAGMA\s+\w+)\b", re.I | re.S)
 MATCHING_NAME = re.compile(r"(^|_)(match|matches|matching|matcher|similar|similarity|same_event|is_duplicate|find_twin|twin|dedupe|dedup)(_|$)")
@@ -50,7 +50,8 @@ ALLOWED = {
     "classification": set(), "classification.classifiers": {"classification.classify"}, "classification.classify": set(), "classification.photo_subject": set(),
     "common": set(), "common.textutil": set(), "common.timeutil": set(),
     "control": set(), "control.service": {"contracts.models", PORTS}, "contracts": set(), "contracts.evidence": set(), "contracts.models": set(),
-    DEDUPLICATION: {"contracts.models"}, f"{DEDUPLICATION}.exact": {DEDUPLICATION}, f"{DEDUPLICATION}.tolerant": {DEDUPLICATION},
+    DEDUPLICATION: {"contracts.models", f"{DEDUPLICATION}.scoring"}, f"{DEDUPLICATION}.scoring": set(),
+    f"{DEDUPLICATION}.exact": {DEDUPLICATION, f"{DEDUPLICATION}.scoring"}, f"{DEDUPLICATION}.tolerant": {DEDUPLICATION, f"{DEDUPLICATION}.scoring"},
     "discovery": set(), "discovery.fetching": {"discovery.safe"}, "discovery.host": set(), "discovery.producer": set(), "discovery.producers": set(),
     "discovery.producers.city_of_san_diego": {"discovery.producer", "discovery.safe", "common.textutil", "common.timeutil", "geolocation.textloc"},
     "discovery.producers.localist": {"discovery.producer", "discovery.safe"},
@@ -399,7 +400,7 @@ class Real(unittest.TestCase):
         g = graph(DISCOVERY)
         self.assertEqual(sorted(n for n, info in g.items() if BUILD in info["inside"]), [COMPOSITION_ROOT])
         self.assertEqual(sorted(n for n, info in g.items() if any(is_strategy(t) for t in info["inside"]) and not is_dedup(n)), [COMPOSITION_ROOT])
-        self.assertEqual(g[DEDUPLICATION]["inside"], {"contracts.models"})
+        self.assertEqual(g[DEDUPLICATION]["inside"], {"contracts.models", "deduplication.scoring"})
 
     def test_a_new_producer_needs_only_its_own_package_and_the_root_wiring(self):
         g = graph(DISCOVERY)

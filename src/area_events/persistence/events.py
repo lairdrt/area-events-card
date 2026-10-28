@@ -34,14 +34,15 @@ class EventRepository:
 
     @staticmethod
     def _existing(row):
-        return ExistingEvent(row["event_key"], row["title"], row["starts_at"], row["ends_at"], row["venue_name"], row["address"], row["location_text"], row["revision"], row["source_url"])
+        return ExistingEvent(row["event_key"], row["title"], row["starts_at"], row["ends_at"], row["venue_name"], row["address"], row["location_text"], row["revision"], row["source_url"],
+                             row["description"], row["timezone"])
 
     def association(self, tx, candidate_id):
         row = tx.execute("SELECT e.event_key, l.role FROM event_candidates l JOIN events e USING (event_id) WHERE l.candidate_id=?", (candidate_id,)).fetchone()
         return Association(row["event_key"], row["role"]) if row else None
 
     def between(self, tx, earliest, latest, after=None, limit=LOOKUP_PAGE_SIZE):
-        sql = "SELECT event_key, title, starts_at, ends_at, venue_name, address, location_text, revision, source_url FROM events WHERE starts_at BETWEEN ? AND ?"
+        sql = "SELECT event_key, title, starts_at, ends_at, venue_name, address, location_text, revision, source_url, description, timezone FROM events WHERE starts_at BETWEEN ? AND ?"
         params = [int(earliest), int(latest)]
         if after is not None:
             sql += " AND (starts_at > ? OR (starts_at = ? AND event_key > ?))"
@@ -246,7 +247,8 @@ class DuplicateMaintenance:
     @staticmethod
     def _facts(row):
         return ExistingEvent(row["event_key"], row["title"], row["starts_at"], row["ends_at"], row["venue_name"], row["address"],
-                             row["location_text"], row["revision"], row["source_url"])
+                             row["location_text"], row["revision"], row["source_url"],
+                             row["description"], row["timezone"])
 
     def _eligible_pairs(self, rows):
         anchors = defaultdict(set)

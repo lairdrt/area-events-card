@@ -339,6 +339,14 @@ class Deployment(unittest.TestCase):
         for name, version in pins.items():
             self.assertEqual(metadata.version(name), version, f"{name}: the tested environment must match the pin")
 
+    def test_rapidfuzz_is_a_core_dependency_pinned_exactly(self):
+        import importlib.metadata as metadata
+        import tomllib
+        with open(os.path.join(os.path.dirname(FIXTURE), "..", "..", "pyproject.toml"), "rb") as handle:
+            core = tomllib.load(handle)["project"]["dependencies"]
+        self.assertEqual(core, ["rapidfuzz==" + metadata.version("rapidfuzz")], "the tested environment matches the pin, and there are no unpinned dependencies")
+        self.assertEqual([r for r in metadata.requires("rapidfuzz") or [] if "extra ==" not in r], [], "RapidFuzz has no unconditional dependencies of its own to pin")
+
     def test_selfcheck_exercises_the_engine_end_to_end(self):
         from area_events.image_extractor import selfcheck
         outcome = selfcheck.check()
@@ -352,6 +360,8 @@ class Deployment(unittest.TestCase):
             self.assertEqual(selfcheck.main(), 1)
         with patch.object(selfcheck, "GOOSE3_VERSION", "3.1.21"):
             self.assertEqual(selfcheck.main(), 1)
+        with patch.object(selfcheck, "EXPECTED_RAPIDFUZZ", "0.0.1"):
+            self.assertEqual(selfcheck.main(), 1, "a missing or wrong RapidFuzz fails the deployment gate")
         with patch.object(selfcheck, "png", return_value=b"not an image" * 1000):
             self.assertEqual(selfcheck.main(), 1)
         with patch.object(selfcheck, "HTML", "<html><body><article><p>No image at all.</p></article></body></html>"):

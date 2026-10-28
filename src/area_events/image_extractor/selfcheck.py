@@ -13,6 +13,7 @@ from .goose3_adapter import GOOSE3_VERSION, Goose3ImageExtractor
 from .v1 import ImageRequest
 
 EXPECTED_VERSION = "3.1.22"
+EXPECTED_RAPIDFUZZ = "3.14.6"   # the deduplication scorer rides on the same deployment gate: it must be installed and working
 PAGE = "https://selfcheck.invalid/events/fair"
 IMAGE = "https://selfcheck.invalid/uploads/fair.png"
 HTML = ("<html><head><title>Fair</title></head><body><article>"
@@ -30,8 +31,17 @@ def png():
     return buffer.getvalue()
 
 
+def check_scorer():
+    """RapidFuzz (the deduplicator's text similarity) is installed at its pin and computes a sensible score."""
+    import rapidfuzz
+    from rapidfuzz import fuzz
+    assert rapidfuzz.__version__ == EXPECTED_RAPIDFUZZ, f"rapidfuzz {rapidfuzz.__version__} is installed, {EXPECTED_RAPIDFUZZ} is required"
+    assert fuzz.ratio("holiday marketplace", "holiday marketplaces") > 90 and fuzz.ratio("jazz night", "rock night") < 70, "rapidfuzz scores unexpectedly"
+
+
 def check():
     """Raises AssertionError or any import/runtime error with the reason the image engine cannot be relied on."""
+    check_scorer()
     engine = Goose3ImageExtractor()
     assert engine.available(), "goose3 is not installed"
     assert GOOSE3_VERSION == EXPECTED_VERSION, f"goose3 {GOOSE3_VERSION} is installed, {EXPECTED_VERSION} is required"

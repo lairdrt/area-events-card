@@ -19,7 +19,7 @@ for folder in (bare, extra):
 with open(os.path.join(bare, "pyproject.toml"), "w") as handle:
     handle.write("[project]\nname='x'\nversion='1'\n")
 with open(os.path.join(extra, "pyproject.toml"), "w") as handle:
-    handle.write("[project]\nname='x'\nversion='1'\n[project.optional-dependencies]\nimages=['goose3==3.1.22','lxml==6.1.3']\n")
+    handle.write("[project]\nname='x'\nversion='1'\ndependencies=['rapidfuzz==3.14.6']\n[project.optional-dependencies]\nimages=['goose3==3.1.22','lxml==6.1.3']\n")
 
 failed = types.SimpleNamespace(returncode=1, stdout='{"ok": false}', stderr="boom")
 passed = types.SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
@@ -45,7 +45,7 @@ try:
     raise SystemExit("a failed installation was accepted")
 except RuntimeError:
     pass
-assert "--only-binary=:all:" in calls[0] and "goose3==3.1.22" in calls[0] and "lxml==6.1.3" in calls[0], calls
+assert "--only-binary=:all:" in calls[0] and "goose3==3.1.22" in calls[0] and "lxml==6.1.3" in calls[0] and "rapidfuzz==3.14.6" in calls[0], calls
 try:
     helper.ae_image_smoke("python", extra)
     raise SystemExit("a failed self-check was accepted")
