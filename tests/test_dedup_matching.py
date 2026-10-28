@@ -122,6 +122,69 @@ class Dataset(unittest.TestCase):
         self.assertIsInstance(ExactMatch(profile=MatchProfile(name="custom")).profile, MatchProfile)
 
 
+PCL = "https://calendar.utexas.edu/event/"
+SWIM_START = 1793376000
+ZOOM_START = 1793122200
+WIDGET_START = 1793730600
+WIDGET = "I, Widget: Why It's Nearly Impossible to Trace Physical Flows Through the U.S. Economy, And What That Means for Industrial Energy Modeling"
+
+
+def utx(title, starts_at, venue=None, address=None, page=""):
+    return event(title, starts_at, None, venue, address, None, None, PCL + page, None)
+
+
+class ProductionExamples(unittest.TestCase):
+    """Pairs from the production event database (evaluation of 0e875bf)."""
+
+    def strategies(self):
+        return (ExactMatch(), TolerantMatch())
+
+    def test_mens_and_womens_swimming_are_never_the_same_event(self):
+        men = utx("University of Texas Men's Swimming and Diving at South Carolina", SWIM_START, "Columbia, South Carolina", page="mens")
+        women = utx("University of Texas Women's Swimming and Diving at South Carolina", SWIM_START, "Columbia, South Carolina", page="womens")
+        for strategy in self.strategies():
+            for a, b in ((men, women), (women, men)):
+                score = compare(a, b, strategy.profile)
+                self.assertFalse(score.matched, score)
+        self.assertEqual(compare(men, women, TolerantMatch().profile).reason, "the titles name opposing groups")
+
+    def test_opposing_qualifiers_are_whole_words_and_never_veto_a_title_naming_both(self):
+        def tolerant(a, b):
+            return compare(utx(a, SWIM_START, "Pool"), utx(b, SWIM_START, "Pool"), TolerantMatch().profile).reason
+        for left, right in (("Boys Summer Soccer Camp at Harbor Park", "Girls Summer Soccer Camp at Harbor Park"), ("Men's Open Mic Night at the Harbor Hall", "Women's Open Mic Night at the Harbor Hall"), ("Ladies Winter Night Social at the Library", "Men Winter Night Social at the Library")):
+            self.assertEqual(tolerant(left, right), "the titles name opposing groups", (left, right))
+        for left, right in (("Men's and Women's Swimming", "Men's Swimming"), ("Men's and Women's Swimming", "Women's Swimming"),
+                            ("Men's & Women's Swimming", "Men's & Women's Swimming"), ("Mental Health Workshop", "Womental Health Workshop")):
+            self.assertNotEqual(tolerant(left, right), "the titles name opposing groups", (left, right))
+        self.assertTrue(compare(utx("Boys and Girls Club Open House", SWIM_START, "Pool"), utx("Boys and Girls Club Open House", SWIM_START, "Pool"),
+                                TolerantMatch().profile).matched)
+
+    def test_room_numbers_in_a_venue_do_not_reject_a_pair(self):
+        zoom = "Zoning the AI and Cloud Data Center Boom: How Local Governments Are Regulating Data Centers"
+        room, stream = "EER 3.646 or online via Zoom or YouTube", "Live Stream Online (Zoom and YouTube)"
+        for left, right in ((room, stream), (room, "Engineering Education and Research Center (EER)")):
+            a, b = utx(zoom, ZOOM_START, left, page="a"), utx(zoom, ZOOM_START, right, page="b")
+            for strategy in self.strategies():
+                self.assertNotIn("number or letter", compare(a, b, strategy.profile).reason, (left, right))
+        widget_a = utx("UT Energy Symposium: " + WIDGET, WIDGET_START, "Engineering Education and Research Center (EER)", "2501 Speedway, Austin, TX 78712", "ut-energy")
+        widget_b = utx(WIDGET, WIDGET_START, room, page="i-widget")
+        for strategy in self.strategies():
+            for a, b in ((widget_a, widget_b), (widget_b, widget_a)):
+                self.assertNotIn("number or letter", compare(a, b, strategy.profile).reason)
+
+    def test_the_marker_rule_still_separates_rooms_editions_and_numbers(self):
+        from area_events.deduplication.scoring import _marker_differs
+        self.assertTrue(_marker_differs("hall a", "hall b", digits=False))
+        self.assertTrue(_marker_differs("room 3", "room 4", digits=True))
+        self.assertTrue(_marker_differs("concert", "concert ii", digits=False))
+        self.assertFalse(_marker_differs("eer 3 646", "eer", digits=False))
+        self.assertFalse(_marker_differs("room 3", "room 4", digits=False), "digits are judged by _numbers_differ for places")
+        for strategy in self.strategies():
+            for left, right in ((event(venue="EER 3"), event(venue="EER 4")), (event(venue="Hall A"), event(venue="Hall B")),
+                                (event(title="Harbor Concert 1"), event(title="Harbor Concert 2")), (event(), event(title="Harbor Concert II"))):
+                self.assertFalse(compare(left, right, strategy.profile).matched)
+
+
 class Lookup:
     """Counts the pages asked for, like a database would be."""
 

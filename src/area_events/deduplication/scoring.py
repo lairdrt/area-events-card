@@ -116,8 +116,25 @@ def _numbers_differ(left, right):
 
 def _marker_differs(left, right, digits=True):
     """Do the two texts differ by a number, a roman numeral or a single letter ("Night 1" / "Night 2", "Concert" / "Concert II", "Hall A" / "Hall B")?
-    Such a token is what tells one performance, room or edition from the next, however similar the rest is."""
-    return any((digits and token.isdigit()) or token in ROMAN or len(token) == 1 for token in set(left.split()) ^ set(right.split()))
+    Such a token is what tells one performance, room or edition from the next, however similar the rest is. Without `digits`, numbers are ignored entirely (a room
+    number such as the "3" of "3.646" is no identifier here; `_numbers_differ` judges digits) while a single letter still counts."""
+    return any((digits and token.isdigit()) or token in ROMAN or (len(token) == 1 and (digits or token.isalpha())) for token in set(left.split()) ^ set(right.split()))
+
+
+# Whole words that exclude each other: an event for one group is not the event for the other. Each set is one side of a pair of opposites.
+OPPOSITES = ((frozenset(("men", "mens", "man", "male", "boys", "boy")), frozenset(("women", "womens", "woman", "female", "girls", "girl", "ladies"))),)
+
+
+def _qualifier_sides(title):
+    """Which side of each pair of opposites a normalized title names: 'a', 'b', or both when it explicitly involves both groups."""
+    words = set(title.split())
+    return tuple((bool(words & first), bool(words & second)) for first, second in OPPOSITES)
+
+
+def _qualifiers_oppose(left, right):
+    """True when one title names one group and the other names the opposite one ("Men's Swimming" / "Women's Swimming"). A title naming both groups opposes neither."""
+    return any(a_first != a_second and b_first != b_second and a_first != b_first
+               for (a_first, a_second), (b_first, b_second) in zip(_qualifier_sides(left), _qualifier_sides(right)))
 
 
 _ZONES = {}
@@ -163,6 +180,8 @@ def compare(left, right, profile, same_page=None):
         return Score(False, title, "the titles are too different")
     if _marker_differs(a_title, b_title):
         return Score(False, title, "the titles differ by a number, numeral or letter")
+    if _qualifiers_oppose(a_title, b_title):
+        return Score(False, title, "the titles name opposing groups")
 
     parts = [(profile.w_title, title), (profile.w_start, 1.0 - profile.time_decay * gap / profile.start_tolerance_s if profile.start_tolerance_s else 1.0),
              (profile.w_date, 1.0 if _same_day(left, right) else 0.0)]
