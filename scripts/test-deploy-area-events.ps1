@@ -397,5 +397,19 @@ Check 'embedded Python helper installs from the images extra and fails on a miss
     if ($LASTEXITCODE -ne 0 -or "$out" -notmatch 'helper ok') { throw "helper behavior check failed: $out" }
   } finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
 }
+Check 'every Invoke-CubiPython timeout is accepted by the real remote-command builder' {
+  $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
+  $timeouts=@([regex]::Matches($text,'(?m)Invoke-CubiPython\s+\S+[^
+]*?\s(\d+)\s*(?:\||$)') | ForEach-Object { [int]$_.Groups[1].Value })
+  $calls=@([regex]::Matches($text,'Invoke-CubiPython\s+[$"]')).Count
+  if ($timeouts.Count -lt 11 -or $timeouts.Count -ne $calls) { throw "found $($timeouts.Count) timeouts for $calls calls" }
+  foreach($t in $timeouts) {
+    # Invoke-CubiPython hands the builder Max(5, timeout-10); the real ValidateRange runs here.
+    $command=New-AreaEventsRemotePythonCommand -Code 'print(1)' -TimeoutSeconds ([Math]::Max(5,$t-10))
+    if ($command -notmatch "timeout --signal=TERM --kill-after=5s $([Math]::Max(5,$t-10))s python3 -") { throw "unexpected remote command for $t" }
+  }
+  $rejected=$false; try { $null=New-AreaEventsRemotePythonCommand -Code 'print(1)' -TimeoutSeconds 601 } catch { $rejected=$true }
+  if (-not $rejected) { throw 'the builder no longer enforces its 600 s limit; this check is stale' }
+}
 if ($script:failures) { Write-Error "$script:failures deployment tests failed"; exit 1 }
 Write-Host 'All deployment engine checks passed.'

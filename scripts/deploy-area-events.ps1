@@ -32,16 +32,16 @@ $script:TargetSchema = [int]$schemaVersions[$schemaVersions.Count-1].Groups[1].V
 # proves nothing). Both raise on any failure, which fails the deployment step that called them.
 $script:ImageDepsPy=@'
 import subprocess as _sp,tomllib as _toml
-def ae_install_images(python,root,required=True):
+def ae_install_images(python,root,required=True,timeout=200):
  with open(root+'/pyproject.toml','rb') as f: extra=_toml.load(f).get('project',{}).get('optional-dependencies',{}).get('images')
  if not extra:
   if required: raise RuntimeError('pyproject.toml declares no images extra')
   return False
- r=_sp.run([python,'-m','pip','install','--disable-pip-version-check','--only-binary=:all:','--no-binary=langdetect']+list(extra),timeout=800,capture_output=True,text=True)
+ r=_sp.run([python,'-m','pip','install','--disable-pip-version-check','--only-binary=:all:','--no-binary=langdetect']+list(extra),timeout=timeout,capture_output=True,text=True)
  if r.returncode: raise RuntimeError('image dependency installation failed: '+(r.stdout+r.stderr)[-1200:])
  return True
 def ae_image_smoke(python,cwd):
- r=_sp.run([python,'-I','-m','area_events.image_extractor.selfcheck'],cwd=cwd,timeout=120,capture_output=True,text=True)
+ r=_sp.run([python,'-I','-m','area_events.image_extractor.selfcheck'],cwd=cwd,timeout=60,capture_output=True,text=True)
  if r.returncode: raise RuntimeError('image extraction self-check failed: '+(r.stdout+r.stderr)[-1000:])
  return r.stdout.strip()
 '@
@@ -338,7 +338,7 @@ if ok:
  except Exception as error: ok=fail('image extraction is not installed and working: '+str(error)[-300:])
 print(json.dumps({'matches':bool(ok),'diagnostics':issues[:3]}))
 '@
-  $result=Invoke-CubiPython $py @{AE_EXPECTED=$manifest} 80 | ConvertFrom-Json
+  $result=Invoke-CubiPython $py @{AE_EXPECTED=$manifest} 200 | ConvertFrom-Json
   if ($result.matches -ne $true) { Write-Host "Cubi installed-source check: $(@($result.diagnostics) -join '; ')" }
   return ($result.matches -eq $true)
 }
@@ -489,8 +489,8 @@ try:
   members=t.getmembers()
   if any(os.path.isabs(m.name) or '..' in m.name.split('/') or m.issym() or m.islnk() for m in members): raise RuntimeError('unsafe deployment archive')
   t.extractall(stage,filter='data')
- venv=stage+'/.venv'; subprocess.run(['python3','-m','venv',venv],timeout=90,check=True,capture_output=True,text=True)
- python=venv+'/bin/python'; subprocess.run([python,'-m','pip','install','--no-deps',stage],timeout=150,check=True,capture_output=True,text=True)
+ venv=stage+'/.venv'; subprocess.run(['python3','-m','venv',venv],timeout=60,check=True,capture_output=True,text=True)
+ python=venv+'/bin/python'; subprocess.run([python,'-m','pip','install','--no-deps',stage],timeout=90,check=True,capture_output=True,text=True)
  ae_install_images(python,stage); smoke=ae_image_smoke(python,stage)
  if not migrate:
   print(json.dumps({'passed':True,'images':json.loads(smoke)}))
@@ -509,12 +509,30 @@ finally:
  shutil.rmtree(stage,ignore_errors=True)
  if os.path.exists(os.environ['AE_ARCHIVE']): os.remove(os.environ['AE_ARCHIVE'])
 '@
-  $res=Invoke-CubiPython $py @{AE_ARCHIVE=$archive;AE_BACKUP=$script:RemoteBackup;AE_TARGET="$script:TargetSchema";AE_MIGRATE=$(if($migrate){'1'}else{'0'})} 1000 | ConvertFrom-Json
+  $res=Invoke-CubiPython $py @{AE_ARCHIVE=$archive;AE_BACKUP=$script:RemoteBackup;AE_TARGET="$script:TargetSchema";AE_MIGRATE=$(if($migrate){'1'}else{'0'})} 600 | ConvertFrom-Json
   if (-not $res.passed -or $res.images.ok -ne $true) { throw 'Installation or migration rehearsal failed.' }; return $res
 }
 function Invoke-CubiDeploy($state) {
   $archive="/home/robohobo/.cache/ae-deploy-$([guid]::NewGuid().ToString('N')).tar"
   $null=Invoke-Bounded 'scp.exe' (@(Get-SshBase)+@($script:Archive,"$($script:Cubi):$archive")) 120
+  # Stage 1, service still running: install the pinned image dependencies (60 s venv + 300 s pip of 590). A failure here changes nothing
+  # the running service uses. Stage 2 below (the cutover with the service stopped) then needs no network.
+  $installPy=$script:ImageDepsPy+"`n"+@'
+import json,os,shutil,subprocess,tarfile,tempfile
+root='/home/robohobo/area-events-discovery'; venv=os.path.join(root,'.venv'); python=os.path.join(venv,'bin','python')
+if os.path.islink(venv): raise RuntimeError('refusing symlink at virtual environment path')
+work=tempfile.mkdtemp(prefix='ae-images-')
+try:
+ with tarfile.open(os.environ['AE_ARCHIVE']) as t:
+  members=t.getmembers()
+  if any(os.path.isabs(m.name) or '..' in m.name.split('/') or m.issym() or m.islnk() for m in members): raise RuntimeError('unsafe deployment archive')
+  t.extractall(work,filter='data')
+ if not os.path.isfile(python): subprocess.run(['python3','-m','venv',venv],timeout=60,check=True,capture_output=True,text=True)
+ ae_install_images(python,work,timeout=300)
+ print(json.dumps({'installed':True}))
+finally: shutil.rmtree(work,ignore_errors=True)
+'@
+  $null=Invoke-CubiPython $installPy @{AE_ARCHIVE=$archive} 600
   $py=$script:ImageDepsPy+"`n"+@'
 import json,os,re,shlex,shutil,sqlite3,subprocess,tarfile,tempfile
 root='/home/robohobo/area-events-discovery'; run=os.path.basename(os.environ['AE_ARCHIVE']).replace('.tar',''); stage=root+'/.ae-stage-'+run
@@ -554,9 +572,9 @@ if legacy:
 else:
  updated,matches=re.subn(r'(?m)^ExecStart=\S+\s+-m\s+area_events(?=\s|$)','ExecStart='+venv_python+' -m area_events',unit_text,count=1)
 if matches!=1: raise RuntimeError('systemd unit does not have a supported Python entry point')
-subprocess.run(['python3','-m','venv',venv],timeout=90,check=True,capture_output=True,text=True)
-subprocess.run([venv_python,'-m','pip','install','--no-deps','--force-reinstall',root],timeout=150,check=True,capture_output=True,text=True)
-ae_install_images(venv_python,root); ae_image_smoke(venv_python,root)
+subprocess.run(['python3','-m','venv',venv],timeout=60,check=True,capture_output=True,text=True)
+subprocess.run([venv_python,'-m','pip','install','--no-deps','--force-reinstall',root],timeout=90,check=True,capture_output=True,text=True)
+ae_image_smoke(venv_python,root)
 with open(unit,'w',encoding='utf-8') as f: f.write(updated)
 r=subprocess.run([venv_python,'-m','area_events','status','--db',root+'/data/discovery/discovery.db'],cwd=root,timeout=120,capture_output=True,text=True)
 if r.returncode: raise RuntimeError('migration failed: '+r.stderr[-1000:])
@@ -575,7 +593,7 @@ print(json.dumps({'changed':True,'schema_changed':changed,'schema':max(versions)
 '@
   try {
     $script:CubiTransitionId=[IO.Path]::GetFileNameWithoutExtension($archive)
-    $res=Invoke-CubiPython $py @{AE_ARCHIVE=$archive;AE_BACKUP=$script:RemoteBackup;AE_OLD="$($state.Remote.schema)";AE_TARGET="$script:TargetSchema"} 1200 | ConvertFrom-Json
+    $res=Invoke-CubiPython $py @{AE_ARCHIVE=$archive;AE_BACKUP=$script:RemoteBackup;AE_OLD="$($state.Remote.schema)";AE_TARGET="$script:TargetSchema"} 600 | ConvertFrom-Json
     $script:SchemaChanged=[bool]$res.schema_changed
     if ($res.transition_id -ne $script:CubiTransitionId) { throw 'Cubi deployment transition identifier did not match its staging path.' }
     ConvertTo-CubiDeployResult $res
@@ -935,10 +953,10 @@ for rel in ('src/area_events','pyproject.toml'):
 if os.path.isdir(root+'/src/area_events'):
  venv=os.path.join(root,'.venv')
  if os.path.islink(venv): raise RuntimeError('refusing symlink at virtual environment path during recovery')
- subprocess.run(['python3','-m','venv',venv],timeout=90,check=True,capture_output=True,text=True)
- subprocess.run([os.path.join(venv,'bin','python'),'-m','pip','install','--no-deps','--force-reinstall',root],timeout=150,check=True,capture_output=True,text=True)
+ subprocess.run(['python3','-m','venv',venv],timeout=60,check=True,capture_output=True,text=True)
+ subprocess.run([os.path.join(venv,'bin','python'),'-m','pip','install','--no-deps','--force-reinstall',root],timeout=90,check=True,capture_output=True,text=True)
  # Restored code that declares the images extra gets its pinned dependencies back and must pass the same self-check.
- if ae_install_images(os.path.join(venv,'bin','python'),root,required=False) and os.path.isfile(root+'/src/area_events/image_extractor/selfcheck.py'): ae_image_smoke(os.path.join(venv,'bin','python'),root)
+ if ae_install_images(os.path.join(venv,'bin','python'),root,required=False,timeout=120) and os.path.isfile(root+'/src/area_events/image_extractor/selfcheck.py'): ae_image_smoke(os.path.join(venv,'bin','python'),root)
 unit=os.path.expanduser('~/.config/systemd/user/area-events-discovery.service')
 archived_unit=t+'/systemd/area-events-discovery.service'
 if os.path.isfile(archived_unit):
@@ -966,7 +984,7 @@ status_data=status.get('status',status) if isinstance(status,dict) else {}
 state=status_data.get('state') or status_data.get('runtime',{}).get('state')
 if state!='running': raise RuntimeError('accepted Cubi service failed rollback health check')
 '@
-    $null=Invoke-CubiPython $py @{AE_BACKUP=$script:RemoteBackup;AE_TRANSITION=$script:CubiTransitionId} 1200
+    $null=Invoke-CubiPython $py @{AE_BACKUP=$script:RemoteBackup;AE_TRANSITION=$script:CubiTransitionId} 600
   } elseif ($phase -eq 'Home Assistant installation') {
     Write-Warning 'Restoring the backed-up HA integration and requesting one bounded HA restart.'
     Restore-HaBackup $state
