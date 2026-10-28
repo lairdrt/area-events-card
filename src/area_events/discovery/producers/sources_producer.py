@@ -16,14 +16,18 @@ import hashlib
 import json
 import re
 from collections import deque
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, timedelta
 from html import unescape
 from html.parser import HTMLParser
 import calendar
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 from xml.etree import ElementTree
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from ...image_extractor.association import associate, wanted_for_page
+from ...image_extractor.responsive import measurable
+from ...image_extractor.v1 import ImageRequest
 from ..producer import EventCandidate, ProducerResult, Provenance, SourceLead, stated
 from ..safe import FetchError
 from ..urls import canonical_url
@@ -332,6 +336,29 @@ class _LinksAndEvents(HTMLParser):
         if tag == "a" and self._anchor is not None:
             self.links.append((self._anchor[0], _clean(" ".join(self._anchor[1]), 150) or ""))
             self._anchor = None
+
+
+def _attach_page_image(events, html, page_url, fetcher, extractor):
+    """Give a single-event page's imageless events the page's primary image, as found by the shared image_extractor/v1 engine.
+
+    Source-supplied images (JSON-LD) are never replaced. Which events may carry the page's image is the shared association policy's decision.
+    """
+    titled = [(event.title, event.image_url) for event in events]
+    if extractor is None or not wanted_for_page(titled) or len(html) > 1_500_000:
+        return events
+    try:
+        result = extractor.extract(ImageRequest(html, page_url, tuple(event.title for event in events),
+                                                measurable(getattr(fetcher, "fetch_image", None), html, page_url)))
+    except Exception:   # an engine that breaks its contract costs this page its image and nothing else
+        return events
+    verdict = associate(result, titled, html, page_url)
+    if not verdict.image_url:
+        return events
+    note = f"Page primary image ({result.engine}{', ' + result.method if result.method else ''}) at {page_url}"
+    return [event if event.image_url else replace(
+        event, image_url=verdict.image_url, image_source="source HTML event image",
+        verification=stated(tuple(event.verification.evidence) + (note,), False, event.ends_at, event.venue,
+                            event.address, event.description, verdict.image_url)) for event in events]
 
 
 def _feed_links(page):
@@ -670,6 +697,10 @@ class SourcesProducer:
          "default": 75, "min": 1, "max": MAX_EVENTS},
     )
 
+    def __init__(self, image_extractor=None):
+        """`image_extractor`: any image_extractor/v1 engine, injected by the composition root; None means pages are not searched for images."""
+        self.image_extractor = image_extractor
+
     @staticmethod
     def validate_options(options):
         if not isinstance(options, dict):
@@ -760,6 +791,7 @@ class SourcesProducer:
                     existing = {(e.title.casefold(), e.starts_at) for e in events}
                     text_events = [e for e in visible if (e.title.casefold(), e.starts_at) not in existing]
                     events.extend(text_events)
+                    events = _attach_page_image(events, page, page_url, fetcher, self.image_extractor)
                     unstructured_events += len(text_events)
                     rejected += from_text
                 except (ValueError, TypeError):

@@ -10,6 +10,7 @@
 Every object is created here and handed its dependencies; nothing is looked up globally. Tests build the same graph with a fake fetch
 client and a fixed clock.
 """
+import logging
 import os
 import secrets
 import time
@@ -34,6 +35,7 @@ from .discovery.producers import city_of_san_diego
 from .discovery.producers.city_of_san_diego import CityOfSanDiegoProducer
 from .discovery.producers.localist import LocalistProducer
 from .discovery.producers.sources_producer import SourcesProducer
+from .image_extractor.goose3_adapter import Goose3ImageExtractor
 from .discovery.scheduler import AreaPacing, DiscoveryScheduler, SchedulerConfig
 from .discovery.service import DiscoveryConfig, DiscoveryService
 
@@ -55,6 +57,15 @@ KNOWN_SOURCES = types.MappingProxyType({  # read-only
     "ut-austin": SourceSpec("ut_austin", "localist", "UT Austin Events", "https://calendar.utexas.edu",
                             options=(("days", 14), ("max_pages", 5), ("timezone", "America/Chicago")), interval_s=3600),
 })
+
+def default_image_extractor():
+    """The image_extractor/v1 engine the producers share: Goose3 when installed. Swapping engines means changing this line only."""
+    engine = Goose3ImageExtractor()
+    if not engine.available():
+        logging.getLogger("area-events").warning("goose3 is not installed: pages will not be searched for event images")
+        return None
+    return engine
+
 
 @dataclass
 class DiscoveryApp:
@@ -101,7 +112,7 @@ def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None,
     scheduler = DiscoveryScheduler(persistence.scheduling, pacing)
     config = config or DiscoveryConfig(require_area=service_gate)
     adapters = {"sandiego_gov": CityOfSanDiegoProducer(), "localist": LocalistProducer(),
-                "sources_producer": SourcesProducer()}
+                "sources_producer": SourcesProducer(image_extractor=default_image_extractor())}
     service = DiscoveryService(persistence.crawl, client, adapters, clock, config, worker_id,
                                pacing=pacing if service_gate else None, gate=scheduler if service_gate else None)
     host = DiscoveryHost(service, scheduler, clock, host_config)

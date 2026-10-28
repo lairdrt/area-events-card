@@ -9,6 +9,29 @@ description = "Local event discovery service and Home Assistant integration"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+# Goose3 and its complete dependency tree, pinned exactly (deployment installs this list with pip --only-binary=:all: except langdetect,
+# which is a pure-Python source package). Change a pin only together with a fresh run of `python -m area_events.image_extractor.selfcheck`.
+images = [
+    "goose3==3.1.22",
+    "beautifulsoup4==4.15.0",
+    "certifi==2026.10.23",
+    "charset-normalizer==3.5.2",
+    "cssselect==1.6.0",
+    "idna==3.20",
+    "langdetect==1.0.9",
+    "lxml==6.1.3",
+    "pillow==13.0.0",
+    "pyahocorasick==2.3.1",
+    "python-dateutil==3.0.0",
+    "requests==2.34.2",
+    "six==1.17.0",
+    "soupsieve==3.0.4",
+    "typing_extensions==4.16.0",
+    "tzdata==2026.5",
+    "urllib3==2.8.0",
+]
+
 [project.scripts]
 area-events = "area_events.cli:main"
 

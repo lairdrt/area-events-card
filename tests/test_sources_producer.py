@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from area_events import app as app_module
 from area_events.control.service import CreateAreaRequest, CreateSourceRequest
@@ -101,6 +102,27 @@ def run_crawl(pages, urls=(SEED,), **kwargs):
 
 
 class GenericProducer(unittest.TestCase):
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     def test_validates_websites_and_bounded_options(self):
         adapter = SourcesProducer()
         base, opts = adapter.validate_options({"urls": [SEED, SEED + "#fragment", OTHER]})
@@ -130,6 +152,30 @@ class GenericProducer(unittest.TestCase):
         self.assertFalse(result.candidates[0].verification.verified)
         self.assertEqual(result.candidates[0].provenance.found_on, (SEED,))
         self.assertEqual(len(producer.accept(result).candidates), 1)
+
+
+
+
+    def test_jsonld_event_image_takes_precedence_over_html_fallback(self):
+        doc = {**DOC, "image": "/images/autumn-fair-jsonld.jpg"}
+        page = ("<main><img src='/uploads/autumn-fair-1024x341.jpg' alt='Autumn Fair'></main>"
+                '<script type="application/ld+json">' + json.dumps(doc) + "</script>")
+        result, _ = run_crawl({SEED: page}, max_depth=0)
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0].image_url,
+                         "https://example.org/images/autumn-fair-jsonld.jpg")
+        self.assertEqual(result.candidates[0].image_source, "source JSON-LD image")
+
+
+
+
+
+
+
+
+
+
+
 
     def test_direct_jsonld_document_as_seed(self):
         result, client = run_crawl({SEED: json.dumps({"@graph": [DOC]})}, max_depth=0)
