@@ -278,7 +278,7 @@ class TwoCards(Service):
             self.assertTrue(all(e["location_status"] in ("address", "venue", "description_only", "unknown") for e in inbox.last["events"]))
         self.assertIn("demonstration data", austin.last["notice"], "fixture events are never presented as live discoveries")
         self.assertNotIn("demonstration", san_diego.last["notice"] or "")
-        self.assertEqual(austin.last["events"][0]["source"]["name"], "Austin Fixture (fixture data, not live)")
+        self.assertEqual(austin.last["events"][0]["source"]["name"], "Austin (fixture) (fixture data, not live)", "the configured name, still marked as fixture data")
         self.assertTrue(san_diego.last["generated_at"], "freshness is when the sources were last read")
 
     def test_an_area_with_nothing_discovered_says_so_instead_of_implying_nothing_exists(self):
@@ -317,6 +317,34 @@ class TwoCards(Service):
         self.assertEqual(detail["event"]["id"], first["events"][0]["id"])
         self.assertEqual([h["revision"] for h in detail["history"]], [1])
         self.assertIn("title", detail["evidence"])
+
+
+class SourceNames(Service):
+    def test_tiles_and_summary_show_the_configured_name_and_a_rename_reaches_the_card_without_any_event_change(self):
+        async def scenario():
+            hub = self.hub()
+            card = Inbox()
+            await hub.subscribe("San Diego", card)
+            first = card.last
+            source = await self.control.source("sandiego_gov")
+            await hub.update_source("sandiego_gov", source["revision"], name="Local Craft Fairs")
+            self.read.calls.clear()
+            await hub.refresh()
+            renamed_calls = list(self.read.calls)
+            self.read.calls.clear()
+            await hub.refresh()
+            return first, card, renamed_calls, list(self.read.calls)
+
+        first, card, renamed_calls, quiet_calls = run(scenario())
+        self.assertEqual({e["source"]["name"] for e in first["events"]}, {"City of San Diego"})
+        self.assertEqual(first["sources"]["sandiego_gov"]["name"], "City of San Diego")
+        self.assertEqual(len(card.messages), 2, "the rename was pushed")
+        self.assertEqual({e["source"]["name"] for e in card.last["events"]}, {"Local Craft Fairs"}, "every tile shows the new name")
+        self.assertEqual(card.last["sources"]["sandiego_gov"]["name"], "Local Craft Fairs", "the summary shows the same name")
+        self.assertEqual({e["source"]["key"] for e in card.last["events"]}, {"sandiego_gov"}, "the identity key is unchanged")
+        self.assertEqual([(e["id"], e["revision"]) for e in card.last["events"]], [(e["id"], e["revision"]) for e in first["events"]], "no event changed")
+        self.assertEqual((renamed_calls.count("sources"), renamed_calls.count("events")), (1, 0), "one names read, no event re-read")
+        self.assertNotIn("sources", quiet_calls, "the names are not read again once current")
 
 
 class SharedUpdates(Service):
@@ -786,6 +814,13 @@ class Feed(unittest.TestCase):
         self.assertEqual(event["source_keys"], ["sandiego_gov"])
         bad_zone = feed_module.to_feed_event({**record, "timezone": "Not/AZone"})
         self.assertTrue(bad_zone["start"].endswith("+00:00"))
+
+    def test_a_configured_source_name_wins_over_any_name_made_from_the_key(self):
+        record = {"event_key": "ev-2", "title": "Halloween Finale", "starts_at": 1_800_000_000, "timezone": "UTC", "sources": ["mission_trails"]}
+        names = {"mission_trails": "Local Craft Fairs", "sandiego_gov": "City Events Calendar"}
+        self.assertEqual(feed_module.to_feed_event(record, names)["source"], {"name": "Local Craft Fairs", "key": "mission_trails"})
+        self.assertEqual(feed_module.source_name("sandiego_gov", names), "City Events Calendar", "the built-in default never overrides the configured name")
+        self.assertEqual(feed_module.source_name("mission_trails"), "Mission Trails", "a name from the key only when the service listed none")
 
     def test_the_adapter_preserves_every_source_association(self):
         record = {"event_key": "shared-event", "title": "Shared", "starts_at": 1_800_000_000, "timezone": "UTC",

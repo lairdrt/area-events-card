@@ -23,13 +23,19 @@ def _iso(epoch, zone_name):
     return datetime.fromtimestamp(epoch, tz=zone).isoformat(timespec="seconds")
 
 
-def source_name(source_key):
-    """A readable source name; data from a fixture source says so, so it is never mistaken for a live discovery."""
-    name = SOURCE_NAMES.get(source_key) or str(source_key).replace("_", " ").title()
+def source_name(source_key, names=None):
+    """A readable source name: the name configured for the source in the Discovery Service (`names`, from /v1/sources) first; a name made from
+    the key only for a source the service did not list. Data from a fixture source says so, so it is never mistaken for a live discovery."""
+    name = (names or {}).get(source_key) or SOURCE_NAMES.get(source_key) or str(source_key).replace("_", " ").title()
     return f"{name} (fixture data, not live)" if str(source_key).endswith("_fixture") else name
 
 
-def to_feed_event(event):
+def with_source_names(events, names):
+    """The feed events with their source shown under the configured names (a rename reaches events whose records did not change)."""
+    return [{**e, "source": {**e["source"], "name": source_name(e["source"]["key"], names)}} if (e.get("source") or {}).get("key") else e for e in events]
+
+
+def to_feed_event(event, names=None):
     """One `discovery.events.v1` event record -> the card's event dictionary."""
     zone = event.get("timezone")
     sources = event.get("sources") or []
@@ -47,7 +53,7 @@ def to_feed_event(event):
         "description": event.get("description"),
         "url": event.get("source_url"),
         "categories": [],
-        "source": {"name": source_name(sources[0]) if sources else None, "key": sources[0] if sources else None},
+        "source": {"name": source_name(sources[0], names) if sources else None, "key": sources[0] if sources else None},
         "source_keys": list(sources),
         "verified": False,
         "verification": {"status": "unverified", "evidence": [], "missing": list(event.get("missing") or []),
@@ -72,5 +78,5 @@ def to_feed_event(event):
     return result
 
 
-def to_feed_events(page):
-    return [to_feed_event(e) for e in page.get("events", ())]
+def to_feed_events(page, names=None):
+    return [to_feed_event(e, names) for e in page.get("events", ())]

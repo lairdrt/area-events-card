@@ -3,7 +3,7 @@
 One hub per config entry. It owns three small things, all in memory and none authoritative: the list of discovery areas, one cached
 event snapshot per area that some card follows, and the list of card subscriptions. The database stays with the Discovery host.
 
-    card A (San Diego) ─┐                          ┌─ read  client → GET /v1/events, /v1/changes, /v1/discovery/status
+    card A (San Diego) ─┐                          ┌─ read  client → GET /v1/events, /v1/changes, /v1/discovery/status, /v1/sources
     card B (Austin)    ─┼─ hub ─ one refresh loop ─┤
     card C (San Diego) ─┘   (the coordinator)      └─ control client → area / settings commands (administrators only)
 
@@ -13,6 +13,9 @@ for every card that follows it, and only cards whose view really changed are sen
 position it was read at, so nothing that happens while the service is unreachable or Home Assistant restarts is missed: the next
 successful refresh reads the changes after that position (or, after an outage, rereads the followed areas). A card's own display
 filters never reach the hub, so one card cannot change what another sees, and asking for events never starts a crawl.
+
+Source names. Event tiles and the source summary both show the name configured for the source in the service (GET /v1/sources, read once and
+again only after the change feed reports a source change), so a rename reaches every card without a code change and without touching events.
 """
 import hashlib
 import itertools
@@ -21,8 +24,8 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from .discovery_client import DiscoveryAuthError, DiscoveryConnectionError
-from .feed import UNVERIFIED_LOCATIONS, source_name, to_feed_events
+from .discovery_client import DiscoveryAuthError, DiscoveryConnectionError, DiscoveryRequestError
+from .feed import UNVERIFIED_LOCATIONS, source_name, to_feed_events, with_source_names
 
 _LOGGER = logging.getLogger(__name__)
 CHANGE_PAGE = 200
@@ -70,6 +73,7 @@ class DiscoveryHub:
         self._feeds, self._subs, self._ids = {}, {}, itertools.count(1)
         self.connected, self.last_error, self._closed = None, None, False
         self._sources = {}
+        self._names, self._names_stale, self._names_seq = None, False, 0   # configured source names; the last source change they reflect
 
     @property
     def can_control(self):
@@ -103,6 +107,16 @@ class DiscoveryHub:
         self._remember_status(status)
         return self._service_view()
 
+    async def _source_names(self):
+        """{source_key: configured name}, from GET /v1/sources: read once, and again only when a source change made it stale."""
+        if self._names is None or self._names_stale:
+            try:
+                self._names = {s["id"]: s.get("name") for s in await self._read.sources()}
+            except DiscoveryRequestError:   # a service that does not list its sources to this token: names made from the keys, as before
+                self._names = self._names or {}
+            self._names_stale = False
+        return self._names
+
     def _remember_status(self, status):
         self.connected, self.last_error = True, None
         self._status = status
@@ -123,7 +137,7 @@ class DiscoveryHub:
         """One page straight from the authoritative store (nothing cached): events in feed form, the next cursor and the feed position."""
         area = await self.resolve(reference)
         page = await self._read.events(area=area["area_key"], starts_from=starts_from, starts_to=starts_to, after=after, limit=limit)
-        return {"events": to_feed_events(page), "next_cursor": page.get("next_cursor"), "latest_seq": page.get("latest_seq"), "area": self._area_view(area)}
+        return {"events": to_feed_events(page, await self._source_names()), "next_cursor": page.get("next_cursor"), "latest_seq": page.get("latest_seq"), "area": self._area_view(area)}
 
     async def media(self, name):
         """A cached picture (bytes, content type), straight from the service. Pictures are immutable by name, so the browser caches them; the hub keeps nothing."""
@@ -131,11 +145,12 @@ class DiscoveryHub:
 
     async def event(self, event_key):
         detail = await self._read.event(event_key)
-        return {"event": to_feed_events({"events": [detail["event"]]})[0], "history": detail.get("history", []), "evidence": detail.get("evidence", {}),
+        return {"event": to_feed_events({"events": [detail["event"]]}, await self._source_names())[0], "history": detail.get("history", []), "evidence": detail.get("evidence", {}),
                 "candidates": detail.get("candidate_links", [])}
 
     async def snapshot(self, reference):
         area = await self.resolve(reference)
+        await self._source_names()
         feed = self._feeds.get(area["area_key"]) or await self._load(area)
         return self._present(area, feed)
 
@@ -148,6 +163,7 @@ class DiscoveryHub:
         if self._status is None:   # so the first view already carries the service's state
             self._remember_status(await self._read.status())
             self._processing = await self._read.processing()
+        await self._source_names()
         feed = self._feeds.get(area["area_key"]) or await self._load(area)
         key = next(self._ids)
         sub = self._subs[key] = _Subscription(area["area_key"], send)
@@ -182,6 +198,10 @@ class DiscoveryHub:
         try:
             if dirty == "all" or self._areas_stale or any(key not in {a["area_key"] for a in self._areas or ()} for key in dirty):
                 await self.areas(reload=True)
+            if dirty == "all" and self._names is not None:
+                self._names_stale = True
+            if self._names_stale:
+                await self._source_names()   # a renamed source: the next push shows the new name on tiles and summary alike
             by_key = {a["area_key"]: a for a in self._areas or ()}
             for key in (list(self._feeds) if dirty == "all" else sorted(dirty)):
                 if key in by_key and key in self._feeds:
@@ -206,6 +226,8 @@ class DiscoveryHub:
                 if kind in RELEVANT_KINDS:
                     self._areas_stale = True
                     dirty |= set(newer)
+                elif kind.startswith("source.") and seq > self._names_seq:
+                    self._names_stale, self._names_seq = True, seq   # its name may have changed; no event needs reading again
                 elif kind == "event.created":
                     dirty |= set(newer)      # a new event may belong to any followed area; which one is not in the record
                 elif kind in ("event.updated", "event.removed"):
@@ -246,7 +268,7 @@ class DiscoveryHub:
         for key in area.get("sources", ()):
             known = self._sources.get(key) or {}
             count = sum(1 for e in feed.events if key in (e.get("source_keys") or [(e.get("source") or {}).get("key")]))
-            sources[key] = {"name": source_name(key), "ok": not known.get("last_error"), "events": count, "last_success_at": known.get("last_success_at"),
+            sources[key] = {"name": source_name(key, self._names), "ok": not known.get("last_error"), "events": count, "last_success_at": known.get("last_success_at"),
                             "error": known.get("last_error")}
         service = self._service_view()
         message = None if self.connected else (self.last_error or "the Discovery Service is not reachable")
@@ -259,7 +281,7 @@ class DiscoveryHub:
             "revision": feed.latest_seq,
             "location": {"display_name": area["name"], "coverage": "sources"},
             "sources": sources, "report": [],
-            "events": feed.events, "truncated": feed.truncated,
+            "events": with_source_names(feed.events, self._names), "truncated": feed.truncated,
             "area": self._area_view(area), "service": service,
             "notice": self._notice(area, feed, service),
         }
@@ -292,7 +314,7 @@ class DiscoveryHub:
     def _digest(self, message):
         stable = {k: v for k, v in message.items() if k not in ("generated_at", "revision")}
         stable["service"] = {k: v for k, v in message["service"].items() if k != "extraction_pending"}   # operational detail, not worth a push
-        stable["events"] = [(e["id"], e.get("revision")) for e in message["events"]]
+        stable["events"] = [(e["id"], e.get("revision"), (e.get("source") or {}).get("name")) for e in message["events"]]
         return hashlib.sha256(json.dumps(stable, sort_keys=True, default=str).encode()).hexdigest()
 
     def _push(self, sub, area, feed, force=False):
