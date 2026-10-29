@@ -344,6 +344,28 @@ class Persistence(unittest.TestCase):
                 app.close()
 
 
+class DepthContainment(unittest.TestCase):
+    """max_depth 1 reads listing -> event page and stops: a site's home page, linked from its event pages and listing the same events again on another page, is never reached.
+    (Production 2026-10-29: at depth 2 the Bates home page was read and four extra candidates appeared under listing_url https://batesnutfarm.biz/.)"""
+
+    def pages(self):
+        listing = listing_page(card("Halloween Finale", "Sat., Oct. 31, 2026", "/e/1", "9:00am to 4:30pm"))
+        event = detail_page("Halloween Finale", "Saturday, October 31, 2026", "9:00am to 4:30pm", location="Bates Nut Farm").replace("</article>", '</article><a href="/">Upcoming events</a>')
+        home = listing_page(card("Halloween Finale", "Sat., Oct. 31, 2026", "/e/1", "9:00am to 4:30pm"), card("Alias | Live Music", "Sat., Oct. 31, 2026", "/e/2", "12:00pm to 3:00pm"))
+        return {PAGE: listing, SITE + "/e/1": event, SITE + "/": home}
+
+    def test_depth_one_follows_event_pages_but_never_the_pages_they_link_to(self):
+        result, client = crawl(self.pages(), max_depth=1, max_pages=20)
+        self.assertEqual(client.requests, [PAGE, SITE + "/e/1"])
+        finale, = result.candidates
+        self.assertEqual((finale.venue, finale.url, finale.provenance.listing_url), ("Bates Nut Farm", SITE + "/e/1", PAGE))
+
+    def test_depth_two_reaches_the_home_page_and_its_second_listing(self):
+        result, client = crawl(self.pages(), max_depth=2, max_pages=20)
+        self.assertIn(SITE + "/", client.requests, "the hazard depth 1 contains")
+        self.assertIn(SITE + "/", {c.provenance.listing_url for c in result.candidates}, "candidates attributed to the home page as a second listing")
+
+
 class TimeBleed(unittest.TestCase):
     """A date takes only the time stated with it: the search for a time stops at the next date line and never reuses a line another date took."""
 

@@ -47,10 +47,15 @@ class Seeded(unittest.TestCase):
                          "pairs": [{"label": name, "survivor": self.keys[name][0], "remove": self.keys[name][1]} for name in ("finale", "cruisers", "dec12")]}
         self.tool = app_module.reviewed_reconciliation(self.db_path, clock=lambda: epoch("2026-10-28T00:00:00+00:00"))
 
-    def event(self, db, title, start, end, venue=None, address=None, source=SOURCE, listing=PAGE, corrected_from=None):
+    def event(self, db, title, start, end, venue=None, address=None, source=SOURCE, listing=PAGE, corrected_from=None, heading=None, renamed_from=None):
+        """One event with its primary candidate. `heading` is what the producer recorded on the listing page (default: the title; "" records none); `renamed_from` is an earlier
+        title of the event that its revision 2 records (an event page renamed it)."""
         self.counter += 1
         n = self.counter
-        payload = json.dumps({"title": title, "starts_at": start, "provenance": {"source_name": "Local Craft Fairs", "listing_url": listing}})
+        heading = (renamed_from or title) if heading is None else heading
+        evidence = [f"Heading on {listing}: {heading}"] if heading else []
+        payload = json.dumps({"title": title, "starts_at": start, "provenance": {"source_name": "Local Craft Fairs", "listing_url": listing},
+                              "verification": {"status": "unverified", "evidence": evidence + ["Heading on https://example-farm.test/e/1: Something Else Entirely"]}})
         candidate_id = db.execute("""INSERT INTO candidates(candidate_key, source_id, method, extractor, title, starts_at, payload_json, payload_hash, first_seen_at, last_seen_at, updated_at)
                                      VALUES(?,?,'adapter','test',?,?,?,?,1,1,?) RETURNING candidate_id""",
                                   (f"{source}:cand-{n}", self.sources[source], title, epoch(start), payload, hashlib.sha256(payload.encode()).hexdigest(), n)).fetchone()[0]
@@ -59,7 +64,7 @@ class Seeded(unittest.TestCase):
                                       VALUES(?,NULL,?,'test',1,'complete',?,?,?) RETURNING extraction_id""", (candidate_id, "h", result, hashlib.sha256(result.encode()).hexdigest(), n)).fetchone()[0]
         first_start, first_end = (epoch(corrected_from[0]), epoch(corrected_from[1])) if corrected_from else (epoch(start), epoch(end) if end else None)
         status = "address" if address else ("venue" if venue else "unknown")
-        revision = 2 if corrected_from else 1
+        revision = 2 if corrected_from or renamed_from else 1
         key = f"ev-test-{n:04d}"
         event_id = db.execute("""INSERT INTO events(event_key, title, description, starts_at, ends_at, timezone, venue_name, location_text, address, location_status, source_url, status,
                                  missing_json, revision, extraction_id, first_extracted_at, updated_at) VALUES(?,?,NULL,?,?,NULL,?,NULL,?,?,?,'partial','[]',?,?,?,?) RETURNING event_id""",
@@ -67,8 +72,9 @@ class Seeded(unittest.TestCase):
         db.execute("UPDATE extractions SET event_id=? WHERE extraction_id=?", (event_id, extraction_id))
         db.execute("INSERT INTO event_candidates(candidate_id, event_id, role, linked_at) VALUES(?,?,'primary',?)", (candidate_id, event_id, n))
         db.execute("INSERT INTO event_revisions(event_id, revision, extraction_id, changed_json, created_at) VALUES(?,1,?,'{}',?)", (event_id, extraction_id, n))
-        if corrected_from:
-            changed = json.dumps({"starts_at": [first_start, epoch(start)], "ends_at": [first_end, epoch(end)]})
+        if corrected_from or renamed_from:
+            changed = {"starts_at": [first_start, epoch(start)], "ends_at": [first_end, epoch(end)]} if corrected_from else {}
+            changed = json.dumps({**changed, **({"title": [renamed_from, title]} if renamed_from else {})})
             db.execute("INSERT INTO event_revisions(event_id, revision, extraction_id, changed_json, created_at) VALUES(?,2,?,?,?)", (event_id, extraction_id, changed, n + 1))
         return key
 
@@ -158,6 +164,61 @@ class Proof(Seeded):
                     json.dumps({**self.manifest, "pairs": [pair, {"survivor": pair["remove"], "remove": "ev-x"}]}), json.dumps({**self.manifest, "expect_events_after": "5"})):
             with self.subTest(bad=bad[:60]), self.assertRaises(DuplicateMaintenanceError):
                 load_manifest(bad)
+
+
+class TitleEvidence(Seeded):
+    """The title proof: original listing headings decide; "&"/"and", punctuation and quotation marks are harmless; a survivor's earlier title counts only from its own history."""
+
+    def pair(self, survivor, removed):
+        with closing(sqlite3.connect(self.db_path)) as db:
+            db.execute("PRAGMA foreign_keys=ON")
+            keys = (self.event(db, *survivor[:3], **survivor[3]), self.event(db, *removed[:3], **removed[3]))
+            db.commit()
+        return {"schema": "discovery.reconciliation.v1", "source_key": SOURCE, "pairs": [{"label": "t", "survivor": keys[0], "remove": keys[1]}]}
+
+    def ready(self, manifest):
+        report = self.tool.preview(manifest)
+        self.assertEqual([item["state"] for item in report["pairs"]], ["ready"])
+        return report["pairs"][0]["evidence"]
+
+    def test_an_event_page_rename_is_accepted_from_the_survivors_own_history(self):
+        when = ("2026-10-31T10:00:00-07:00", None)
+        evidence = self.ready(self.pair(("Annual Costume Contest and Parade", *when, {"renamed_from": "Annual Costume Contest & Parade"}),
+                                        ("Annual Costume Contest & Parade Date", *when, {})))
+        self.assertTrue(any("title history" in line for line in evidence), evidence)
+        self.ready(self.pair(('"Christmas on the Farm" Arts \'n Crafts Fair', "2026-11-08T09:00:00-08:00", None, {"renamed_from": "Christmas on the Farm Arts & Crafts Fair"}),
+                             ("Christmas on the Farm Arts & Crafts Fair Date: Sat.", "2026-11-08T09:00:00-08:00", None, {})))
+
+    def test_ampersand_and_quotation_marks_are_harmless(self):
+        self.ready(self.pair(("Arts and Crafts Day", "2026-11-09T09:00:00-08:00", None, {}), ('"Arts & Crafts Day" Date', "2026-11-09T09:00:00-08:00", None, {})))
+
+    def test_a_survivor_without_recorded_listing_heading_is_refused(self):
+        manifest = self.pair(("Pony Rides", "2026-11-09T09:00:00-08:00", None, {"heading": ""}), ("Pony Rides Date", "2026-11-09T09:00:00-08:00", None, {}))
+        with self.assertRaisesRegex(DuplicateMaintenanceError, "no recorded heading"):
+            self.tool.preview(manifest)
+
+    def test_generic_shared_words_do_not_make_a_listing_heading_match(self):
+        manifest = self.pair(("Craft Fair", "2026-11-09T09:00:00-08:00", None, {}), ("Holiday Craft Fair Date", "2026-11-09T09:00:00-08:00", None, {}))
+        with self.assertRaisesRegex(DuplicateMaintenanceError, "listing heading"):
+            self.tool.preview(manifest)
+
+    def test_a_removed_title_that_no_verified_survivor_title_explains_is_refused(self):
+        manifest = self.pair(("Pony Rides", "2026-11-09T09:00:00-08:00", None, {}), ("Hay Rides Date", "2026-11-09T09:00:00-08:00", None, {"heading": "Pony Rides Date"}))
+        with self.assertRaisesRegex(DuplicateMaintenanceError, "'Hay Rides Date' is not a survivor title"):
+            self.tool.preview(manifest)
+
+    def test_a_rename_that_the_history_does_not_record_is_not_believed(self):
+        # The survivor's current title differs from its listing heading, but nothing in its own history says it was ever "Pony Rides": the removed title is not explained.
+        manifest = self.pair(("Pony Rides", "2026-11-09T09:00:00-08:00", None, {"heading": "Hay Rides"}), ("Hay Rides Date", "2026-11-09T09:00:00-08:00", None, {"heading": "Hay Rides Date"}))
+        self.ready(manifest)   # the listing headings (original evidence) prove this one ...
+        manifest = self.pair(("Pony Rides", "2026-11-09T09:00:00-08:00", None, {"heading": "Pony Rides"}), ("Hay Rides Date", "2026-11-09T09:00:00-08:00", None, {"heading": "Pony Rides Date"}))
+        with self.assertRaisesRegex(DuplicateMaintenanceError, "is not a survivor title"):   # ... while a heading alone never licenses an unexplained title
+            self.tool.preview(manifest)
+
+    def test_naming_the_variant_as_survivor_is_refused(self):
+        swapped = {**self.manifest, "pairs": [{"survivor": self.keys["finale"][1], "remove": self.keys["finale"][0]}], "expect_events_after": 7}
+        with self.assertRaisesRegex(DuplicateMaintenanceError, "listing heading"):
+            self.tool.preview(swapped)
 
 
 class Application(Seeded):

@@ -10,7 +10,10 @@ Evidence required for a pair (all of it, from the database):
   * both events exist, are different, and each key appears once in the manifest;
   * every candidate of both events belongs to the manifest's source, and every one of them was found on one listing page (provenance.listing_url);
   * each event has exactly one primary candidate and a complete revision history (1..revision);
-  * the removed event's titles are a survivor title followed only by date/time label words ("Date", "Date & Time", "Date: Sat.", "Date: Thurs., Sept. 17 to Sat.");
+  * the original listing evidence: the heading the producer recorded for the removed event's primary candidate on the shared listing page is the survivor's recorded heading
+    there followed only by date/time label words ("Date", "Date & Time", "Date: Sat.", "Date: Thurs., Sept. 17 to Sat."); a primary with no recorded heading refuses the pair;
+  * every title of the removed event likewise extends a verified survivor title: its current title, its candidates' titles and listing headings, or a title its own revision
+    history records (an event page may have renamed it since). Titles compare by words only: case, punctuation and quotation marks are ignored and "&" reads as "and";
   * the primary candidates state the same local calendar day;
   * a different start or end on the removed event is allowed only when the survivor's own revision history records the correction FROM that value;
   * the survivor would lose no fact: a removed event's end, place, address or description that the survivor lacks, or a place that conflicts, refuses the pair.
@@ -35,7 +38,15 @@ _FIELDS = ("title", "description", "starts_at", "ends_at", "timezone", "venue_na
 
 
 def _tokens(title):
-    return re.sub(r"[^a-z0-9]+", " ", (title or "").casefold()).split()
+    """Words of a title: case, punctuation and quotation marks set aside, and "&" read as "and". Nothing else is normalized."""
+    return re.sub(r"[^a-z0-9]+", " ", (title or "").casefold().replace("&", " and ")).split()
+
+
+def _listing_headings(doc, listing_url):
+    """The headings the producer recorded for this candidate ON its listing page ("Heading on <listing_url>: <heading>"): the original listing evidence."""
+    verification = doc.get("verification") if isinstance(doc.get("verification"), dict) else {}
+    prefix = f"Heading on {listing_url}: " if listing_url else None
+    return [line[len(prefix):] for line in verification.get("evidence") or () if prefix and isinstance(line, str) and line.startswith(prefix)]
 
 
 def _is_labelled_variant(core, variant):
@@ -101,7 +112,8 @@ class ReviewedReconciliation:
             doc = doc if isinstance(doc, dict) else {}
             provenance = doc.get("provenance") if isinstance(doc.get("provenance"), dict) else {}
             candidates.append({"candidate_id": link["candidate_id"], "role": link["role"], "key": link["candidate_key"], "source_id": link["source_id"],
-                               "title": doc.get("title"), "starts_at": doc.get("starts_at"), "listing_url": provenance.get("listing_url")})
+                               "title": doc.get("title"), "starts_at": doc.get("starts_at"), "listing_url": provenance.get("listing_url"),
+                               "headings": _listing_headings(doc, provenance.get("listing_url"))})
         revisions = [(r["revision"], json.loads(r["changed_json"])) for r in tx.execute("SELECT revision, changed_json FROM event_revisions WHERE event_id=? ORDER BY revision", (row["event_id"],))]
         return {"row": row, "candidates": candidates, "revisions": revisions, "role": role}
 
@@ -139,12 +151,26 @@ class ReviewedReconciliation:
         if len(pages) != 1 or None in pages:
             raise DuplicateMaintenanceError(f"the candidates were not all found on one listing page: {sorted(map(str, pages))}")
         evidence.append(f"one listing page: {next(iter(pages))}")
-        cores = {s["title"], *(c["title"] for c in survivor["candidates"] if c["title"])}
-        variants = {r["title"], *(c["title"] for c in removed["candidates"] if c["title"])}
+        # The original listing headings decide: the removed event's heading on the shared listing page must be the survivor's heading there plus label words only.
+        primaries = {name: next(c for c in event["candidates"] if c["role"] == "primary") for name, event in (("survivor", survivor), ("removed event", removed))}
+        for name, primary in primaries.items():
+            if not primary["headings"]:
+                raise DuplicateMaintenanceError(f"the {name}'s primary candidate has no recorded heading on its listing page")
+        heading = next((v for v in primaries["removed event"]["headings"] if any(_is_labelled_variant(core, v) for core in primaries["survivor"]["headings"])), None)
+        if heading is None:
+            raise DuplicateMaintenanceError(f"listing heading {primaries['removed event']['headings'][0]!r} is not the survivor's listing heading "
+                                            f"{primaries['survivor']['headings'][0]!r} followed only by date/time label words")
+        evidence.append(f"listing heading {heading!r} is the survivor's listing heading {primaries['survivor']['headings'][0]!r} plus field-label words")
+        # Every title of the removed event must also extend a VERIFIED title of the survivor: its current title, its candidates' titles and listing headings, or a title its own
+        # revision history records (an event page may since have renamed it, e.g. "&" to "and" or added quotation marks).
+        history = {change[0] for _, changed in survivor["revisions"] for field, change in changed.items() if field == "title" and isinstance(change, list) and change and change[0]}
+        cores = {s["title"], *history, *(c["title"] for c in survivor["candidates"] if c["title"]), *(h for c in survivor["candidates"] for h in c["headings"])}
+        variants = {r["title"], *(c["title"] for c in removed["candidates"] if c["title"]), *(h for c in removed["candidates"] for h in c["headings"])}
         for variant in sorted(variants):
             if not any(_is_labelled_variant(core, variant) for core in cores):
                 raise DuplicateMaintenanceError(f"title {variant!r} is not a survivor title followed only by date/time label words")
-        evidence.append(f"title {r['title']!r} is {s['title']!r} plus field-label words")
+        if history:
+            evidence.append(f"survivor title history: {sorted(history)} -> {s['title']!r}")
         days = {_local_day(c["starts_at"]) for event in (survivor, removed) for c in event["candidates"] if c["role"] == "primary"}
         if len(days) != 1 or None in days:
             raise DuplicateMaintenanceError(f"the primary candidates state different or unreadable days: {sorted(map(str, days))}")

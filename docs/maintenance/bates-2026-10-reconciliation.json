@@ -1,7 +1,7 @@
 {
  "schema": "discovery.reconciliation.v1",
  "source_key": "mission_trails",
- "expect_events_after": 477,
+ "expect_events_after": 481,
  "pairs": [
   {
    "label": "Halloween Finale",
