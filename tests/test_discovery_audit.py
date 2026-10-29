@@ -441,6 +441,41 @@ class StrictAssociation(unittest.TestCase):
         result, _ = crawl({PAGE: listing, SITE + "/e/1": page}, max_depth=1, max_pages=4)
         self.assertEqual({c.title: c.venue for c in result.candidates}, {"Farm Day Parade": None, "Farm Day Picnic": None})
 
+    def linked(self, cards, page_title, time_text="12:00pm - 3:00pm"):
+        listing = listing_page(*(card(title, "Sat., Oct. 31, 2026", "/e/1", "12:00pm - 3:00pm") for title in cards))
+        page = detail_page(page_title, "Saturday, October 31, 2026", time_text, location="Page Hall")
+        result, _ = crawl({PAGE: listing, SITE + "/e/1": page}, max_depth=1, max_pages=4)
+        return result, {c.title: c.venue for c in result.candidates}
+
+    def test_a_cards_own_link_to_the_one_event_at_its_time_relates_differently_worded_titles(self):
+        result, venues = self.linked(["Alias | Live at Bates on Halloween"], "Alias | Live Music on Halloween")
+        self.assertEqual(venues, {"Alias | Live at Bates on Halloween": "Page Hall"}, "the listing's title is kept")
+        self.assertEqual(result.notes["event_pages_merged"], 1)
+
+    def test_a_linked_page_whose_one_event_is_another_event_at_the_same_time_is_refused(self):
+        for page_title in ("Pumpkin Carving Contest", "Live Music Night", "Spring Live Music"):
+            with self.subTest(page=page_title):
+                result, venues = self.linked(["Alias | Live at Bates on Halloween"], page_title)
+                self.assertEqual(venues, {"Alias | Live at Bates on Halloween": None}, "a shared website, date and time alone relate nothing")
+                self.assertEqual(result.notes["event_page_unrelated_events_ignored"], 1)
+
+    def test_a_differently_worded_title_at_another_time_or_with_another_end_is_refused(self):
+        for time_text in ("1:00pm - 3:00pm", "12:00pm - 5:00pm"):
+            with self.subTest(time=time_text):
+                _, venues = self.linked(["Alias | Live at Bates on Halloween"], "Alias | Live Music on Halloween", time_text)
+                self.assertEqual(venues, {"Alias | Live at Bates on Halloween": None})
+
+    def test_several_cards_at_that_time_linking_to_the_page_are_not_guessed_between(self):
+        _, venues = self.linked(["Alias | Live at Bates on Halloween", "Alias | Costume Parade"], "Alias | Live Music on Halloween")
+        self.assertEqual(venues, {"Alias | Live at Bates on Halloween": None, "Alias | Costume Parade": None})
+
+    def test_a_linked_page_with_several_events_never_licenses_a_differently_worded_title(self):
+        listing = listing_page(card("Alias | Live at Bates on Halloween", "Sat., Oct. 31, 2026", "/e/1", "12:00pm - 3:00pm"))
+        page = ("<html><body><h1>Alias | Live Music on Halloween</h1><p>Date: Saturday, October 31, 2026</p><p>Time: 12:00pm - 3:00pm</p><p>Location: Stage Hall</p>"
+                "<h2>Alias | Acoustic Set</h2><p>Date: Saturday, October 31, 2026</p><p>Time: 12:00pm - 3:00pm</p><p>Location: Barn Hall</p></body></html>")
+        result, _ = crawl({PAGE: listing, SITE + "/e/1": page}, max_depth=1, max_pages=4)
+        self.assertEqual({c.title: c.venue for c in result.candidates}, {"Alias | Live at Bates on Halloween": None})
+
     def test_separately_dated_occurrences_sharing_a_page_stay_separate_and_ids_hold(self):
         listing = listing_page(card("Two Day Show", "Sat., Nov. 7, 2026", "/e/1", "9:00am to 1:00pm"), card("Two Day Show", "Sun., Nov. 8, 2026", "/e/1", "2:00pm to 5:00pm"))
         page = ("<html><body><h1>Two Day Show</h1><p>Date: Saturday, November 7, 2026</p><p>Time: 9:00am to 1:00pm</p><p>Date: Sunday, November 8, 2026</p><p>Time: 2:00pm to 5:00pm</p>"

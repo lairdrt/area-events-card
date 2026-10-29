@@ -665,6 +665,11 @@ def _related(left, right):
     return (a <= b or b <= a) and len(shorter) >= 2 and bool(shorter - _GENERIC_WORDS)
 
 
+def _share_a_distinctive_word(left, right):
+    """Do two titles share a word that is not generic? Not evidence of the same event on its own; only with a card's own link to a page whose one event is at that exact time."""
+    return bool((_title_tokens(left) & _title_tokens(right)) - _GENERIC_WORDS)
+
+
 def _line_groups(line, title):
     """Split a date line into its occurrences: each date (or consecutive dates of a range) with the first clock that FOLLOWS it in the same line. [(dates, clock-or-None)]."""
     starts = sorted({m.start() for pattern in (_TEXT_DATE, _TEXT_DATES_ISO, _TEXT_DATES_NUMERIC) for m in pattern.finditer(line[:350])})
@@ -709,7 +714,8 @@ def _labelled_facts(lines):
         if match:
             parts = [match.group(1)] if match.group(1) else []
             for extra in lines[index + 1:index + 4]:
-                if _FIELD_LINE.match(extra) or sum(len(part) for part in parts) >= 300:
+                # a line of under four words after the field ("Share", "Link copied!") is page furniture, not more description: the description ends there
+                if _FIELD_LINE.match(extra) or len(extra.split()) < 4 or sum(len(part) for part in parts) >= 300:
                     break
                 parts.append(extra)
             description = " ".join(parts) or None
@@ -802,10 +808,11 @@ def _page_facts(html):
     return _labelled_facts([line for _, lines in groups[:30] for line in lines][:120])
 
 
-def _merge_detail(listing, detail, detail_url, dated=True):
+def _merge_detail(listing, detail, detail_url, dated=True, linked_only=False):
     """One candidate for an occurrence the listing and its own event page both describe. The event page's facts win; any fact it omits keeps the listing's value, and every
     disagreement is kept in the evidence. The listing candidate's identity (local_id) and listing attribution are kept, and the event page becomes the event's URL.
-    `dated` is False for an event page that states no date (it then corroborates nothing about when)."""
+    `dated` is False for an event page that states no date (it then corroborates nothing about when). `linked_only` is True when the page's title words the event differently
+    and the card's own link decided the match: the listing's title is then kept."""
     same_start = _same_instant(listing.starts_at, detail.starts_at)
     ends_at = detail.ends_at or (listing.ends_at if same_start else None)
     venue, address = detail.venue or listing.venue, detail.address or listing.address
@@ -821,9 +828,11 @@ def _merge_detail(listing, detail, detail_url, dated=True):
             disagreements.append(f"{label}: the listing says {old!r}, the event page {new!r}")
     evidence = tuple(dict.fromkeys(tuple(listing.verification.evidence) + tuple(detail.verification.evidence)
                                    + (f"Facts read from the event page {detail_url}, which take precedence over the listing {listing.provenance.listing_url or listing.url}",)
+                                   + ((f"The listing card links to {detail_url}, whose one event is at the listing's time; the listing's title {listing.title!r} is kept over "
+                                       f"the page's {detail.title!r}",) if linked_only else ())
                                    + tuple("Listing and event page disagree on " + line for line in disagreements)))
     return replace(
-        detail, local_id=listing.local_id, ends_at=ends_at, venue=venue, address=address, description=description, url=detail.url or detail_url,
+        detail, local_id=listing.local_id, title=listing.title if linked_only else detail.title, ends_at=ends_at, venue=venue, address=address, description=description, url=detail.url or detail_url,
         image_url=image_url, image_source=detail.image_source if detail.image_url else listing.image_source, timezone=detail.timezone or listing.timezone,
         categories=detail.categories or listing.categories, organizer=detail.organizer or listing.organizer, price=detail.price or listing.price, geo=detail.geo or listing.geo,
         provenance=Provenance(listing.provenance.source_name, listing.provenance.listing_url, detail.provenance.retrieved_at,
@@ -1080,8 +1089,8 @@ class SourcesProducer:
             origin[event.local_id] = (depth, site, page_url)
             return True
 
-        def merge_into(local_id, event, depth, site, page_url, dated=True):
-            candidates[local_id] = _merge_detail(candidates[local_id], event, page_url, dated)
+        def merge_into(local_id, event, depth, site, page_url, dated=True, linked_only=False):
+            candidates[local_id] = _merge_detail(candidates[local_id], event, page_url, dated, linked_only)
             origin[local_id] = (depth, site, page_url)
             counts["merged"] += 1
 
@@ -1114,8 +1123,15 @@ class SourcesProducer:
                     if match is None and len(page_events) == 1:   # the one occurrence the card linked to, at a corrected time
                         near = [lid for lid in owners if lid not in claimed and _same_day(candidates[lid].starts_at, event.starts_at) and _related(candidates[lid].title, event.title)]
                         match = near[0] if len(near) == 1 else None
+                    linked_only = False
+                    if match is None and len(page_events) == 1:   # the page words the title differently: the card's own link to a page whose one event is at exactly this
+                        # occurrence's time decides, when exactly one linking card is at that time, the end times do not disagree and the titles share a distinctive word
+                        timed = [lid for lid in owners if _same_instant(candidates[lid].starts_at, event.starts_at)]
+                        if (len(timed) == 1 and timed[0] not in claimed and _share_a_distinctive_word(candidates[timed[0]].title, event.title)
+                                and not (candidates[timed[0]].ends_at and event.ends_at and not _same_instant(candidates[timed[0]].ends_at, event.ends_at))):
+                            match, linked_only = timed[0], True
                     if match is not None:
-                        merge_into(match, event, depth, site, page_url)
+                        merge_into(match, event, depth, site, page_url, linked_only=linked_only)
                         claimed.add(match)
                         used += 1
                     elif any(_related(candidates[lid].title, event.title) for lid in owners):   # another date of the same event that only its page lists

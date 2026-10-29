@@ -186,6 +186,41 @@ class DetailPages(unittest.TestCase):
         self.assertTrue(event.description.startswith("The Annual East County Cruisers Car Show & Toy Drive"))
 
 
+ALIAS_DETAIL = (DATA / "bates_detail_alias.html").read_text(encoding="utf-8")
+ALIAS = SITE + "/blogs/events/alias-live-music-on-halloween"
+ALIAS_IMAGE = "batesnutfarm.biz/cdn/shop/articles/Alias-Halloween-Bates-Nut-Farm_67255489-6614-4bd9-8eeb-216a715154a9.jpg?v=1790372707"
+
+
+class LinkedPageWordedDifferently(unittest.TestCase):
+    """The real Alias pair: the listing card ("Alias | Live at Bates on Halloween") links to its own page, which words the title "Alias | Live Music on Halloween"."""
+
+    def test_the_cards_own_link_and_the_one_event_at_its_time_enrich_the_listing_occurrence(self):
+        listing_only, _ = crawl({PAGE: LISTING}, max_depth=0)
+        engine = Goose3ImageExtractor() if Goose3ImageExtractor.available() else None
+        result, _ = crawl({PAGE: LISTING, ALIAS: ALIAS_DETAIL}, images={"http://" + ALIAS_IMAGE: photo(480, 480), "https://" + ALIAS_IMAGE: photo(480, 480)}, engine=engine,
+                          max_pages=14, max_depth=1)
+        before, = by_title(listing_only, "Alias | Live at Bates on Halloween")
+        alias, = by_title(result, "Alias | Live at Bates on Halloween")
+        self.assertEqual(alias.local_id, before.local_id, "the candidate identity is the listing's")
+        self.assertEqual(alias.local_id[:12], "6325103912ed", "the id production holds")
+        self.assertEqual((before.venue, before.address, before.description, before.url), (None, None, None, PAGE), "the listing alone knows none of these")
+        self.assertEqual((alias.starts_at, alias.ends_at), ("2026-10-31T12:00:00-07:00", "2026-10-31T15:00:00-07:00"))
+        self.assertEqual((alias.venue, alias.address), ("Bates Nut Farm", "15954 Woods Valley Road, Valley Center, CA"))
+        self.assertEqual(alias.description, "Join us for live music on the Bates Stage with Alias on Halloween from 12pm - 3pm! Admission is free. Half off parking, today only, $5!",
+                         "the page's own description, without the share buttons that follow it")
+        self.assertEqual(alias.url, ALIAS)
+        self.assertEqual(alias.verification.status, "corroborated")
+        self.assertTrue(any("listing's title 'Alias | Live at Bates on Halloween' is kept over the page's 'Alias | Live Music on Halloween'" in line
+                            for line in alias.verification.evidence))
+        if engine is not None:
+            self.assertEqual(alias.image_url.split(":", 1)[1], "//" + ALIAS_IMAGE, "the page's photograph of the band")
+        self.assertEqual((result.notes["event_pages_merged"], result.notes["event_page_unrelated_events_ignored"]), (1, 0))
+        self.assertEqual({c.local_id for c in result.candidates}, {c.local_id for c in listing_only.candidates}, "no new candidate and no duplicate")
+        for c in listing_only.candidates:
+            if c.local_id != before.local_id:
+                self.assertIn(c, result.candidates, c.title)
+
+
 def site(host, count, venue, missing=(), generic=False):
     """A website: its listing page with `count` event cards (each linking to its own page) and those pages, except the ones in `missing`."""
     cards = "".join(f'<li class="event-item"><a href="/e/{n}"><h2>{host} Event {n}</h2><p>Date: Sat., Nov. {n}, 2026</p><p>Time: 9:00am to 1:00pm</p></a></li>' for n in range(1, count + 1))
