@@ -1,0 +1,18 @@
+{
+ "schema": "discovery.reconciliation.v1",
+ "source_key": "mission_trails",
+ "pairs": [
+  {
+   "label": "Halloween Finale (Oct 31), also listed on the Bates home page",
+   "survivor": "ev-1d5aa537585aeeb5b0b1",
+   "remove": "ev-94ec4287b4fbd220b05b",
+   "proof": "shared_event_page"
+  },
+  {
+   "label": "The 2026 Pumpkin Patch (Oct 31), also listed on the Bates home page",
+   "survivor": "ev-4306ce61ce86fe8ac6ab",
+   "remove": "ev-13c228ad8abf344e0f52",
+   "proof": "shared_event_page"
+  }
+ ]
+}

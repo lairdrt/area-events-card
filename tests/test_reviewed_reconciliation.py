@@ -47,15 +47,22 @@ class Seeded(unittest.TestCase):
                          "pairs": [{"label": name, "survivor": self.keys[name][0], "remove": self.keys[name][1]} for name in ("finale", "cruisers", "dec12")]}
         self.tool = app_module.reviewed_reconciliation(self.db_path, clock=lambda: epoch("2026-10-28T00:00:00+00:00"))
 
-    def event(self, db, title, start, end, venue=None, address=None, source=SOURCE, listing=PAGE, corrected_from=None, heading=None, renamed_from=None):
+    def event(self, db, title, start, end, venue=None, address=None, source=SOURCE, listing=PAGE, corrected_from=None, heading=None, renamed_from=None, page=None, also_listed=()):
         """One event with its primary candidate. `heading` is what the producer recorded on the listing page (default: the title; "" records none); `renamed_from` is an earlier
-        title of the event that its revision 2 records (an event page renamed it)."""
+        title of the event that its revision 2 records (an event page renamed it). `page`: the event page the card links to and the facts were read from, as the producer
+        records it; `also_listed`: other listing pages that showed the same card under the same heading."""
         self.counter += 1
         n = self.counter
         heading = (renamed_from or title) if heading is None else heading
         evidence = [f"Heading on {listing}: {heading}"] if heading else []
-        payload = json.dumps({"title": title, "starts_at": start, "provenance": {"source_name": "Local Craft Fairs", "listing_url": listing},
-                              "verification": {"status": "unverified", "evidence": evidence + ["Heading on https://example-farm.test/e/1: Something Else Entirely"]}})
+        document = {"title": title, "starts_at": start, "provenance": {"source_name": "Local Craft Fairs", "listing_url": listing}}
+        if page:
+            document["url"], document["provenance"]["found_on"] = page, [listing, *also_listed, page]
+            evidence += [f"Heading on {other}: {heading}" for other in also_listed] + [f"Heading on {page}: {title}",
+                                                                                       f"Facts read from the event page {page}, which take precedence over the listing {listing}"]
+        else:
+            evidence.append("Heading on https://example-farm.test/e/1: Something Else Entirely")
+        payload = json.dumps({**document, "verification": {"status": "unverified", "evidence": evidence}})
         candidate_id = db.execute("""INSERT INTO candidates(candidate_key, source_id, method, extractor, title, starts_at, payload_json, payload_hash, first_seen_at, last_seen_at, updated_at)
                                      VALUES(?,?,'adapter','test',?,?,?,?,1,1,?) RETURNING candidate_id""",
                                   (f"{source}:cand-{n}", self.sources[source], title, epoch(start), payload, hashlib.sha256(payload.encode()).hexdigest(), n)).fetchone()[0]
@@ -219,6 +226,102 @@ class TitleEvidence(Seeded):
         swapped = {**self.manifest, "pairs": [{"survivor": self.keys["finale"][1], "remove": self.keys["finale"][0]}], "expect_events_after": 7}
         with self.assertRaisesRegex(DuplicateMaintenanceError, "listing heading"):
             self.tool.preview(swapped)
+
+
+HOME = "https://example-farm.test/"
+
+
+class SharedEventPage(Seeded):
+    """"proof": "shared_event_page": one occurrence the source lists on two listing pages (the Bates home page and its events page), both cards linking to one event page."""
+
+    def pair(self, day, removed_overrides=None, survivor_overrides=None, label="Halloween Finale"):
+        page = f"https://example-farm.test/blogs/events/{label.lower().replace(' ', '-')}-{day}"
+        start, end = f"2026-10-{day:02d}T09:00:00-07:00", f"2026-10-{day:02d}T16:30:00-07:00"
+        place = {"venue": "Bates Nut Farm", "address": "15954 Woods Valley Road, Valley Center, CA"}
+        with closing(sqlite3.connect(self.db_path)) as db:
+            db.execute("PRAGMA foreign_keys=ON")
+            survivor = self.event(db, label, start, end, **{**place, "page": page, **(survivor_overrides or {})})
+            removed = self.event(db, label, start, end, **{**place, "listing": HOME, "page": page, "also_listed": (PAGE,), **(removed_overrides or {})})
+            db.commit()
+        return {"schema": "discovery.reconciliation.v1", "source_key": SOURCE, "pairs": [{"label": label, "survivor": survivor, "remove": removed, "proof": "shared_event_page"}]}
+
+    def refused(self, manifest, pattern):
+        before = self.snapshot()
+        for operation in (self.tool.preview, self.tool.apply):
+            with self.assertRaisesRegex(DuplicateMaintenanceError, pattern):
+                operation(manifest)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_one_occurrence_listed_on_two_listing_pages_is_proven_applied_once_and_keeps_everything(self):
+        manifest = self.pair(17)
+        survivor, removed = manifest["pairs"][0]["survivor"], manifest["pairs"][0]["remove"]
+        with closing(sqlite3.connect(self.db_path)) as db:   # the season's first day from the same event page: another occurrence, never paired
+            db.execute("PRAGMA foreign_keys=ON")
+            other_day = self.event(db, "Halloween Finale", "2026-09-17T09:00:00-07:00", "2026-09-17T17:30:00-07:00", listing=HOME, page="https://example-farm.test/blogs/events/halloween-finale-17")
+            db.commit()
+        report = self.tool.preview(manifest)
+        item = report["pairs"][0]
+        self.assertEqual((item["state"], item["proof"]), ("ready", "shared_event_page"))
+        self.assertTrue(any(line.startswith("one event page: https://example-farm.test/blogs/events/halloween-finale-17") for line in item["evidence"]), item["evidence"])
+        self.assertTrue(any(f"also listed on {PAGE} under the survivor's heading 'Halloween Finale'" in line for line in item["evidence"]), item["evidence"])
+        before = self.snapshot()
+        with closing(sqlite3.connect(self.db_path)) as db:
+            original = db.execute("SELECT * FROM events WHERE event_key=?", (survivor,)).fetchone()
+        done = self.tool.apply(manifest)
+        self.assertEqual((done["events_before"] - done["events_after"], done["pairs"][0]["state"]), (1, "reconciled"))
+        with closing(sqlite3.connect(self.db_path)) as db:
+            row = db.execute("SELECT * FROM events WHERE event_key=?", (survivor,)).fetchone()
+            self.assertEqual(row[:13], original[:13], "the survivor keeps its key and every fact")
+            self.assertIsNone(db.execute("SELECT 1 FROM events WHERE event_key=?", (removed,)).fetchone())
+            self.assertIsNotNone(db.execute("SELECT 1 FROM events WHERE event_key=?", (other_day,)).fetchone())
+            roles = db.execute("SELECT ec.role FROM event_candidates ec JOIN events e USING(event_id) WHERE e.event_key=? ORDER BY ec.role", (survivor,)).fetchall()
+            self.assertEqual([r[0] for r in roles], ["duplicate", "primary"])
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM candidates").fetchone()[0], len(before["candidates"]))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM event_candidates").fetchone()[0], len(before["links"]))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM event_revisions").fetchone()[0], len(before["revisions"]) + 1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM extractions WHERE event_id IS NULL").fetchone()[0], 0)
+            self.assertEqual((db.execute("PRAGMA integrity_check").fetchone()[0], db.execute("PRAGMA foreign_key_check").fetchall()), ("ok", []))
+        once = self.snapshot()
+        self.assertEqual(self.tool.apply(manifest)["pairs"][0]["state"], "already reconciled")
+        self.assertEqual(self.snapshot(), once)
+
+    def test_what_the_records_do_not_prove_is_refused(self):
+        alias_home = {"listing": HOME, "page": None, "also_listed": (), "venue": None, "address": None}
+        cases = (
+            # the Alias shape: the cards' titles differ and neither recorded an event page
+            (1, {**alias_home}, {"page": None, "venue": None, "address": None}, "does not name the survivor's event page"),
+            (2, {"page": "https://example-farm.test/blogs/events/another"}, None, "does not name the survivor's event page"),
+            (3, {"also_listed": ()}, None, "records no heading on the survivor's listing page"),
+            (4, {"heading": "Halloween Finale Date"}, None, "records no heading on the survivor's listing page"),
+            (5, {"title": "Halloween Finale Party"}, None, "not a survivor title word for word"),
+            (6, {"start": "2026-10-06T10:00:00-07:00"}, None, "start or end differs"),
+        )
+        for day, removed, survivor, pattern in cases:
+            with self.subTest(pattern=pattern, day=day):
+                removed = dict(removed)
+                title, start = removed.pop("title", None), removed.pop("start", None)
+                manifest = self.pair(day, removed, survivor)
+                key = manifest["pairs"][0]["remove"]
+                if title:
+                    self.mutate(f"UPDATE events SET title='{title}' WHERE event_key='{key}'")
+                if start:
+                    self.mutate(f"UPDATE events SET starts_at={epoch(start)} WHERE event_key='{key}'")
+                self.refused(manifest, pattern)
+
+    def test_a_third_event_on_the_same_page_and_start_makes_the_pair_ambiguous(self):
+        manifest = self.pair(20)
+        with closing(sqlite3.connect(self.db_path)) as db:
+            db.execute("PRAGMA foreign_keys=ON")
+            self.event(db, "Halloween Finale", "2026-10-20T09:00:00-07:00", "2026-10-20T16:30:00-07:00", listing="https://example-farm.test/other", page="https://example-farm.test/blogs/events/halloween-finale-20")
+            db.commit()
+        self.refused(manifest, "ambiguous")
+
+    def test_the_default_listing_label_proof_never_accepts_two_listing_pages(self):
+        manifest = self.pair(21)
+        del manifest["pairs"][0]["proof"]
+        self.refused(manifest, "one listing page")
+        with self.assertRaisesRegex(DuplicateMaintenanceError, "proof must be one of"):
+            load_manifest(json.dumps({**manifest, "pairs": [{**manifest["pairs"][0], "proof": "same_title"}]}))
 
 
 class Application(Seeded):

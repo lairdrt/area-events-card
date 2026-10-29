@@ -17,6 +17,12 @@ Evidence required for a pair (all of it, from the database):
   * the primary candidates state the same local calendar day;
   * a different start or end on the removed event is allowed only when the survivor's own revision history records the correction FROM that value;
   * the survivor would lose no fact: a removed event's end, place, address or description that the survivor lacks, or a place that conflicts, refuses the pair.
+A pair may instead name `"proof": "shared_event_page"`: one occurrence the source lists on two of its listing pages (the Bates home page and its events page), both cards linking
+to one event page. That proof replaces the listing-page and label-word steps above with all of:
+  * every candidate of the removed event, and the survivor's primary, names the same event page (payload url) and records reading its facts there; that page is no listing page;
+  * the original listing evidence: the removed event's primary also recorded a heading on the survivor's listing page, and it is the survivor's heading there (words equal);
+  * every title and every recorded heading of the removed event is a verified survivor title, word for word (no added words);
+  * the start and the end are identical, and no other event of the source names that event page with that start (otherwise the pairing is ambiguous and refused).
 Preview is read-only. Apply runs in one transaction (rolled back whole on any mismatch), is idempotent (a pair already reconciled is reported and skipped), and writes change records
 for the survivor and the removed event so the API and card update.
 """
@@ -29,6 +35,7 @@ from .events import DuplicateMaintenanceError, _maintenance_connection
 
 MANIFEST_SCHEMA = "discovery.reconciliation.v1"
 MAX_PAIRS = 50
+PROOFS = ("listing_label", "shared_event_page")   # the first is the default
 _LABEL_WORDS = frozenset(("date", "time", "when", "day", "dates", "to", "through", "thru", "and", "until", "till", "am", "pm",
                           "mon", "monday", "tue", "tues", "tuesday", "wed", "wednesday", "thu", "thur", "thurs", "thursday", "fri", "friday", "sat", "saturday", "sun", "sunday",
                           "jan", "january", "feb", "february", "mar", "march", "apr", "april", "may", "jun", "june", "jul", "july", "aug", "august",
@@ -42,11 +49,15 @@ def _tokens(title):
     return re.sub(r"[^a-z0-9]+", " ", (title or "").casefold().replace("&", " and ")).split()
 
 
-def _listing_headings(doc, listing_url):
-    """The headings the producer recorded for this candidate ON its listing page ("Heading on <listing_url>: <heading>"): the original listing evidence."""
+def _evidence_lines(doc):
     verification = doc.get("verification") if isinstance(doc.get("verification"), dict) else {}
+    return [line for line in verification.get("evidence") or () if isinstance(line, str)]
+
+
+def _listing_headings(lines, listing_url):
+    """The headings the producer recorded for this candidate ON a listing page ("Heading on <listing_url>: <heading>"): the original listing evidence."""
     prefix = f"Heading on {listing_url}: " if listing_url else None
-    return [line[len(prefix):] for line in verification.get("evidence") or () if prefix and isinstance(line, str) and line.startswith(prefix)]
+    return [line[len(prefix):] for line in lines if prefix and line.startswith(prefix)]
 
 
 def _is_labelled_variant(core, variant):
@@ -77,6 +88,8 @@ def load_manifest(text):
     for pair in pairs:
         if not isinstance(pair, dict) or not all(isinstance(pair.get(name), str) and pair[name] for name in ("survivor", "remove")):
             raise DuplicateMaintenanceError("every pair needs a full 'survivor' and 'remove' event key")
+        if pair.get("proof", PROOFS[0]) not in PROOFS:
+            raise DuplicateMaintenanceError(f"a pair's proof must be one of {', '.join(PROOFS)}")
         if pair["survivor"] == pair["remove"]:
             raise DuplicateMaintenanceError("a pair's survivor and removed event must differ")
         keys.extend((pair["survivor"], pair["remove"]))
@@ -111,9 +124,11 @@ class ReviewedReconciliation:
                 doc = {}
             doc = doc if isinstance(doc, dict) else {}
             provenance = doc.get("provenance") if isinstance(doc.get("provenance"), dict) else {}
+            lines = _evidence_lines(doc)
+            found_on = provenance.get("found_on") if isinstance(provenance.get("found_on"), list) else []
             candidates.append({"candidate_id": link["candidate_id"], "role": link["role"], "key": link["candidate_key"], "source_id": link["source_id"],
                                "title": doc.get("title"), "starts_at": doc.get("starts_at"), "listing_url": provenance.get("listing_url"),
-                               "headings": _listing_headings(doc, provenance.get("listing_url"))})
+                               "headings": _listing_headings(lines, provenance.get("listing_url")), "lines": lines, "url": doc.get("url"), "found_on": found_on})
         revisions = [(r["revision"], json.loads(r["changed_json"])) for r in tx.execute("SELECT revision, changed_json FROM event_revisions WHERE event_id=? ORDER BY revision", (row["event_id"],))]
         return {"row": row, "candidates": candidates, "revisions": revisions, "role": role}
 
@@ -128,7 +143,7 @@ class ReviewedReconciliation:
                 return True
         return False
 
-    def _verify(self, tx, source_id, survivor_key, removed_key):
+    def _verify(self, tx, source_id, survivor_key, removed_key, proof=PROOFS[0]):
         """The evidence lines for one pair, or DuplicateMaintenanceError naming what could not be proven."""
         survivor, removed = self._event(tx, survivor_key, "survivor"), self._event(tx, removed_key, "removed")
         if survivor is None:
@@ -147,31 +162,18 @@ class ReviewedReconciliation:
             if any(c["source_id"] != source_id for c in event["candidates"]):
                 raise DuplicateMaintenanceError(f"the {name} has a candidate that the manifest's source does not own")
         evidence.append(f"all {len(survivor['candidates']) + len(removed['candidates'])} candidates belong to the manifest's source")
-        pages = {c["listing_url"] for event in (survivor, removed) for c in event["candidates"]}
-        if len(pages) != 1 or None in pages:
-            raise DuplicateMaintenanceError(f"the candidates were not all found on one listing page: {sorted(map(str, pages))}")
-        evidence.append(f"one listing page: {next(iter(pages))}")
-        # The original listing headings decide: the removed event's heading on the shared listing page must be the survivor's heading there plus label words only.
         primaries = {name: next(c for c in event["candidates"] if c["role"] == "primary") for name, event in (("survivor", survivor), ("removed event", removed))}
-        for name, primary in primaries.items():
-            if not primary["headings"]:
-                raise DuplicateMaintenanceError(f"the {name}'s primary candidate has no recorded heading on its listing page")
-        heading = next((v for v in primaries["removed event"]["headings"] if any(_is_labelled_variant(core, v) for core in primaries["survivor"]["headings"])), None)
-        if heading is None:
-            raise DuplicateMaintenanceError(f"listing heading {primaries['removed event']['headings'][0]!r} is not the survivor's listing heading "
-                                            f"{primaries['survivor']['headings'][0]!r} followed only by date/time label words")
-        evidence.append(f"listing heading {heading!r} is the survivor's listing heading {primaries['survivor']['headings'][0]!r} plus field-label words")
-        # Every title of the removed event must also extend a VERIFIED title of the survivor: its current title, its candidates' titles and listing headings, or a title its own
-        # revision history records (an event page may since have renamed it, e.g. "&" to "and" or added quotation marks).
+        # The titles the survivor verifiably carried: its current title, its candidates' titles and listing headings, or a title its own revision history records
+        # (an event page may since have renamed it, e.g. "&" to "and" or added quotation marks).
         history = {change[0] for _, changed in survivor["revisions"] for field, change in changed.items() if field == "title" and isinstance(change, list) and change and change[0]}
         cores = {s["title"], *history, *(c["title"] for c in survivor["candidates"] if c["title"]), *(h for c in survivor["candidates"] for h in c["headings"])}
-        variants = {r["title"], *(c["title"] for c in removed["candidates"] if c["title"]), *(h for c in removed["candidates"] for h in c["headings"])}
-        for variant in sorted(variants):
-            if not any(_is_labelled_variant(core, variant) for core in cores):
-                raise DuplicateMaintenanceError(f"title {variant!r} is not a survivor title followed only by date/time label words")
+        if proof == "shared_event_page":
+            evidence.extend(self._shared_event_page(tx, source_id, survivor, removed, primaries, cores))
+        else:
+            evidence.extend(self._labelled_listing(survivor, removed, primaries, cores))
         if history:
             evidence.append(f"survivor title history: {sorted(history)} -> {s['title']!r}")
-        days = {_local_day(c["starts_at"]) for event in (survivor, removed) for c in event["candidates"] if c["role"] == "primary"}
+        days ={_local_day(c["starts_at"]) for event in (survivor, removed) for c in event["candidates"] if c["role"] == "primary"}
         if len(days) != 1 or None in days:
             raise DuplicateMaintenanceError(f"the primary candidates state different or unreadable days: {sorted(map(str, days))}")
         evidence.append(f"one occurrence day: {next(iter(days))}")
@@ -194,6 +196,62 @@ class ReviewedReconciliation:
         evidence.append("the survivor loses no fact and no place conflicts")
         return survivor, removed, evidence
 
+    @staticmethod
+    def _headings_recorded(primaries):
+        for name, primary in primaries.items():
+            if not primary["headings"]:
+                raise DuplicateMaintenanceError(f"the {name}'s primary candidate has no recorded heading on its listing page")
+
+    def _labelled_listing(self, survivor, removed, primaries, cores):
+        """One listing page; the removed event's heading there is the survivor's heading plus date/time label words, and so is every title of the removed event."""
+        pages = {c["listing_url"] for event in (survivor, removed) for c in event["candidates"]}
+        if len(pages) != 1 or None in pages:
+            raise DuplicateMaintenanceError(f"the candidates were not all found on one listing page: {sorted(map(str, pages))}")
+        evidence = [f"one listing page: {next(iter(pages))}"]
+        self._headings_recorded(primaries)
+        heading = next((v for v in primaries["removed event"]["headings"] if any(_is_labelled_variant(core, v) for core in primaries["survivor"]["headings"])), None)
+        if heading is None:
+            raise DuplicateMaintenanceError(f"listing heading {primaries['removed event']['headings'][0]!r} is not the survivor's listing heading "
+                                            f"{primaries['survivor']['headings'][0]!r} followed only by date/time label words")
+        evidence.append(f"listing heading {heading!r} is the survivor's listing heading {primaries['survivor']['headings'][0]!r} plus field-label words")
+        variants = {removed["row"]["title"], *(c["title"] for c in removed["candidates"] if c["title"]), *(h for c in removed["candidates"] for h in c["headings"])}
+        for variant in sorted(variants):
+            if not any(_is_labelled_variant(core, variant) for core in cores):
+                raise DuplicateMaintenanceError(f"title {variant!r} is not a survivor title followed only by date/time label words")
+        return evidence
+
+    def _shared_event_page(self, tx, source_id, survivor, removed, primaries, cores):
+        """One occurrence listed on two listing pages of the source: both name one event page and read their facts there, the removed event was also listed under the
+        survivor's heading on the survivor's listing page, its titles are survivor titles word for word, the times are identical, and nothing else claims that page and start."""
+        s, r = survivor["row"], removed["row"]
+        page = primaries["survivor"]["url"]
+        for name, candidate in (("survivor's primary", primaries["survivor"]), *((f"removed event's candidate {c['key']}", c) for c in removed["candidates"])):
+            if not page or candidate["url"] != page:
+                raise DuplicateMaintenanceError(f"the {name} does not name the survivor's event page {page!r} (it names {candidate['url']!r})")
+            if page == candidate["listing_url"] or page not in candidate["found_on"] or not any(line.startswith(f"Facts read from the event page {page},") for line in candidate["lines"]):
+                raise DuplicateMaintenanceError(f"the {name} did not read its facts from the event page {page}")
+        evidence = [f"one event page: {page}; every candidate of the removed event and the survivor's primary read their facts there"]
+        self._headings_recorded(primaries)
+        listing = primaries["survivor"]["listing_url"]
+        cross = _listing_headings(primaries["removed event"]["lines"], listing)
+        heading = next((h for h in cross if any(_tokens(h) == _tokens(core) for core in primaries["survivor"]["headings"])), None)
+        if heading is None:
+            raise DuplicateMaintenanceError(f"the removed event's primary records no heading on the survivor's listing page {listing} equal to the survivor's heading there")
+        evidence.append(f"the removed event (listed on {primaries['removed event']['listing_url']}) was also listed on {listing} under the survivor's heading {heading!r}")
+        recorded = {line.split(": ", 1)[1] for c in removed["candidates"] for line in c["lines"] if line.startswith("Heading on ") and ": " in line}
+        for variant in sorted({r["title"], *(c["title"] for c in removed["candidates"] if c["title"]), *recorded}):
+            if not any(_tokens(core) == _tokens(variant) for core in cores):
+                raise DuplicateMaintenanceError(f"title {variant!r} is not a survivor title word for word")
+        if (r["starts_at"], r["ends_at"]) != (s["starts_at"], s["ends_at"]):
+            raise DuplicateMaintenanceError("the start or end differs: one event page states one occurrence's times")
+        others = [key for (key,) in tx.execute("""SELECT e.event_key FROM events e JOIN event_candidates ec ON ec.event_id=e.event_id AND ec.role='primary' JOIN candidates c USING (candidate_id)
+                                                   WHERE c.source_id=? AND e.starts_at=? AND e.event_id NOT IN (?,?) AND json_extract(c.payload_json, '$.url')=?""",
+                                                (source_id, s["starts_at"], s["event_id"], r["event_id"], page))]
+        if others:
+            raise DuplicateMaintenanceError(f"ambiguous: {', '.join(sorted(others))} also names the event page {page} with this start")
+        evidence.append("identical start and end; no other event of the source names this event page with this start")
+        return evidence
+
     def _source(self, tx, source_key):
         row = tx.execute("SELECT source_id FROM sources WHERE source_key=?", (source_key,)).fetchone()
         if row is None:
@@ -210,8 +268,9 @@ class ReviewedReconciliation:
                     plan.append({"label": pair.get("label"), "survivor": survivor_key, "removed": removed_key, "state": "already reconciled", "evidence": []})
                     continue
                 raise DuplicateMaintenanceError(f"removed event {removed_key} does not exist and was not reconciled into {survivor_key}")
-            survivor, removed, evidence = self._verify(tx, source_id, survivor_key, removed_key)
-            plan.append({"label": pair.get("label"), "survivor": survivor_key, "removed": removed_key, "state": "ready", "evidence": evidence,
+            proof = pair.get("proof", PROOFS[0])
+            survivor, removed, evidence = self._verify(tx, source_id, survivor_key, removed_key, proof)
+            plan.append({"label": pair.get("label"), "survivor": survivor_key, "removed": removed_key, "state": "ready", "proof": proof, "evidence": evidence,
                          "survivor_facts": {k: survivor["row"][k] for k in _FIELDS}, "removed_facts": {k: removed["row"][k] for k in _FIELDS},
                          "candidates_moved": len(removed["candidates"]), "revisions_moved": len(removed["revisions"]), "_pair": (survivor, removed)})
         events = tx.execute("SELECT COUNT(*) FROM events").fetchone()[0]

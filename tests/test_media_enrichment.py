@@ -214,6 +214,27 @@ class Enrichment(Fixture):
         with database(self.built).read() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM candidate_media WHERE complete = 0").fetchone()[0], 0)
 
+    def test_a_picture_the_fetcher_stops_as_too_large_is_refused_once_and_the_event_keeps_its_illustration(self):
+        # The safe fetcher stops reading at its byte limit and raises before any body arrives (a 1.95 MB PNG on Bates' "Christmas on the Farm" page):
+        # that is not a temporary failure, so the candidate is finished without a photograph instead of being downloaded again on every pass.
+        self.discover_and_extract()
+        oversized = sorted(self.pictures)[0]
+        self.pictures[oversized] = FetchError("batesnutfarm.biz: the response is too large")
+        self.enrich()
+        first = self.router.picture_urls.count(oversized)
+        self.assertEqual(first, 1)
+        record = self.built.persistence.media_cache.get_record("e:" + __import__("hashlib").sha1(oversized.encode()).hexdigest()[:20])
+        self.assertEqual((record["ok"], record["reason"]), (False, "batesnutfarm.biz: the response is too large"))
+        with database(self.built).read() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM candidate_media WHERE complete = 0").fetchone()[0], 0)
+        shown = [e for e in self.events(self.austin).values() if (e.media or {}).get("image", {}).get("original_url") == oversized]
+        self.assertEqual(shown, [], "no photograph is invented for it")
+        self.assertTrue(all(e.illustration for e in self.events(self.austin).values()), "the category illustration stays as the fallback")
+        self.clock.t += 5000
+        self.built.enrichment._work.retry_after_s = 0
+        self.enrich()
+        self.assertEqual(self.router.picture_urls.count(oversized), first, "not downloaded again")
+
     def test_a_picture_host_that_forbids_fetching_is_respected_and_the_source_s_own_address_is_offered_instead(self):
         self.discover_and_extract()
         urls = sorted(self.pictures)

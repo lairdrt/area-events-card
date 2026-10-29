@@ -18,7 +18,20 @@ Proof required per pair (preview prints it):
 
 Applying (one transaction, one verified backup first, rolled back whole on any mismatch): the survivor keeps its event key and every fact; the removed event's candidates become `duplicate` associations of the survivor (the survivor's primary stays primary); its extractions and revisions move to the survivor (appended after the survivor's own, which are untouched); one final revision records `reconciled_from`; the removed event is deleted; change records (`event.reconciled` upsert for the survivor, delete for the removed key) reach the API and card. A second run reports `already reconciled` and writes nothing. `expect_events_after` refuses a manifest that would not leave exactly that many events.
 
-The Bates manifest is `docs/maintenance/bates-2026-10-reconciliation.json` (sha256 `785531b3…6adfe`): 13 pairs. `expect_events_after` is 481: production had 494 events on 2026-10-29 after the depth-2 scans added four (see below), so 494 → 481.
+The Bates manifest is `docs/maintenance/bates-2026-10-reconciliation.json` (sha256 `785531b3…6adfe`): 13 pairs. `expect_events_after` is 481: production had 494 events on 2026-10-29 after the depth-2 scans added four (see below), so 494 → 481. (Applied 2026-10-29; other producers have added events since, so this manifest's absolute count no longer previews. Its pairs report `already reconciled` without it.)
+
+### Second proof: one occurrence on two listing pages (`"proof": "shared_event_page"`)
+
+A pair that names this proof is the same occurrence listed on two of the source's listing pages, both cards linking to one event page (the depth-2 scans read the Bates home page as well as its events page). The listing-page and label-word steps above are replaced by all of:
+
+- every candidate of the removed event, and the survivor's primary, names the same event page (payload `url`), lists it in `found_on`, and records `Facts read from the event page <url>`; the event page is no listing page;
+- the original listing evidence: the removed event's primary also recorded a heading **on the survivor's listing page**, and it equals the survivor's heading there word for word;
+- every title and every recorded heading of the removed event equals a verified survivor title word for word (no added words, no fuzzy match);
+- start and end are identical, and no other event of the source names that event page with that start (otherwise the pair is ambiguous and refused).
+
+The other requirements (ownership, one primary each, complete histories, same day, no fact loss) and the apply behaviour are unchanged. A title that differs in wording (Alias: "Alias | Live at Bates on Halloween" vs "Alias | Live Music") or a card that recorded no event page is refused by both proofs.
+
+`docs/maintenance/bates-2026-10-shared-event-page.json` (sha256 `44534f09…58fb3`): two pairs, Halloween Finale and The 2026 Pumpkin Patch (Oct 31). It has no `expect_events_after`: the other producers change the total every hour. The gate is the preview: exactly these two pairs `ready`, and `events N -> N-2`. Release, once authorized: preview on production; apply with `--apply --backup-dir /home/robohobo/backups/area-events-maintenance`; rerun (both `already reconciled`); verify the two keys return 404, the survivors keep their facts, every candidate and association remains, and the card shows one entry for each.
 
 ## Release sequence
 

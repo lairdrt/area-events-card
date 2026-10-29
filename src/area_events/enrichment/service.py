@@ -96,7 +96,7 @@ class SourcePhotos:
             self._store.put_record(key, {"at": now, "ok": False, "blocked": True, "reason": str(error)[:200]})
             return self._hotlink(event, source_name, url), True
         except FetchError as error:
-            if "HTTP 4" in str(error):   # gone or forbidden: remember it
+            if "HTTP 4" in str(error) or "too large" in str(error):   # gone, forbidden or over the fetch limit: none of these heals by asking again; remember it
                 self._store.put_record(key, {"at": now, "ok": False, "reason": str(error)[:200]})
                 return None, True
             log.warning("event photograph not fetched (will retry): %s", error)
