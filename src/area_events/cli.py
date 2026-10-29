@@ -31,7 +31,7 @@ import urllib.request
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from .app import DEDUPLICATORS, DEFAULT_DEDUPLICATION, KNOWN_SOURCES, build, build_api, create_verified_database_backup, duplicate_maintenance, load_tokens
+from .app import DEDUPLICATORS, DEFAULT_DEDUPLICATION, KNOWN_SOURCES, build, build_api, create_verified_database_backup, duplicate_maintenance, load_tokens, reviewed_reconciliation
 from .contracts.models import CandidateQuery
 from .control.service import ControlError, CreateAreaRequest, RevisionConflict, SettingsRequest, UpdateAreaRequest
 from .api.events import EventQuery
@@ -546,6 +546,37 @@ def cmd_duplicates(args):
         return 2
 
 
+def cmd_reconcile_reviewed(args):
+    """Preview (default) or apply the operator-reviewed reconciliation of the event pairs a manifest names. Applying takes a verified backup first."""
+    try:
+        reconciliation = reviewed_reconciliation(args.db)
+        with open(args.manifest, encoding="utf-8") as handle:
+            manifest, digest = reconciliation.load_manifest(handle.read())
+        if args.apply and not args.backup_dir:
+            print("--apply requires --backup-dir outside the active application tree", file=sys.stderr)
+            return 2
+        report = reconciliation.preview(manifest)   # every pair is proven (read-only) before anything is backed up or written
+        print(f"manifest sha256 {digest}; source {manifest['source_key']}; {len(report['pairs'])} pair(s)")
+        for item in report["pairs"]:
+            print(f"{item['state']}: keep {item['survivor']}; remove {item['removed']}  ({item.get('label') or '-'})")
+            for line in item["evidence"]:
+                print(f"    {line}")
+        print(f"events {report['events_before']} -> {report['events_after']}")
+        if not args.apply:
+            print("dry run (nothing written)")
+            return 0
+        app_root = os.environ.get("AREA_EVENTS_APP_ROOT", os.path.abspath(os.path.join(os.path.dirname(args.db), os.pardir, os.pardir)))
+        print(f"verified backup: {create_verified_database_backup(args.db, args.backup_dir, app_root)}")
+        done = reconciliation.apply(manifest)
+        for item in done["pairs"]:
+            print(f"{item['state']}: {item['survivor']} <- {item['removed']}")
+        print(f"applied; events {done['events_before']} -> {done['events_after']}")
+        return 0
+    except (OSError, ValueError) as error:   # DuplicateMaintenanceError is a ValueError
+        print(f"refused: {error}", file=sys.stderr)
+        return 2
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="discovery", description="The Area Events Discovery Service.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -650,6 +681,11 @@ def main(argv=None):
     clean_duplicates.add_argument("--group", type=_duplicate_group, action="append", help="explicit pair of event keys, repeat per group")
     clean_duplicates.add_argument("--apply", action="store_true", help="requires --backup-dir and explicit --group selections")
     clean_duplicates.add_argument("--backup-dir", help="required for --apply; outside the active application tree")
+    reviewed = duplicate_actions.add_parser("reconcile", help="preview by default; reconcile the explicitly listed, individually proven event pairs of a reviewed manifest atomically")
+    reviewed.add_argument("--db", default=argparse.SUPPRESS)
+    reviewed.add_argument("--manifest", required=True, help="JSON manifest (schema discovery.reconciliation.v1): source_key and pairs of survivor/remove event keys")
+    reviewed.add_argument("--apply", action="store_true", help="requires --backup-dir; a verified backup is taken after every pair is proven and before anything is written")
+    reviewed.add_argument("--backup-dir", help="required for --apply; outside the active application tree")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")
@@ -664,7 +700,7 @@ def main(argv=None):
                 "pause": cmd_pause_resume, "resume": cmd_pause_resume, "changes": cmd_changes, "inspect": cmd_inspect, "extract": cmd_extract,
                 "events": cmd_events, "sources": cmd_sources}
     if args.command == "duplicates":
-        return cmd_duplicates(args)
+        return cmd_reconcile_reviewed(args) if args.duplicates_action == "reconcile" else cmd_duplicates(args)
     return handlers[args.command](args)
 
 

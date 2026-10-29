@@ -61,12 +61,12 @@ ALLOWED = {
     "enrichment.service": {"classification.classifiers", "enrichment.images", "discovery.safe", "enrichment.media", "contracts.models", PORTS, "extraction.text"},
     "extraction": set(), "extraction.text": {"geolocation.textloc"}, "extraction.service": {"contracts.evidence", "geolocation.textloc", "contracts.models", "extraction.text"},
     "geolocation": set(), "geolocation.location": {"discovery.safe"}, "geolocation.place": {"geolocation.location"}, "geolocation.textloc": set(),
-    PERSISTENCE: set(), PORTS: set(), f"{PERSISTENCE}.areas": {"contracts.models"}, f"{PERSISTENCE}.control": {"contracts.models", f"{PERSISTENCE}.naming"}, f"{PERSISTENCE}.naming": {"discovery.producer"},
+    PERSISTENCE: set(), PORTS: set(), f"{PERSISTENCE}.areas": {"contracts.models"}, f"{PERSISTENCE}.control": {"contracts.models", f"{PERSISTENCE}.naming"}, f"{PERSISTENCE}.naming": {"discovery.producer"}, f"{PERSISTENCE}.reviewed": {f"{PERSISTENCE}.events"},
     f"{PERSISTENCE}.crawl": {"contracts.models", PORTS, f"{PERSISTENCE}.repositories", "discovery.urls"},
     f"{PERSISTENCE}.events": {"contracts.models", DEDUPLICATION, "api.events"}, f"{PERSISTENCE}.media": {"contracts.models"},
     f"{PERSISTENCE}.processing": {"contracts.evidence", "contracts.models", f"{PERSISTENCE}.events"}, f"{PERSISTENCE}.reading": {"contracts.models"},
     f"{PERSISTENCE}.repositories": {"contracts.models", "discovery.producer", "discovery.urls"}, f"{PERSISTENCE}.scheduling": {"contracts.models"}, f"{PERSISTENCE}.schema": set(),
-    f"{PERSISTENCE}.store": {"contracts.models", f"{PERSISTENCE}.schema"}, BUILD: {f"{PERSISTENCE}.{n}" for n in ("areas", "control", "crawl", "events", "media", "naming", "processing", "reading", "repositories", "scheduling", "store")} | {PORTS},
+    f"{PERSISTENCE}.store": {"contracts.models", f"{PERSISTENCE}.schema"}, BUILD: {f"{PERSISTENCE}.{n}" for n in ("areas", "control", "crawl", "events", "media", "naming", "processing", "reading", "repositories", "reviewed", "scheduling", "store")} | {PORTS},
     "validation": set(), "validation.processing": {"contracts.models", PORTS},
 }
 

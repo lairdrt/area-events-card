@@ -1,0 +1,72 @@
+{
+ "schema": "discovery.reconciliation.v1",
+ "source_key": "mission_trails",
+ "expect_events_after": 477,
+ "pairs": [
+  {
+   "label": "Halloween Finale",
+   "survivor": "ev-1d5aa537585aeeb5b0b1",
+   "remove": "ev-2311312829dcc1c2d4ce"
+  },
+  {
+   "label": "Annual Costume Contest & Parade",
+   "survivor": "ev-e12bd3b3ee20cf15359e",
+   "remove": "ev-3d9dbd877e8fbd7fb854"
+  },
+  {
+   "label": "Howl-o-ween Doggie Costume Contest",
+   "survivor": "ev-ba503057a0ecc4059a50",
+   "remove": "ev-30b94dd67dc9aae23929"
+  },
+  {
+   "label": "Live at Bates on Halloween",
+   "survivor": "ev-7771127db04f3f4a762d",
+   "remove": "ev-f7c144b802dc55565155"
+  },
+  {
+   "label": "East County Cruisers Car Show and Toy Drive",
+   "survivor": "ev-e4c1ca9a0bc4e9b5c4e8",
+   "remove": "ev-051b3b596883dd565740"
+  },
+  {
+   "label": "8th Annual Guns & Hoses Chili Cook-Off",
+   "survivor": "ev-2550979dcabba0afda43",
+   "remove": "ev-5da10eb540fdb6dd0e5f"
+  },
+  {
+   "label": "Santa's Coming! Craft Fair Nov 27",
+   "survivor": "ev-a1b7361dedbe2520bfcd",
+   "remove": "ev-8995d0b0945829c02793"
+  },
+  {
+   "label": "Santa's Coming! Craft Fair Nov 28",
+   "survivor": "ev-6ae9adcff0546d5ba653",
+   "remove": "ev-06f326b4efd1d394cb0c"
+  },
+  {
+   "label": "Christmas in Valley Center Dec 11",
+   "survivor": "ev-bfddd78d81258f575a92",
+   "remove": "ev-f24368d0ce26059d954c"
+  },
+  {
+   "label": "Christmas in Valley Center Dec 12",
+   "survivor": "ev-2a39df87a653304a3ead",
+   "remove": "ev-34db280e01a4edfd58c4"
+  },
+  {
+   "label": "The 2026 Pumpkin Patch",
+   "survivor": "ev-4306ce61ce86fe8ac6ab",
+   "remove": "ev-48215e50736360d1efa1"
+  },
+  {
+   "label": "Christmas on the Farm Nov 7",
+   "survivor": "ev-05890f06806cbda9b580",
+   "remove": "ev-88a4b3b824025c4beeb2"
+  },
+  {
+   "label": "Christmas on the Farm Nov 8",
+   "survivor": "ev-78b5bce9f90fbd2e4a18",
+   "remove": "ev-d1221c2779cceb019764"
+  }
+ ]
+}
