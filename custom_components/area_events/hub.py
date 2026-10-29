@@ -377,8 +377,21 @@ class DiscoveryHub:
         areas = await self._read.areas()
         status = await self._read.status()
         producer_types = await self._read.producer_types()
+        try:
+            trashcan = await self._read.trashcan()
+        except DiscoveryRequestError:   # a service without a trashcan: the section says so
+            trashcan = None
         return {"schema": "area_events.management.v1", "sources": sources, "areas": areas,
-                "status": status, "producer_types": producer_types, "can_control": self.can_control}
+                "status": status, "producer_types": producer_types, "can_control": self.can_control, "trashcan": trashcan}
+
+    async def delete_event(self, event_key, reason):
+        """Delete an event into the service's trashcan. Only once the service confirms is it taken off every card's view (the change feed would do the same at the
+        next refresh); a failure changes nothing here."""
+        result = await self._controller().trash_event(event_key, reason)
+        for feed in self._feeds.values():
+            feed.events = [e for e in feed.events if e["id"] != event_key]
+        self._push_all()
+        return result
 
     async def create_source(self, source_key, adapter, name, enabled, interval_minutes, options):
         return await self._changed(self._controller().create_source(source_key, adapter, name, enabled, interval_minutes, options))

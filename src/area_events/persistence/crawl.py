@@ -13,9 +13,10 @@ from .repositories import compress
 
 
 class SqliteCrawlStorage:
-    def __init__(self, store, sources, pages, candidates, jobs, changes, retention, areas, settings, clock):
+    def __init__(self, store, sources, pages, candidates, jobs, changes, retention, areas, settings, clock, trashcan=None):
         self._store, self._sources, self._pages, self._candidates = store, sources, pages, candidates
         self._jobs, self._changes, self._retention, self._areas, self._settings, self._clock = jobs, changes, retention, areas, settings, clock
+        self._trashcan = trashcan   # SqliteTrashcan: a new candidate that is a deleted event found again is not stored
 
     def _now(self):
         return int(self._clock())
@@ -96,7 +97,7 @@ class SqliteCrawlStorage:
 
     def _store_plan(self, tx, job, source, plan, now):
         counts = dict(pages_seen=0, pages_new=0, content_new=0, content_unchanged=0, candidates_seen=0, candidates_new=0, candidates_changed=0,
-                      candidates_unchanged=0, evidence_written=0, changes_appended=0)
+                      candidates_unchanged=0, candidates_suppressed=0, evidence_written=0, changes_appended=0)
         page_ids, stored_as = {}, {}   # stored_as: the content hash fetched -> the hash actually kept (a page whose readable text is unchanged keeps its old snapshot)
         for entry in plan.pages:
             page_id, new = self._pages.touch(tx, entry.url, source["source_id"], entry.role, now)
@@ -125,6 +126,10 @@ class SqliteCrawlStorage:
         for item in plan.candidates:
             record, key = item.record, item.key
             counts["candidates_seen"] += 1
+            if (self._trashcan is not None and tx.execute("SELECT 1 FROM candidates WHERE candidate_key=?", (key,)).fetchone() is None
+                    and self._trashcan.suppressed(tx, source["source_key"], key, record, now)):
+                counts["candidates_suppressed"] += 1   # an event an administrator deleted, found again: nothing of it is stored
+                continue
             page_id = None
             if record.url:
                 url = canonical_url(record.url)

@@ -1,7 +1,8 @@
 """The card-facing WebSocket API. It rides on the signed-in user's Home Assistant session; the card holds no secret.
 
 Reads (list areas, status, events, one event, the live subscription) are open to every signed-in user. Changing shared Discovery settings
-(`area_create`, `area_update`, `settings`, `pause`, `resume`) needs a Home Assistant administrator AND a control token in the config entry;
+(`area_create`, `area_update`, `settings`, `pause`, `resume`) and deleting an event into the trashcan (`event_delete`) need a Home Assistant
+administrator AND a control token in the config entry;
 the tokens themselves never leave the backend. A command that cannot reach the Discovery Service fails: nothing is reported as saved that
 the service did not save.
 """
@@ -13,8 +14,8 @@ from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
 
-from .const import (DOMAIN, PHOTOS_KEY, WS_AREA_CREATE, WS_AREA_UPDATE, WS_AREAS, WS_EVENT, WS_EVENTS, WS_PAUSE, WS_RESUME, WS_SETTINGS, WS_STATUS,
-                    WS_SUBSCRIBE, WS_MANAGEMENT, WS_SOURCE_COMMAND)
+from .const import (DOMAIN, PHOTOS_KEY, TRASH_REASONS, WS_AREA_CREATE, WS_AREA_UPDATE, WS_AREAS, WS_EVENT, WS_EVENT_DELETE, WS_EVENTS, WS_PAUSE, WS_RESUME,
+                    WS_SETTINGS, WS_STATUS, WS_SUBSCRIBE, WS_MANAGEMENT, WS_SOURCE_COMMAND)
 from .discovery_client import DiscoveryAuthError, DiscoveryConflictError, DiscoveryConnectionError, DiscoveryRequestError
 from .hub import ControlNotConfigured, UnknownArea
 
@@ -26,7 +27,8 @@ REVISION = vol.All(int, vol.Range(min=1))
 
 @callback
 def async_register(hass: HomeAssistant) -> None:
-    for handler in (ws_areas, ws_status, ws_events, ws_event, ws_subscribe, ws_area_create, ws_area_update, ws_settings, ws_pause, ws_resume, ws_management, ws_source_command):
+    for handler in (ws_areas, ws_status, ws_events, ws_event, ws_subscribe, ws_area_create, ws_area_update, ws_settings, ws_pause, ws_resume, ws_management, ws_source_command,
+                    ws_event_delete):
         websocket_api.async_register_command(hass, handler)
 
 
@@ -47,7 +49,10 @@ async def _serve(hass, connection, msg, action):
     except ControlNotConfigured:
         connection.send_error(msg["id"], "control_not_configured", "No control token is configured, so shared Discovery settings cannot be changed from Home Assistant.")
     except DiscoveryConflictError as error:
-        connection.send_error(msg["id"], "revision_conflict", f"{error} (current revision {error.current_revision}); read it again and retry.")
+        if error.current_revision is None:   # a refusal that is not about a stale revision (an event whose history another event shares)
+            connection.send_error(msg["id"], "conflict", str(error))
+        else:
+            connection.send_error(msg["id"], "revision_conflict", f"{error} (current revision {error.current_revision}); read it again and retry.")
     except DiscoveryAuthError as error:
         if error.status == 403:
             connection.send_error(msg["id"], "forbidden", "The Discovery Service does not allow this token to make changes.")
@@ -222,6 +227,16 @@ async def ws_resume(hass, connection, msg):
 async def ws_management(hass, connection, msg):
     """One admin-only snapshot, with no tokens sent to the browser."""
     await _serve(hass, connection, msg, lambda hub: hub.management_snapshot())
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({vol.Required("type"): WS_EVENT_DELETE, vol.Required("event_key"): KEY, vol.Required("reason"): vol.In(TRASH_REASONS)})
+@websocket_api.async_response
+async def ws_event_delete(hass, connection, msg):
+    """Delete one event permanently (the service keeps it in its trashcan, so rediscovery cannot bring it back). Success means the service deleted it."""
+    async def action(hub):
+        return await hub.delete_event(msg["event_key"], msg["reason"])
+    await _serve(hass, connection, msg, action)
 
 
 @websocket_api.require_admin

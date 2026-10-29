@@ -407,6 +407,29 @@ INSERT INTO sqlite_sequence (name, seq) VALUES ('changes', MAX((SELECT COALESCE(
                                                               (SELECT CAST(value AS INTEGER) FROM store_meta WHERE key = 'seq_before_sources_migration')));
 DELETE FROM store_meta WHERE key = 'seq_before_sources_migration';
 """),
+    (10, "trashcan: events an administrator deleted, kept as records (no picture bytes) that stop rediscovery from bringing them back", """
+CREATE TABLE trashcan (
+  trash_id      INTEGER PRIMARY KEY,
+  event_key     TEXT NOT NULL UNIQUE CHECK (length(event_key) BETWEEN 8 AND 60),
+  title         TEXT NOT NULL,
+  starts_at     INTEGER NOT NULL,
+  ends_at       INTEGER,
+  reason        TEXT NOT NULL CHECK (reason IN ('duplicate', 'not_relevant', 'incorrect', 'expired_or_canceled', 'advertisement', 'other')),
+  record_json   TEXT NOT NULL,              -- the deleted event, its candidates' standard records and its revisions
+  match_json    TEXT NOT NULL,              -- normalized facts rediscovery is compared with: sources, candidate keys, starts, titles, event pages, places
+  deleted_at    INTEGER NOT NULL,
+  suppressed_count INTEGER NOT NULL DEFAULT 0 CHECK (suppressed_count >= 0),
+  last_suppressed_at INTEGER
+);
+
+CREATE TABLE trashcan_occurrences (
+  trash_id      INTEGER NOT NULL REFERENCES trashcan(trash_id) ON DELETE CASCADE,
+  source_key    TEXT NOT NULL,              -- the immutable source key, so a record outlives a source's rename
+  starts_at     INTEGER NOT NULL,
+  PRIMARY KEY (trash_id, source_key, starts_at)
+);
+CREATE INDEX trashcan_occurrences_lookup ON trashcan_occurrences(source_key, starts_at);
+"""),
 )
 
 LATEST = MIGRATIONS[-1][0]

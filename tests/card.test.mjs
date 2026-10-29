@@ -1770,3 +1770,114 @@ test("the new illustrations are only the last fallback: event photo, venue photo
   assert.equal(artOf(tile).hidden, false, "only then the carnival illustration");
   assert.match(artOf(tile).className, /art carnival/);
 });
+
+// --- deleting an event (administrators) ------------------------------------------------------------
+
+/** A card whose Home Assistant user is (or is not) an administrator, on an integration that can (or cannot) change the service. */
+async function deletionCard({ admin = true, canControl = true, onDelete } = {}) {
+  const feed = makeFeed();
+  const hass = fakeHass({ feed, reply: () => answer(feed, { service: { can_control: canControl } }),
+    onWS: (message) => (message.type === "area_events/event_delete" ? (onDelete ? onDelete(message) : { state: "deleted" }) : undefined) });
+  hass.user = { is_admin: admin };
+  const card = await make({}, { hass });
+  return { card, hass, root: card.shadowRoot };
+}
+const trashOf = (tile) => byClass(tile, "ae-trash")[0];
+const dialogOf = (card) => card._els.dialogs.children.find((d) => !d.removed);
+const deletes = (hass) => hass.calls.filter((m) => m.type === "area_events/event_delete");
+const tileTitled = (root, title) => byClass(root, "event").find((e) => text(byClass(e, "title")[0]).includes(title));
+
+test("only an administrator on an integration with control sees a trashcan, one per tile, labelled for keyboards and screen readers", async () => {
+  const { root } = await deletionCard();
+  const tiles = byClass(root, "event");
+  assert.ok(tiles.length >= 3);
+  for (const tile of tiles) {
+    const button = trashOf(tile);
+    assert.ok(button, "every tile has one");
+    assert.equal(button.tag, "button");
+    assert.equal(button.type, "button");
+    assert.match(button.attrs["aria-label"], /^Delete event: /);
+    assert.match(tile.className, /ae-deletable/);
+  }
+  for (const options of [{ admin: false }, { canControl: false }]) {
+    const { root: other } = await deletionCard(options);
+    assert.equal(byClass(other, "ae-trash").length, 0, JSON.stringify(options));
+  }
+  const inline = await make({ events: baseEvents() });
+  inline._hass.user = { is_admin: true };
+  assert.equal(byClass(inline.shadowRoot, "ae-trash").length, 0, "demonstration events are never deletable");
+});
+
+test("the trashcan is hidden until its corner is hovered or focused, shown on touch screens, and does not open the event", async () => {
+  const styles = fs.readFileSync(new URL("../src/frontend/area-events-card.js", import.meta.url), "utf8");
+  assert.match(styles, /\.ae-trash \{[^}]*position: absolute; right: 4px; bottom: 4px;[^}]*opacity: 0;/);
+  assert.match(styles, /\.ae-trash:hover, \.ae-trash:focus-visible \{ opacity: 1;/);
+  assert.match(styles, /@media \(hover: none\) \{ \.ae-trash \{ opacity: 0\.7; \} \}/);
+  const { card, root } = await deletionCard();
+  let stopped = false, prevented = false;
+  trashOf(byClass(root, "event")[0]).listeners.click({ stopPropagation: () => { stopped = true; }, preventDefault: () => { prevented = true; } });
+  assert.ok(stopped && prevented, "the click stays with the button");
+  assert.ok(dialogOf(card));
+});
+
+test("the dialog needs one reason; Cancel and X close it and ask nothing of Home Assistant", async () => {
+  const { card, hass, root } = await deletionCard();
+  const tile = tileTitled(root, "Mystery Gathering");
+  click(trashOf(tile));
+  let dialog = dialogOf(card);
+  assert.match(text(dialog), /Delete this event\?/);
+  assert.match(text(dialog), /Mystery Gathering/);
+  const radios = walk(dialog).filter((e) => e.tag === "input");
+  assert.deepEqual(radios.map((r) => r.type), Array(6).fill("radio"));
+  assert.equal(new Set(radios.map((r) => r.name)).size, 1, "one choice");
+  for (const label of ["Duplicate event", "Not relevant to my area", "Incorrect or misleading information", "Expired or canceled event", "Advertisement / not a real event", "Other / don't want to see it"]) {
+    assert.match(text(dialog), new RegExp(label.replace("/", "\/")));
+  }
+  const button = (d, name) => walk(d).find((e) => e.tag === "button" && text(e) === name);
+  assert.equal(button(dialog, "Delete").disabled, true, "nothing chosen yet");
+  click(button(dialog, "Delete"));
+  assert.equal(deletes(hass).length, 0);
+  click(button(dialog, "Cancel"));
+  assert.equal(dialogOf(card), undefined);
+  click(trashOf(tile));
+  dialog = dialogOf(card);
+  walk(dialog).find((e) => e.tag === "input" && e.value === "duplicate").listeners.change({});
+  click(walk(dialog).find((e) => e.className === "close"));
+  assert.equal(dialogOf(card), undefined);
+  assert.equal(deletes(hass).length, 0, "Cancel and X write nothing");
+  assert.ok(tileTitled(root, "Mystery Gathering"));
+});
+
+test("Delete sends the chosen reason and removes the tile only once Home Assistant confirms", async () => {
+  let release;
+  const { card, hass, root } = await deletionCard({ onDelete: () => new Promise((resolve) => { release = resolve; }) });
+  click(trashOf(tileTitled(root, "Mystery Gathering")));
+  const dialog = dialogOf(card);
+  walk(dialog).find((e) => e.tag === "input" && e.value === "expired_or_canceled").listeners.change({});
+  const remove = walk(dialog).find((e) => e.tag === "button" && text(e) === "Delete");
+  assert.equal(remove.disabled, false);
+  click(remove);
+  await wait();
+  assert.deepEqual(deletes(hass), [{ type: "area_events/event_delete", event_key: "Mystery Gathering", reason: "expired_or_canceled" }]);
+  assert.ok(tileTitled(root, "Mystery Gathering"), "still shown while the service decides");
+  assert.equal(remove.disabled, true);
+  release({ state: "deleted" });
+  await wait();
+  assert.equal(tileTitled(root, "Mystery Gathering"), undefined);
+  assert.equal(dialogOf(card), undefined);
+  assert.ok(tileTitled(root, "Corroborated Farmers Market"), "the other tiles stay");
+});
+
+test("a failed deletion is shown in the dialog and the tile stays", async () => {
+  const { card, root } = await deletionCard({ onDelete: () => Promise.reject(Object.assign(new Error("The Discovery Service is not reachable"), { code: "unavailable" })) });
+  click(trashOf(tileTitled(root, "Mystery Gathering")));
+  const dialog = dialogOf(card);
+  walk(dialog).find((e) => e.tag === "input" && e.value === "other").listeners.change({});
+  click(walk(dialog).find((e) => e.tag === "button" && text(e) === "Delete"));
+  await wait();
+  const error = byClass(dialog, "dialog-error")[0];
+  assert.equal(error.hidden, false);
+  assert.match(text(error), /not deleted: The Discovery Service is not reachable/);
+  assert.ok(dialogOf(card), "the dialog stays open to try again or cancel");
+  assert.ok(tileTitled(root, "Mystery Gathering"));
+});

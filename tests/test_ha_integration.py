@@ -1159,10 +1159,11 @@ class WebSocket(Service):
         names = {h.schema["type"] for h in REGISTERED[before:]}
         self.assertEqual(names, {"area_events/areas", "area_events/status", "area_events/events", "area_events/event", "area_events/subscribe", "area_events/area_create",
                                  "area_events/area_update", "area_events/settings", "area_events/pause", "area_events/resume",
-                                 "area_events/management", "area_events/source_command"})
+                                 "area_events/management", "area_events/source_command", "area_events/event_delete"})
         for handler in (websocket_module.ws_area_create, websocket_module.ws_area_update, websocket_module.ws_settings, websocket_module.ws_pause,
-                        websocket_module.ws_resume, websocket_module.ws_management, websocket_module.ws_source_command):
-            denied = self.call(handler, {"area_key": "abcdefgh", "expected_revision": 1, "name": "x", "latitude": 1, "longitude": 1, "radius": 1}, admin=False)
+                        websocket_module.ws_resume, websocket_module.ws_management, websocket_module.ws_source_command, websocket_module.ws_event_delete):
+            denied = self.call(handler, {"area_key": "abcdefgh", "expected_revision": 1, "name": "x", "latitude": 1, "longitude": 1, "radius": 1,
+                                         "event_key": "ev-00000000", "reason": "other"}, admin=False)
             self.assertEqual(denied.sent[0][:3], ("error", 5, "unauthorized"), handler)
         self.assertFalse(self.built.control.get_status().settings.paused, "a non-administrator changed nothing")
 
@@ -1198,6 +1199,32 @@ class WebSocket(Service):
                           "expected_revision": 1, "enabled": False}, admin=True).sent[0]
         self.assertEqual(stale[2], "revision_conflict")
         self.assertNotIn(CONTROL_TOKEN, json.dumps([made, bad, stale]))
+
+    def test_an_administrator_deletes_an_event_into_the_trashcan_and_every_card_loses_it(self):
+        hub = self.entry.runtime_data.hub
+        card = Inbox()
+        run(hub.subscribe("Austin", card))
+        key = card.last["events"][0]["id"]
+        before = len(card.last["events"])
+        refused = self.call(websocket_module.ws_event_delete, {"event_key": key, "reason": "nonsense"}, admin=True).sent[0]   # (HA's schema refuses it first; the service too)
+        self.assertEqual(refused[:3], ("error", 5, "rejected"))
+        self.assertIn(key, [e["id"] for e in card.last["events"]])
+        deleted = self.call(websocket_module.ws_event_delete, {"event_key": key, "reason": "advertisement"}, admin=True).sent[0]
+        self.assertEqual((deleted[0], deleted[2]["schema"], deleted[2]["state"]), ("result", "discovery.trashcan.v1", "deleted"))
+        self.assertEqual(len(card.last["events"]), before - 1)
+        self.assertNotIn(key, [e["id"] for e in card.last["events"]])
+        self.assertEqual(self.call(websocket_module.ws_event_delete, {"event_key": key, "reason": "other"}, admin=True).sent[0][2]["state"], "already_deleted")
+        self.assertEqual(self.call(websocket_module.ws_event, {"event_key": key}).sent[0][2], "not_found")
+        run(hub.refresh())
+        self.assertNotIn(key, [e["id"] for e in card.last["events"]], "the change feed agrees")
+        trash = self.call(websocket_module.ws_management, {}, admin=True).sent[0][2]["trashcan"]
+        self.assertEqual((trash["total"], trash["by_reason"]["advertisement"], trash["events"][0]["event_key"]), (1, 1, key))
+        read_only = Entry({"url": self.url, "read_token": READ_TOKEN})
+        with mock.patch.object(init, "async_get_clientsession", lambda hass: UrllibSession()):
+            run(init.async_setup_entry(Hass([read_only]), read_only))
+        self.hass.entries[:] = [read_only]
+        other = card.last["events"][0]["id"]
+        self.assertEqual(self.call(websocket_module.ws_event_delete, {"event_key": other, "reason": "other"}, admin=True).sent[0][2], "control_not_configured")
 
     def test_reads_are_open_to_any_signed_in_user(self):
         areas = self.call(websocket_module.ws_areas, {}).sent[0]
@@ -1285,7 +1312,7 @@ class WebSocket(Service):
         hass = types.SimpleNamespace(http=types.SimpleNamespace(async_register_static_paths=register, register_view=lambda view: None), async_add_executor_job=lambda func, *a: asyncio.sleep(0, func(*a)), data={})
         before = len(REGISTERED)
         self.assertTrue(run(init.async_setup(hass, {})))
-        self.assertEqual(len(REGISTERED) - before, 12)
+        self.assertEqual(len(REGISTERED) - before, 13)
         self.assertEqual(paths[0][0][0], "/area_events/area-events-card.js")
         self.assertEqual(paths[1][0][0], "/area_events/manager.js")
         self.assertEqual(paths[2][0][0], "/area_events/presentation")

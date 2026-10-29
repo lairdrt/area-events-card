@@ -138,3 +138,32 @@ test("SourcesProducer URL list uses multiline native editor, not JSON", () => {
   assert.deepEqual(manager.optionsFrom(input, "sources_producer"),
     { urls: ["https://a.example/events", "https://b.example/calendar"] });
 });
+
+test("the Trashcan section lists deleted events with their reason, date, source, totals and suppressed rediscoveries", () => {
+  const manager = setup();
+  manager._snapshot.trashcan = { schema: "discovery.trashcan.v1", total: 2, suppressed: 5,
+    by_reason: { duplicate: 1, not_relevant: 0, incorrect: 0, expired_or_canceled: 0, advertisement: 1, other: 0 },
+    events: [{ event_key: "ev-0123456789abcdef0123", title: "Harvest <Craft> Fair", starts_at: 1794600000, sources: [{ key: "fairs", name: "Local Fairs" }],
+      reason: "advertisement", reason_label: "Advertisement / not a real event", deleted_at: 1793300000, suppressed_count: 5 }] };
+  manager._tab = "trashcan";
+  manager.render();
+  const html = manager.shadowRoot.innerHTML;
+  assert.match(html, /data-value='trashcan' class='active'>Trashcan/);
+  assert.match(html, /Harvest &lt;Craft&gt; Fair/, "titles are escaped");
+  assert.match(html, /Local Fairs/);
+  assert.match(html, /Advertisement \/ not a real event/);
+  assert.match(html, /Deleted events<\/div><div class='value'>2/);
+  assert.match(html, /Rediscoveries suppressed<\/div><div class='value'>5/);
+  assert.match(html, /Duplicate event: <strong>1/);
+  assert.doesNotMatch(html, /restore|Restore/, "no restore in V1");
+});
+
+test("the Trashcan section says so when the service has no trashcan, and when it is empty", () => {
+  const manager = setup();
+  manager._tab = "trashcan";
+  manager.render();
+  assert.match(manager.shadowRoot.innerHTML, /does not report a trashcan/);
+  manager._snapshot.trashcan = { schema: "discovery.trashcan.v1", total: 0, suppressed: 0, by_reason: {}, events: [] };
+  manager.render();
+  assert.match(manager.shadowRoot.innerHTML, /The trashcan is empty/);
+});

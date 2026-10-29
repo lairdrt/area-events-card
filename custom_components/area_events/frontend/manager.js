@@ -4,6 +4,8 @@ const escapeHtml = (value) => String(value == null ? "" : value).replace(/[&<>"'
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
 })[c]);
 const asInt = (value, fallback) => value === "" || value == null ? fallback : Number(value);
+const REASON_LABELS = { duplicate: "Duplicate event", not_relevant: "Not relevant to my area", incorrect: "Incorrect or misleading information",
+  expired_or_canceled: "Expired or canceled event", advertisement: "Advertisement / not a real event", other: "Other / don't want to see it" };
 const CSS = [
   ":host{display:block;color:var(--primary-text-color);background:var(--primary-background-color);min-height:100%;font-family:Roboto,Arial,sans-serif;--ae-line:var(--divider-color,#d4d7dd);--ae-surface:var(--card-background-color,#fff);--ae-muted:var(--secondary-text-color,#657083);--ae-accent:var(--primary-color,#187bcb)}",
   "*{box-sizing:border-box}button,input,select{font:inherit}button{cursor:pointer}button:disabled{opacity:.5;cursor:not-allowed}",
@@ -26,6 +28,9 @@ const CSS = [
   "textarea{display:block;width:100%;min-height:120px;resize:vertical;margin-top:5px;border:1px solid var(--ae-line);border-radius:8px;padding:9px 10px;background:var(--ae-surface);color:var(--primary-text-color);font:inherit;font-size:13px}",
   ".detail .actions{margin-top:18px}.message{padding:12px 14px;margin:0 0 16px;border:1px solid var(--ae-line);border-radius:8px;background:var(--ae-surface);font-size:13px}.message.error{border-color:var(--error-color,#bf4646)}",
   ".empty{color:var(--ae-muted);font-size:13px;padding:25px;text-align:center}.area-row{padding:13px 0;border-top:1px solid var(--ae-line)}.section-note{font-size:12px;color:var(--ae-muted);line-height:1.55}",
+  "table.trash{width:100%;border-collapse:collapse;font-size:13px}table.trash th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--ae-muted);padding:10px 12px;border-bottom:1px solid var(--ae-line)}",
+  "table.trash td{padding:11px 12px;border-bottom:1px solid var(--ae-line);vertical-align:top;overflow-wrap:anywhere}table.trash tr:last-child td{border-bottom:0}table.trash .num{text-align:right}",
+  "@media(max-width:540px){table.trash th:nth-child(3),table.trash td:nth-child(3),table.trash th:nth-child(5),table.trash td:nth-child(5){display:none}}",
   "@media(max-width:900px){.layout{grid-template-columns:1fr}.nav{flex-direction:row;overflow-x:auto}.split{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}",
   "@media(max-width:540px){.shell{padding:14px 12px 45px}.top{align-items:flex-start}.stats{gap:7px}.stat{padding:12px}.value{font-size:22px}.pane{padding:13px}.source-row{grid-template-columns:minmax(0,1fr) 72px 53px;padding:11px 7px;gap:4px}}"
 ].join("\n");
@@ -339,6 +344,26 @@ class AreaEventsManager extends HTMLElement {
       "<div class='detail'>" + (creating || area ? areaForm : "<div class='empty'>Select or create an area.</div>") +
       "</div></div></div>";
   }
+  renderTrashcan() {
+    const trash = this._snapshot?.trashcan;
+    if (!trash || trash.schema !== "discovery.trashcan.v1") {
+      return "<div class='pane'><h2>Trashcan</h2><div class='empty'>This Discovery Service does not report a trashcan.</div></div>";
+    }
+    const date = (epoch) => epoch ? new Date(epoch * 1000).toLocaleString() : "—";
+    const reasons = Object.entries(trash.by_reason || {}).map(([key, count]) => "<span class='pill'>" + escapeHtml(REASON_LABELS[key] || key) +
+      ": <strong>" + escapeHtml(count) + "</strong></span>").join(" ");
+    const rows = (trash.events || []).map((item) => "<tr><td><span class='source-name'>" + escapeHtml(item.title) + "</span><span class='small'>" +
+      escapeHtml(item.event_key) + "</span></td><td>" + escapeHtml(date(item.starts_at)) + "</td><td>" +
+      escapeHtml((item.sources || []).map((source) => source.name).join(", ")) + "</td><td>" + escapeHtml(item.reason_label || item.reason) + "</td><td>" +
+      escapeHtml(date(item.deleted_at)) + "</td><td class='num'>" + escapeHtml(item.suppressed_count) + "</td></tr>").join("");
+    return "<div class='pane'><div class='pane-head'><div><h2>Trashcan</h2><div class='sub'>Events an administrator deleted from a card. " +
+      "Rediscovery cannot bring them back.</div></div></div>" +
+      "<div class='stats'>" + this.stat("Deleted events", trash.total, "In the trashcan") +
+      this.stat("Rediscoveries suppressed", trash.suppressed, "Found again, not stored") + "</div>" +
+      "<div class='toolbar' style='margin-bottom:14px'>" + reasons + "</div>" +
+      (rows ? "<div class='list'><table class='trash'><thead><tr><th>Event</th><th>Date</th><th>Source</th><th>Reason</th><th>Deleted</th>" +
+        "<th class='num'>Suppressed</th></tr></thead><tbody>" + rows + "</tbody></table></div>" : "<div class='empty'>The trashcan is empty.</div>") + "</div>";
+  }
   renderOverview() {
     const s = this._snapshot || {};
     const status = s.status || {};
@@ -349,10 +374,11 @@ class AreaEventsManager extends HTMLElement {
       "<p>Control access: <strong>" + (s.can_control ? "Available" : "Read-only") + "</strong></p></div>";
   }
   render() {
-    const tabs = [["overview","Overview"],["sources","Sources"],["areas","Areas"]];
+    const tabs = [["overview","Overview"],["sources","Sources"],["areas","Areas"],["trashcan","Trashcan"]];
     const nav = tabs.map(([key,name]) => "<button data-action='tab' data-value='" + key + "' class='" +
       (this._tab === key ? "active" : "") + "'>" + name + "</button>").join("");
-    const body = this._tab === "areas" ? this.renderAreas() : this._tab === "overview" ? this.renderOverview() : this.renderSources();
+    const body = this._tab === "areas" ? this.renderAreas() : this._tab === "overview" ? this.renderOverview() :
+      this._tab === "trashcan" ? this.renderTrashcan() : this.renderSources();
     this.shadowRoot.innerHTML = "<style>" + CSS + "</style><div class='shell'>" + this.renderHeader() +
       (this._error ? "<div class='message error' role='alert'>" + escapeHtml(this._error) + "</div>" : "") +
       (this._message ? "<div class='message' role='status'>" + escapeHtml(this._message) + "</div>" : "") +

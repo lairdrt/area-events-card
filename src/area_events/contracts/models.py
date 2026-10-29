@@ -164,6 +164,7 @@ class RunReport:
     candidates_new: int = 0
     candidates_changed: int = 0
     candidates_unchanged: int = 0
+    candidates_suppressed: int = 0  # deleted events found again (the trashcan), not stored
     evidence_written: int = 0
     changes_appended: int = 0
     details_reused: int = 0

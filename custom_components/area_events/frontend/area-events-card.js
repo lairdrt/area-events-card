@@ -11,7 +11,7 @@
  */
 
 import { PRESENTATIONS } from "./presentation/manifest.js";
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-15e14053";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-cb1bde45";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
@@ -170,6 +170,30 @@ const STYLES = `
     .spinner { animation: none; }
     .bar::before { animation: none; width: 40%; }
   }
+  /* Trashcan (administrators only): bottom-right of a tile, shown when that corner is hovered or the button has keyboard focus; always faintly visible on touch screens. */
+  .event.ae-deletable { position: relative; }
+  .ae-trash {
+    position: absolute; right: 4px; bottom: 4px; z-index: 2; width: 36px; height: 36px; padding: 0; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.15s;
+    background: var(--card-background-color); color: var(--secondary-text-color); border: 1px solid var(--divider-color);
+  }
+  .ae-trash ha-icon { --mdc-icon-size: 18px; }
+  .ae-trash:hover, .ae-trash:focus-visible { opacity: 1; color: var(--error-color, var(--primary-text-color)); }
+  @media (hover: none) { .ae-trash { opacity: 0.7; } }
+  .ae-delete { border: 1px solid var(--divider-color); border-radius: 12px; padding: 16px 18px; max-width: 360px; width: calc(100% - 32px); box-sizing: border-box;
+    background: var(--card-background-color); color: var(--primary-text-color); }
+  .ae-delete::backdrop { background: color-mix(in srgb, var(--primary-text-color, currentColor) 35%, transparent); }
+  .ae-delete .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+  .ae-delete .dialog-title { font-size: 1.0625rem; font-weight: min(var(--ha-font-weight-medium, 500), 600); }
+  .ae-delete .dialog-event { font-size: 0.875rem; color: var(--secondary-text-color); overflow-wrap: anywhere; margin-bottom: 8px; }
+  .ae-delete fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .ae-delete label { display: flex; align-items: center; gap: 8px; font-size: 0.9375rem; cursor: pointer; }
+  .ae-delete input[type="radio"] { width: auto; margin: 0; }
+  .ae-delete .dialog-error { color: var(--error-color, var(--primary-text-color)); font-size: 0.875rem; margin-top: 8px; }
+  .ae-delete .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .ae-delete .danger:not(:disabled) { background: var(--error-color, var(--primary-color)); color: var(--text-primary-color, var(--card-background-color)); border-color: transparent; }
+  .ae-delete button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .ae-delete .close { border: 0; padding: 4px; border-radius: 50%; }
   /* Build tag, bottom-left, below the grid. A diagnostic label, not content. */
   .footer {
     margin-top: 8px; font-size: 0.8125rem; line-height: 1.25; letter-spacing: 0.02em;
@@ -187,6 +211,16 @@ const EDITOR_DEBOUNCE_MS = 700;
 // asking for a search, so half-typed areas never become searches of their own.
 const PREVIEW_DELAY_MS = 1500;
 const WS_SUBSCRIBE = "area_events/subscribe";
+const WS_EVENT_DELETE = "area_events/event_delete";
+// Why an administrator deletes an event (the service stores the id; the label is what the dialog shows).
+const DELETE_REASONS = [
+  ["duplicate", "Duplicate event"],
+  ["not_relevant", "Not relevant to my area"],
+  ["incorrect", "Incorrect or misleading information"],
+  ["expired_or_canceled", "Expired or canceled event"],
+  ["advertisement", "Advertisement / not a real event"],
+  ["other", "Other / don't want to see it"],
+];
 // Errors the user must fix; polling faster would not help.
 const ACTIVE_PHASES = ["queued", "searching", "processing"];
 const PERMANENT_ERRORS = new Set(["invalid_profile", "rejected", "not_configured", "unauthorized", "unknown_area"]);
@@ -906,6 +940,9 @@ class AreaEventsCard extends HTMLElement {
 
     this._els.footer = this._el("div", "footer");
     wrap.append(this._els.footer);
+    this._deleting = undefined;
+    this._els.dialogs = this._el("div", "dialogs");
+    wrap.append(this._els.dialogs);
     card.append(wrap);
     root.append(style, card);
     this._applyData();
@@ -960,7 +997,8 @@ class AreaEventsCard extends HTMLElement {
       let key = event.id || `${event.title}|${event.start}`;
       if (used.has(key)) key = `${key}#${index}`;
       used.add(key);
-      const signature = JSON.stringify(event);
+      const deletable = this._canDelete(event);
+      const signature = JSON.stringify(event) + (deletable ? "#deletable" : "");
       const old = previous.get(key);
       const same = old && old.signature === signature;
       if (same && !this._retryable(old)) return old;
@@ -983,6 +1021,7 @@ class AreaEventsCard extends HTMLElement {
         console.error("Area Events generic renderer failed", error);
         el = this._el("article", "event", event.title || "Untitled event");
       }
+      if (deletable) this._addTrash(el, event);
       return { event, key, signature, el, renderer, matches: categoriesFor(event, extra), retries: same ? (old.retries || 0) + 1 : 0 };
     });
     this._tiles = tiles;
@@ -1004,6 +1043,112 @@ class AreaEventsCard extends HTMLElement {
     const wanted = tiles.map((tile) => tile.el);
     const current = this._els.grid.children;
     if (current.length !== wanted.length || wanted.some((el, i) => current[i] !== el)) this._els.grid.replaceChildren(...wanted);
+  }
+
+  // --- deleting an event (administrators) ---------------------------------------------
+
+  /** Only a Home Assistant administrator, on an integration that holds a control token, sees the trashcan; inline (demonstration) events never have one. */
+  _canDelete(event) {
+    const user = this._hass && this._hass.user;
+    const service = this._status && this._status.service;
+    return Boolean(!this._usesInline() && event.id && user && user.is_admin && service && service.can_control);
+  }
+
+  _addTrash(el, event) {
+    el.className = `${el.className || ""} ae-deletable`.trim();
+    const button = this._el("button", "ae-trash");
+    button.type = "button";
+    button.title = "Delete this event";
+    button.setAttribute("aria-label", `Delete event: ${event.title || "untitled event"}`);
+    button.append(this._icon("mdi:trash-can-outline"));
+    button.addEventListener("click", (click) => {
+      if (click && click.stopPropagation) click.stopPropagation();   // never also opens the event
+      if (click && click.preventDefault) click.preventDefault();
+      this._openDelete(event, button);
+    });
+    el.append(button);
+  }
+
+  /** The confirmation dialog: one reason must be chosen; Cancel and X close it without asking anything of Home Assistant. */
+  _openDelete(event, opener) {
+    this._closeDelete();
+    const dialog = this._el("dialog", "ae-delete");
+    dialog.setAttribute("aria-labelledby", "ae-delete-title");
+    const head = this._el("div", "dialog-head");
+    const title = this._el("div", "dialog-title", "Delete this event?");
+    title.id = "ae-delete-title";
+    const close = this._el("button", "close");
+    close.type = "button";
+    close.setAttribute("aria-label", "Close");
+    close.append(this._icon("mdi:close"));
+    head.append(title, close);
+    const fieldset = this._el("fieldset");
+    fieldset.append(this._el("legend", "dialog-event", event.title || "Untitled event"));
+    const radios = DELETE_REASONS.map(([value, label]) => {
+      const row = this._el("label");
+      const radio = this._el("input");
+      radio.type = "radio";
+      radio.name = "ae-delete-reason";
+      radio.value = value;
+      radio.addEventListener("change", () => { this._deleting.reason = value; remove.disabled = this._deleting.busy; });
+      row.append(radio, this._el("span", "", label));
+      fieldset.append(row);
+      return radio;
+    });
+    const error = this._el("div", "dialog-error");
+    error.hidden = true;
+    error.setAttribute("role", "alert");
+    const actions = this._el("div", "dialog-actions");
+    const cancel = this._el("button", "", "Cancel");
+    cancel.type = "button";
+    const remove = this._el("button", "danger", "Delete");
+    remove.type = "button";
+    remove.disabled = true;
+    actions.append(cancel, remove);
+    dialog.append(head, fieldset, error, actions);
+    this._deleting = { event, dialog, opener, radios, remove, cancel, error, reason: undefined, busy: false };
+    close.addEventListener("click", () => this._closeDelete());
+    cancel.addEventListener("click", () => this._closeDelete());
+    dialog.addEventListener("cancel", () => this._closeDelete());   // Escape
+    remove.addEventListener("click", () => this._confirmDelete());
+    this._els.dialogs.append(dialog);
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.open = true;
+  }
+
+  _closeDelete() {
+    const state = this._deleting;
+    if (!state || state.busy) return;
+    this._deleting = undefined;
+    if (typeof state.dialog.close === "function" && state.dialog.open) state.dialog.close();
+    state.dialog.remove();
+    if (state.opener && typeof state.opener.focus === "function" && state.opener.isConnected) state.opener.focus();
+  }
+
+  /** Asks Home Assistant to delete the event and waits: the tile goes only when the service says the event was deleted; a failure is shown and nothing changes. */
+  _confirmDelete() {
+    const state = this._deleting;
+    if (!state || state.busy || !state.reason) return Promise.resolve();
+    state.busy = true;
+    state.remove.disabled = state.cancel.disabled = true;
+    state.remove.textContent = "Deleting…";
+    state.error.hidden = true;
+    return Promise.resolve()
+      .then(() => this._hass.callWS({ type: WS_EVENT_DELETE, event_key: state.event.id, reason: state.reason }))
+      .then(() => {
+        state.busy = false;
+        this._closeDelete();
+        if (this._feed && Array.isArray(this._feed.events)) {
+          this._feed = { ...this._feed, events: this._feed.events.filter((item) => item.id !== state.event.id) };
+          this._applyData();
+        }
+      }, (caught) => {
+        state.busy = false;
+        state.remove.disabled = state.cancel.disabled = false;
+        state.remove.textContent = "Delete";
+        state.error.textContent = `The event was not deleted: ${(caught && caught.message) || caught}`;
+        state.error.hidden = false;
+      });
   }
 
   _disposeTile(tile) {

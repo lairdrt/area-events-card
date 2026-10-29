@@ -24,6 +24,8 @@ WS_RESUME = f"{DOMAIN}/resume"
 
 WS_MANAGEMENT = f"{DOMAIN}/management"
 WS_SOURCE_COMMAND = f"{DOMAIN}/source_command"
+WS_EVENT_DELETE = f"{DOMAIN}/event_delete"   # an administrator deletes an event into the trashcan
+TRASH_REASONS = ("duplicate", "not_relevant", "incorrect", "expired_or_canceled", "advertisement", "other")
 
 MANAGEMENT_URL = "/area_events/manager.js"
 MANAGEMENT_PANEL_PATH = "area-events-manage"

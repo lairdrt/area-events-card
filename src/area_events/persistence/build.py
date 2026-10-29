@@ -20,6 +20,7 @@ from .reading import LocalDiscoveryReader
 from .repositories import CandidateRepository, ChangeLog, JobRepository, PageRepository, Retention, SourceCleanup, SourceRepository
 from .scheduling import SqliteSchedulingStorage
 from .store import DiscoveryStore, SCHEMA_VERSION
+from .trashcan import SqliteTrashcan
 
 
 def open_duplicate_maintenance(db_path, matcher, clock=time.time):
@@ -46,6 +47,7 @@ class Persistence:
     media_files: object
     source_cleanup: object
     display_names: object
+    trashcan: object
     _store: object
 
     @property
@@ -63,8 +65,9 @@ def open_persistence(db_path, deduplicator, clock=time.time, store_options=None,
     areas, settings, events = AreaRepository(), SettingsRepository(), EventRepository(media_repository)
     media_folder = media_dir or os.path.join(os.path.dirname(os.path.abspath(db_path)), "media")
     media_store = SqliteMediaStore(store, media_repository, media_folder, clock)
+    trashcan = SqliteTrashcan(store, changes, clock)
     return Persistence(
-        crawl=SqliteCrawlStorage(store, sources, pages, candidates, jobs, changes, Retention(changes, events), areas, settings, clock),
+        crawl=SqliteCrawlStorage(store, sources, pages, candidates, jobs, changes, Retention(changes, events), areas, settings, clock, trashcan),
         scheduling=SqliteSchedulingStorage(store, areas, settings, jobs, clock),
         control=SqliteControlStorage(store, sources, areas, settings, jobs, changes, clock),
         processing=SqliteProcessingStorage(store, ProcessingRepository(), events, candidates, pages, changes, clock, deduplicator),
@@ -75,4 +78,5 @@ def open_persistence(db_path, deduplicator, clock=time.time, store_options=None,
         media_files=LocalMediaFiles(media_store),
         source_cleanup=SourceCleanup(store, clock, reserved_source_keys),
         display_names=DisplayNames(store, changes, clock),
+        trashcan=trashcan,
         _store=store)

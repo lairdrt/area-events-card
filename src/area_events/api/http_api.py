@@ -14,6 +14,8 @@
     POST  /v1/service/stop               control   graceful shutdown of the serving process
     GET   /v1/events?area=&source=&from=&to=&after=&limit=   read   normalized events (bounded pages; `after` is the previous page's cursor)
     GET   /v1/events/{key}               read      one event with its revision history and field evidence
+    POST  /v1/events/{key}/trash         control   delete the event into the trashcan with a reason (`discovery.trashcan.v1`); repeating it changes nothing
+    GET   /v1/trashcan?limit=K           read      the deleted events, their reasons and how often rediscovery was suppressed (`discovery.trashcan.v1`)
     GET   /v1/media/{name}               read      a cached picture (event photograph, venue photograph or map) by its content-derived name
     POST  /v1/processing/claim|submit|fail           process   an extraction worker's calls (a "process" token cannot read areas or events)
     GET   /v1/processing/status          read | process   work counts
@@ -39,6 +41,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from ..control.service import (CONTROL_SCHEMA, ControlError, CreateAreaRequest, RevisionConflict, SettingsRequest, UpdateAreaRequest, ValidationFailed,
                                CreateSourceRequest, UpdateSourceRequest)
+from ..trashcan import TRASHCAN_SCHEMA
 from .events import EventQuery
 
 log = logging.getLogger("area-events.discovery.api")
@@ -50,6 +53,7 @@ AUTH_WINDOW = 60
 AREA_PATH = re.compile(r"^/v1/areas/([A-Za-z0-9]{8,40})$")
 SOURCE_PATH = re.compile(r"^/v1/sources/([a-z][a-z0-9_-]{0,79})(?:/(enable|disable))?$")
 MEDIA_PATH = re.compile(r"^/v1/media/([a-z0-9][a-z0-9.-]{3,60}\.(?:svg|jpg|png|webp))$")
+TRASH_PATH = re.compile(r"^/v1/events/([A-Za-z0-9_-]{8,60})/trash$")
 SCOPES = ("read", "control", "process")
 
 
@@ -105,9 +109,9 @@ class ApiError(Exception):
 class DiscoveryApi:
     """Routes a request to the DiscoveryControl and DiscoveryReader contracts. Knows nothing about HTTP sockets."""
 
-    def __init__(self, control, reader, tokens: ApiTokens, clock, on_stop=None, processing=None, events=None, media=None):
+    def __init__(self, control, reader, tokens: ApiTokens, clock, on_stop=None, processing=None, events=None, media=None, trashcan=None):
         self._control, self._reader, self._tokens, self._clock, self._on_stop = control, reader, tokens, clock, on_stop
-        self._processing, self._events, self._media = processing, events, media
+        self._processing, self._events, self._media, self._trashcan = processing, events, media, trashcan
         self._failures, self._failure_lock = {}, threading.Lock()
 
     def handle(self, method, target, headers, body, client):
@@ -182,6 +186,8 @@ class DiscoveryApi:
             raise ApiError(403, "forbidden", "a processing token may only use the processing routes")
         if path.startswith("/v1/processing/"):
             return self._processing_route(method, path, query, headers, body, scope)
+        if path == "/v1/trashcan" or TRASH_PATH.match(path):
+            return self._trashcan_route(method, path, query, headers, body, scope)
         if path == "/v1/events" or path.startswith("/v1/events/"):
             return self._events_route(method, path, query)
         if path.startswith("/v1/media/"):
@@ -291,6 +297,26 @@ class DiscoveryApi:
             raise ApiError(404, "not_found", "no such picture")
         data, kind = found
         return 200, {"_binary": data, "_content_type": kind, "_headers": {"Cache-Control": "public, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff"}}
+
+    def _trashcan_route(self, method, path, query, headers, body, scope):
+        if self._trashcan is None:
+            raise ApiError(404, "not_found", "this service has no trashcan")
+        if path == "/v1/trashcan":
+            if method != "GET":
+                raise ApiError(405, "method_not_allowed", "method not allowed")
+            try:
+                limit = int((query.get("limit") or ["100"])[0])
+            except ValueError as error:
+                raise ValidationFailed("limit must be an integer") from error
+            return 200, {"schema": TRASHCAN_SCHEMA, **self._trashcan.listing(limit)}
+        if method != "POST":
+            raise ApiError(405, "method_not_allowed", "method not allowed")
+        self._need(scope, "control")
+        data = self._json(headers, body)
+        self._only(data, ("reason",))
+        if "reason" not in data:
+            raise ValidationFailed("reason is required")
+        return 200, {"schema": TRASHCAN_SCHEMA, **self._trashcan.trash(TRASH_PATH.match(path).group(1), data["reason"])}
 
     def _events_route(self, method, path, query):
         if self._events is None:

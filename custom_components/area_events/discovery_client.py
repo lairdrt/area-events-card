@@ -156,6 +156,14 @@ class DiscoveryControlClient:
         """One event with its revision history and field evidence."""
         return await self._request("GET", f"/v1/events/{quote(event_key, safe='')}")
 
+    async def trash_event(self, event_key, reason):
+        """Delete an event into the trashcan (`discovery.trashcan.v1`; control token). Repeating it answers `already_deleted`."""
+        return await self._request("POST", f"/v1/events/{quote(event_key, safe='')}/trash", {"reason": reason})
+
+    async def trashcan(self, limit=100):
+        """The deleted events, counts by reason and suppressed rediscoveries (`discovery.trashcan.v1`)."""
+        return await self._request("GET", f"/v1/trashcan?limit={int(limit)}")
+
     async def media(self, name):
         """(bytes, content type) of a cached picture by its name. The service decides what exists; this only carries it, with the read token."""
         try:

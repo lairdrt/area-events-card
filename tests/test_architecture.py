@@ -46,7 +46,8 @@ SOURCE_WORDS = ("sandiego_gov", "ut_austin", "localist", "sandiego.gov", "eventb
 LEGACY_PREFIXES = ("discovery.core", "discovery.engine", "discovery.merge", "discovery.profiles", "discovery.publish", "discovery.refresh", "discovery.registry", "discovery.server", "discovery.supervisor", "discovery.workbench", "discovery.sources")
 ALLOWED = {
     COMPOSITION_ROOT: set(), "__main__": {"cli"}, "cli": {"app", "contracts.models", "control.service", "api.events", "extraction.service", "discovery.service"},
-    "api": set(), "api.events": {"contracts.models", PORTS}, "api.http_api": {"control.service", "api.events"},
+    "api": set(), "api.events": {"contracts.models", PORTS}, "api.http_api": {"control.service", "api.events", "trashcan"},
+    "trashcan": set(),   # the rediscovery-suppression rule: pure, like deduplication; persistence asks it, never decides itself
     "classification": set(), "classification.classifiers": {"classification.classify"}, "classification.classify": set(), "classification.photo_subject": set(),
     "common": set(), "common.textutil": set(), "common.timeutil": set(),
     "control": set(), "control.service": {"contracts.models", PORTS}, "contracts": set(), "contracts.evidence": set(), "contracts.models": set(),
@@ -66,7 +67,8 @@ ALLOWED = {
     f"{PERSISTENCE}.events": {"contracts.models", DEDUPLICATION, "api.events"}, f"{PERSISTENCE}.media": {"contracts.models"},
     f"{PERSISTENCE}.processing": {"contracts.evidence", "contracts.models", f"{PERSISTENCE}.events"}, f"{PERSISTENCE}.reading": {"contracts.models"},
     f"{PERSISTENCE}.repositories": {"contracts.models", "discovery.producer", "discovery.urls"}, f"{PERSISTENCE}.scheduling": {"contracts.models"}, f"{PERSISTENCE}.schema": set(),
-    f"{PERSISTENCE}.store": {"contracts.models", f"{PERSISTENCE}.schema"}, BUILD: {f"{PERSISTENCE}.{n}" for n in ("areas", "control", "crawl", "events", "media", "naming", "processing", "reading", "repositories", "reviewed", "scheduling", "store")} | {PORTS},
+    f"{PERSISTENCE}.store": {"contracts.models", f"{PERSISTENCE}.schema"}, BUILD: {f"{PERSISTENCE}.{n}" for n in ("areas", "control", "crawl", "events", "media", "naming", "processing", "reading", "repositories", "reviewed", "scheduling", "store", "trashcan")} | {PORTS},
+    f"{PERSISTENCE}.trashcan": {"contracts.models", "discovery.urls", "trashcan"},
     "validation": set(), "validation.processing": {"contracts.models", PORTS},
 }
 
