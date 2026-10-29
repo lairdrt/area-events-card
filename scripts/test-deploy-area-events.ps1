@@ -399,7 +399,7 @@ Check 'embedded Python helper installs from the images extra and fails on a miss
 }
 Check 'every Invoke-CubiPython timeout is accepted by the real remote-command builder' {
   $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
-  $timeouts=@([regex]::Matches($text,'(?m)Invoke-CubiPython\s+\S+[^
+  $timeouts=@([regex]::Matches($text,'(?m)Invoke-CubiPython\s+\S+[^
 ]*?\s(\d+)\s*(?:\||$)') | ForEach-Object { [int]$_.Groups[1].Value })
   $calls=@([regex]::Matches($text,'Invoke-CubiPython\s+[$"]')).Count
   if ($timeouts.Count -lt 11 -or $timeouts.Count -ne $calls) { throw "found $($timeouts.Count) timeouts for $calls calls" }
@@ -410,6 +410,50 @@ Check 'every Invoke-CubiPython timeout is accepted by the real remote-command bu
   }
   $rejected=$false; try { $null=New-AreaEventsRemotePythonCommand -Code 'print(1)' -TimeoutSeconds 601 } catch { $rejected=$true }
   if (-not $rejected) { throw 'the builder no longer enforces its 600 s limit; this check is stale' }
+}
+function New-FakeHa([string[]]$Answers, [int]$SecondsPerAttempt) {
+  # A fake HA whose attempts each take $SecondsPerAttempt on a fake clock; the last answer repeats.
+  $script:haNow = [DateTime]'2026-10-29T00:00:00Z'; $script:haAnswers = $Answers; $script:haCalls = 0; $script:haLimits = @(); $script:haCost = $SecondsPerAttempt
+  return @{
+    Fetch = { param($t) $script:haLimits += $t; $answer = $script:haAnswers[[Math]::Min($script:haCalls, $script:haAnswers.Count - 1)]; $script:haCalls++
+              $script:haNow = $script:haNow.AddSeconds([Math]::Min($script:haCost, $t)); if ($answer -eq 'throw') { throw 'curl.exe failed: Operation timed out' }; $answer }
+    Clock = { $script:haNow }
+    Sleep = { param($s) $script:haNow = $script:haNow.AddSeconds($s) }
+  }
+}
+Check 'HA readiness: a first answer after about 21 s (a Core restart) is waited for, within 60 s' {
+  $ha = New-FakeHa @('throw', '200') 12   # the first attempt hits its 12 s limit, the next is served
+  $attempts = Wait-AreaEventsHaAsset -Fetch $ha.Fetch -Clock $ha.Clock -Sleep $ha.Sleep -DeadlineSeconds 60 -AttemptSeconds 12 -PauseSeconds 3
+  if ($attempts -ne 2) { throw "expected 2 attempts, got $attempts" }
+  if (($script:haNow - [DateTime]'2026-10-29T00:00:00Z').TotalSeconds -gt 60) { throw 'waited beyond the deadline' }
+}
+Check 'HA readiness: a slow start answering 502 and 404 is retried until it serves' {
+  $ha = New-FakeHa @('000', '502', '404', '200') 2
+  if ((Wait-AreaEventsHaAsset -Fetch $ha.Fetch -Clock $ha.Clock -Sleep $ha.Sleep) -ne 4) { throw 'not retried to success' }
+}
+Check 'HA readiness: an asset served at once costs one fast attempt and no pause' {
+  $ha = New-FakeHa @('200') 0
+  if ((Wait-AreaEventsHaAsset -Fetch $ha.Fetch -Clock $ha.Clock -Sleep $ha.Sleep) -ne 1) { throw 'more than one attempt' }
+  if ($script:haNow -ne [DateTime]'2026-10-29T00:00:00Z') { throw 'paused although HA answered' }
+}
+Check 'HA readiness: an asset that is never served fails at the 60 s deadline, with the last answer' {
+  $ha = New-FakeHa @('throw') 12
+  $message = $null
+  try { $null = Wait-AreaEventsHaAsset -Fetch $ha.Fetch -Clock $ha.Clock -Sleep $ha.Sleep -DeadlineSeconds 60 -AttemptSeconds 12 -PauseSeconds 3 } catch { $message = $_.Exception.Message }
+  if ($message -notmatch 'within 60 seconds.*Operation timed out') { throw "unexpected outcome: $message" }
+  $elapsed = ($script:haNow - [DateTime]'2026-10-29T00:00:00Z').TotalSeconds
+  if ($elapsed -gt 60 -or $elapsed -lt 55) { throw "gave up after $elapsed s" }
+  if (@($script:haLimits | Where-Object { $_ -gt 12 -or $_ -lt 1 }).Count) { throw "an attempt exceeded its limit: $($script:haLimits -join ',')" }
+}
+Check 'HA readiness is polled before the asset downloads, which keep their 12 s limit and hash comparison' {
+  $body = (Get-Command Test-HaAssets).Definition
+  if ($body -notmatch 'Wait-AreaEventsHaAsset -DeadlineSeconds 60') { throw 'readiness polling is missing' }
+  if ($body.IndexOf('Wait-AreaEventsHaAsset') -gt $body.IndexOf('foreach ($f in $assets)')) { throw 'readiness must come before the downloads' }
+  if ($body -notmatch "'--max-time','12'" -or $body -notmatch 'Served asset differs from source') { throw 'the per-asset limit or the hash check changed' }
+}
+Check 'the readiness probe runs through the script''s bounded runner with the caller''s variables' {
+  function Probe-Scope { $expected = '200'; Wait-AreaEventsHaAsset -DeadlineSeconds 30 -PauseSeconds 0 -Fetch { param($s) (Invoke-Bounded 'cmd.exe' @('/c', "echo $expected") ($s + 8)).Trim() } }
+  if ((Probe-Scope) -ne 1) { throw 'the probe did not see the caller scope or the bounded runner' }
 }
 if ($script:failures) { Write-Error "$script:failures deployment tests failed"; exit 1 }
 Write-Host 'All deployment engine checks passed.'

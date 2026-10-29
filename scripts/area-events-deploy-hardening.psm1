@@ -74,6 +74,26 @@ function Get-AreaEventsRequiredFrontendAssets {
   return $assets.ToArray()
 }
 
+function Wait-AreaEventsHaAsset {
+  <# Poll one Home Assistant asset until HA serves it (HTTP 200) or the readiness deadline passes. Right after a Core restart HA may take tens of
+     seconds to answer its first static request, so one slow answer is not a failure; an answer that never comes within the deadline is.
+     $Fetch: { param($TimeoutSeconds) <HTTP status as text, or an error message> } (one bounded attempt). $Clock and $Sleep are injectable for tests.
+     Returns the number of attempts; throws, with the last answer, when the deadline expires. #>
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][scriptblock]$Fetch, [ValidateRange(1,600)][int]$DeadlineSeconds = 60, [ValidateRange(1,120)][int]$AttemptSeconds = 12,
+        [ValidateRange(0,30)][int]$PauseSeconds = 3, [scriptblock]$Clock = { [DateTime]::UtcNow }, [scriptblock]$Sleep = { param($Seconds) Start-Sleep -Seconds $Seconds })
+  $deadline = (& $Clock).AddSeconds($DeadlineSeconds)
+  $attempts = 0; $last = 'no answer'
+  while ($true) {
+    $remaining = [int][Math]::Floor(($deadline - (& $Clock)).TotalSeconds)
+    if ($remaining -lt 1) { throw "HA did not serve its assets within $DeadlineSeconds seconds of the readiness check (last answer: $last)." }
+    $attempts++
+    try { $last = [string](& $Fetch ([Math]::Min($AttemptSeconds, $remaining))) } catch { $last = $_.Exception.Message }
+    if ($last -eq '200') { return $attempts }
+    $pause = [Math]::Min($PauseSeconds, [int][Math]::Floor(($deadline - (& $Clock)).TotalSeconds))
+    if ($pause -gt 0) { & $Sleep $pause }
+  }
+}
 function Assert-AreaEventsFeedResponse {
   [CmdletBinding()]
   param([Parameter(Mandatory)]$Response, [Parameter(Mandatory)][string]$Area)
@@ -154,4 +174,4 @@ function Resolve-AreaEventsComponentPlan {
   }
 }
 
-Export-ModuleMember -Function Import-AreaEventsDpapiCredential, New-AreaEventsRemotePythonCommand, Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsRequiredFrontendAssets, Assert-AreaEventsFeedResponse, Test-AreaEventsCodeBackupMembers, Resolve-AreaEventsSystemdLayout, Convert-AreaEventsSystemdExecStart, Resolve-AreaEventsComponentPlan
+Export-ModuleMember -Function Import-AreaEventsDpapiCredential, New-AreaEventsRemotePythonCommand, Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsRequiredFrontendAssets, Wait-AreaEventsHaAsset, Assert-AreaEventsFeedResponse, Test-AreaEventsCodeBackupMembers, Resolve-AreaEventsSystemdLayout, Convert-AreaEventsSystemdExecStart, Resolve-AreaEventsComponentPlan

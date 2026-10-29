@@ -797,6 +797,14 @@ function Test-HaAssets {
   $servedDir=Join-Path ([IO.Path]::GetTempPath()) ('area-events-served-'+[guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $servedDir | Out-Null
   try {
+    # Readiness: after a Core restart HA can need ~20 s for its first static answer. Poll the card asset (bounded, 60 s in all) before the
+    # one-shot downloads below, which keep their short limit and their hash comparison.
+    $probe=Join-Path $servedDir 'readiness.asset'
+    $first=$assets[0].Substring($front.Length+1).Replace('\','/')
+    $null=Wait-AreaEventsHaAsset -DeadlineSeconds 60 -AttemptSeconds 12 -PauseSeconds 3 -Fetch {
+      param($seconds)
+      Invoke-Bounded 'curl.exe' @('--silent','--show-error','--max-time',"$seconds",'--output',$probe,'--write-out','%{http_code}',"$script:BaseUrl/area_events/$first") ($seconds+8)
+    }
     foreach ($f in $assets) {
       $rel=$f.Substring($front.Length+1).Replace('\','/')
       $served=Join-Path $servedDir ([guid]::NewGuid().ToString('N')+'.asset')
