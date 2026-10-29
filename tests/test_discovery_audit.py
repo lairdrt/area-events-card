@@ -344,5 +344,98 @@ class Persistence(unittest.TestCase):
                 app.close()
 
 
+class TimeBleed(unittest.TestCase):
+    """A date takes only the time stated with it: the search for a time stops at the next date line and never reuses a line another date took."""
+
+    def starts(self, body):
+        result, _ = crawl({PAGE: f"<html><body><h1>Bleed Fest</h1>{body}</body></html>"}, max_depth=0)
+        return sorted((c.starts_at, c.ends_at) for c in result.candidates)
+
+    def test_a_date_does_not_borrow_the_time_of_the_next_date(self):
+        got = self.starts("<p>Date: Saturday, November 7, 2026</p><p>Date: Sunday, November 8, 2026</p><p>Time: 9:00am to 1:00pm</p>")
+        self.assertEqual(got, [("2026-11-08T09:00:00-08:00", "2026-11-08T13:00:00-08:00")], "Nov 7 states no time of its own, so none is invented")
+
+    def test_a_time_before_two_dates_is_not_shared_between_them(self):
+        got = self.starts("<p>Time: 9:00am to 1:00pm</p><p>Date: Saturday, November 7, 2026</p><p>Date: Sunday, November 8, 2026</p>")
+        self.assertEqual(got, [("2026-11-07T09:00:00-08:00", "2026-11-07T13:00:00-08:00")])
+
+    def test_a_time_that_followed_one_date_is_not_reused_by_the_next_date(self):
+        got = self.starts("<p>Date: Saturday, November 7, 2026</p><p>Time: 9:00am to 1:00pm</p><p>Date: Sunday, November 8, 2026</p>")
+        self.assertEqual(got, [("2026-11-07T09:00:00-08:00", "2026-11-07T13:00:00-08:00")])
+
+    def test_missing_first_time_followed_by_a_timed_second_occurrence(self):
+        got = self.starts("<p>Date: Saturday, November 7, 2026</p><p>Date: Sunday, November 8, 2026 10:00am to 2:00pm</p>")
+        self.assertEqual(got, [("2026-11-08T10:00:00-08:00", "2026-11-08T14:00:00-08:00")])
+
+    def test_separate_date_and_time_lines_with_distinct_times_still_work(self):
+        got = self.starts("<p>Date: Saturday, November 7, 2026</p><p>Time: 9:00am to 1:00pm</p><p>Date: Sunday, November 8, 2026</p><p>Time: 2:00pm to 6:00pm</p>")
+        self.assertEqual(got, [("2026-11-07T09:00:00-08:00", "2026-11-07T13:00:00-08:00"), ("2026-11-08T14:00:00-08:00", "2026-11-08T18:00:00-08:00")])
+
+    def test_a_range_that_states_one_time_shares_it(self):
+        got = self.starts("<p>Date: Saturday and Sunday, November 7 and 8, 2026</p><p>Time: 9:00am to 1:00pm</p>")
+        self.assertEqual(got, [("2026-11-07T09:00:00-08:00", "2026-11-07T13:00:00-08:00"), ("2026-11-08T09:00:00-08:00", "2026-11-08T13:00:00-08:00")])
+
+    def test_the_bates_dec_11_and_12_times_and_every_id_are_unchanged(self):
+        result, _ = crawl({PAGE: LISTING}, max_depth=0)
+        vc = {c.starts_at: c.ends_at for c in result.candidates if c.title == VC}
+        self.assertEqual(vc, {"2026-12-11T16:00:00-08:00": "2026-12-11T20:00:00-08:00", "2026-12-12T09:30:00-08:00": "2026-12-12T14:30:00-08:00"})
+        again, _ = crawl({PAGE: LISTING}, max_depth=0, previous=result.candidates)
+        self.assertEqual(ids(again), ids(result))
+
+
+class StrictAssociation(unittest.TestCase):
+    """An event page speaks for a listing occurrence only on strong evidence of the same event."""
+
+    def venue_of(self, listing_title, page_title):
+        listing = listing_page(card(listing_title, "Sat., Nov. 7, 2026", "/e/1", "9:00am to 1:00pm"))
+        page = detail_page(page_title, "Saturday, November 7, 2026", "9:00am to 1:00pm", location="Page Hall")
+        result, _ = crawl({PAGE: listing, SITE + "/e/1": page}, max_depth=1, max_pages=4)
+        return result, {c.title: c.venue for c in result.candidates}
+
+    def test_generic_words_alone_never_relate_two_events(self):
+        for listing_title, page_title in (("Holiday Craft Fair", "Spring Craft Fair"), ("Summer Concert", "Winter Concert"), ("Harvest Festival", "Spring Festival"), ("Craft Fair", "Holiday Craft Fair")):
+            with self.subTest(listing=listing_title, page=page_title):
+                result, venues = self.venue_of(listing_title, page_title)
+                self.assertIsNone(venues[listing_title], "the other event's place was not taken")
+                self.assertEqual(result.notes["event_page_unrelated_events_ignored"], 1)
+
+    def test_exact_and_harmlessly_reformatted_titles_match(self):
+        for listing_title, page_title in (("Christmas on the Farm", "Christmas on the Farm"), ("CHRISTMAS ON THE FARM", "Christmas on the Farm"),
+                                          ("Christmas on the Farm", "The 2026 Annual Christmas on the Farm"), ("Christmas on the Farm", "Christmas on the Farm at Bates Nut Farm")):
+            with self.subTest(listing=listing_title, page=page_title):
+                _, venues = self.venue_of(listing_title, page_title)
+                self.assertEqual(list(venues.values()), ["Page Hall"])
+
+    def test_the_cards_link_does_not_license_every_related_event_on_the_page(self):
+        listing = listing_page(card("Main Event Concert", "Sat., Nov. 7, 2026", "/e/1", "9:00am to 1:00pm"))
+        page = ("<html><body><h1>Main Event Concert</h1><p>Date: Saturday, November 7, 2026</p><p>Time: 9:00am to 1:00pm</p><p>Location: Main Hall</p>"
+                "<h2>Other Concert</h2><p>Date: Saturday, November 7, 2026</p><p>Time: 9:00am to 1:00pm</p><p>Location: Other Hall</p></body></html>")
+        result, _ = crawl({PAGE: listing, SITE + "/e/1": page}, max_depth=1, max_pages=4)
+        self.assertEqual({c.title: c.venue for c in result.candidates}, {"Main Event Concert": "Main Hall"})
+
+    def test_two_plausible_owners_at_one_time_are_not_guessed(self):
+        listing = listing_page(card("Farm Day Parade", "Sat., Nov. 7, 2026", "/e/1", "9:00am to 1:00pm"), card("Farm Day Picnic", "Sat., Nov. 7, 2026", "/e/1", "9:00am to 1:00pm"))
+        page = detail_page("Farm Day", "Saturday, November 7, 2026", "9:00am to 1:00pm", location="Guess Hall")
+        result, _ = crawl({PAGE: listing, SITE + "/e/1": page}, max_depth=1, max_pages=4)
+        self.assertEqual({c.title: c.venue for c in result.candidates}, {"Farm Day Parade": None, "Farm Day Picnic": None})
+
+    def test_separately_dated_occurrences_sharing_a_page_stay_separate_and_ids_hold(self):
+        listing = listing_page(card("Two Day Show", "Sat., Nov. 7, 2026", "/e/1", "9:00am to 1:00pm"), card("Two Day Show", "Sun., Nov. 8, 2026", "/e/1", "2:00pm to 5:00pm"))
+        page = ("<html><body><h1>Two Day Show</h1><p>Date: Saturday, November 7, 2026</p><p>Time: 9:00am to 1:00pm</p><p>Date: Sunday, November 8, 2026</p><p>Time: 2:00pm to 5:00pm</p>"
+                "<p>Location: Show Hall</p></body></html>")
+        before, _ = crawl({PAGE: listing}, max_depth=0)
+        result, _ = crawl({PAGE: listing, SITE + "/e/1": page}, max_depth=1, max_pages=4, previous=before.candidates)
+        self.assertEqual(ids(result), ids(before))
+        self.assertEqual({(c.starts_at, c.venue) for c in result.candidates}, {("2026-11-07T09:00:00-08:00", "Show Hall"), ("2026-11-08T14:00:00-08:00", "Show Hall")})
+
+    def test_an_unambiguous_corrected_time_is_still_matched_and_keeps_its_id(self):
+        listing = listing_page(card("Fix Fest", "Sat., Nov. 7, 2026", "/e/1", "9:00am to 1:00pm"))
+        before, _ = crawl({PAGE: listing}, max_depth=0)
+        result, _ = crawl({PAGE: listing, SITE + "/e/1": detail_page("Fix Fest", "Saturday, November 7, 2026", "10:00am to 2:00pm", location="Fix Hall")},
+                          max_depth=1, max_pages=4, previous=before.candidates)
+        fest, = result.candidates
+        self.assertEqual((fest.local_id, fest.starts_at, fest.venue), (before.candidates[0].local_id, "2026-11-07T10:00:00-08:00", "Fix Hall"))
+
+
 if __name__ == "__main__":
     unittest.main()

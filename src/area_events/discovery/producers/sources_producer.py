@@ -642,16 +642,27 @@ def _same_day(left, right):
     return a.date() == b.astimezone(a.tzinfo).date() if a is not None and b is not None else False
 
 
+_NOISE_WORDS = frozenset(("annual", "official"))
+_GENERIC_WORDS = frozenset(("craft", "crafts", "fair", "fairs", "concert", "concerts", "festival", "festivals", "show", "shows", "market", "markets", "marketplace", "event", "events",
+                            "night", "day", "music", "live", "holiday", "sale", "party", "class", "classes", "tour", "walk", "run", "meeting", "open", "free", "family", "community"))
+
+
 def _title_tokens(title):
-    return {token for token in _title_key(title).split() if token not in _STOPWORDS}
+    return {token for token in _title_key(title).split()
+            if token not in _STOPWORDS and token not in _NOISE_WORDS and not re.fullmatch(r"(?:19|20)\d\d|\d{1,2}(?:st|nd|rd|th)", token)}
 
 
 def _related(left, right):
-    """Are two titles plausibly the same event (equal, one a subset of the other, or sharing a third of their words)? Different events at the same time are not."""
+    """Does an event page's title name the same event as a listing's? Only on strong evidence: the same words once case, punctuation, articles, years and "annual" are set aside,
+    or one title that extends the other by further words when the shorter one has at least two words including one that is not generic ("Craft Fair" never extends "Holiday Craft
+    Fair"; "Christmas on the Farm" does extend into "Christmas on the Farm at the Park"). Shared generic words alone, however many, never relate two titles."""
     a, b = _title_tokens(left), _title_tokens(right)
     if not a or not b:
         return False
-    return a <= b or b <= a or len(a & b) / len(a | b) >= 0.34
+    if a == b:
+        return True
+    shorter = a if len(a) <= len(b) else b
+    return (a <= b or b <= a) and len(shorter) >= 2 and bool(shorter - _GENERIC_WORDS)
 
 
 def _line_groups(line, title):
@@ -722,14 +733,28 @@ def _text_event_group(heading, lines, page_title, page_url, source_name, retriev
         return [], 0
     has_date = lambda value: bool(_TEXT_DATE.search(value) or _TEXT_DATES_ISO.search(value) or _TEXT_DATES_NUMERIC.search(value))   # noqa: E731
     slots = {}   # day -> (clock start, clock end, date line, time line): the first statement of an occurrence wins
+    consumed = set()   # lines that gave a time to an earlier date
     for pos, line in raw_date_lines[:6]:
         if re.match(r"\s*(?:published|posted|updated|last updated|article date|news date)\s*:?\s*", line, re.I):
             continue  # Publication timestamps are not event dates.
         for dates, (start, end, time_line) in _line_groups(line, heading + " " + page_title):
-            if not start:   # the time is on a following line of this occurrence (never on another date's line), else just before
-                following = [v for v in lines[pos + 1:pos + 4] if not has_date(v)]
-                before = [v for v in lines[max(0, pos - 2):pos] if not has_date(v)]
-                start, end, time_line = _text_clock(following) if _text_clock(following)[0] else _text_clock(before)
+            if not start:   # the time is on a line right after this date or right before it; the search stops at any other date line and never reuses a line another date took
+                following = []
+                for index in range(pos + 1, min(len(lines), pos + 4)):
+                    if has_date(lines[index]):
+                        break
+                    following.append(index)
+                before = []
+                for index in range(pos - 1, max(-1, pos - 3), -1):
+                    if has_date(lines[index]) or index in consumed:
+                        break
+                    before.append(index)
+                for window in (following, before[::-1]):
+                    clock = _text_clock([lines[index] for index in window])
+                    if clock[0]:
+                        start, end, time_line = clock
+                        consumed.update(window)
+                        break
             if not start:
                 continue
             for day in dates:
@@ -1078,8 +1103,14 @@ class SourcesProducer:
                 if event.local_id in candidates:
                     continue
                 if owners:
-                    match = next((lid for lid in owners if lid not in claimed and _same_instant(candidates[lid].starts_at, event.starts_at)
-                                  and _related(candidates[lid].title, event.title)), None)
+                    plausible = [lid for lid in owners if lid not in claimed and _same_instant(candidates[lid].starts_at, event.starts_at)
+                                 and _related(candidates[lid].title, event.title)]
+                    if len(plausible) > 1:   # several owners fit: the one with exactly this title, else none (never guess)
+                        plausible = [lid for lid in plausible if _title_key(candidates[lid].title) == _title_key(event.title)]
+                        if len(plausible) != 1:
+                            counts["ignored"] += 1
+                            continue
+                    match = plausible[0] if plausible else None
                     if match is None and len(page_events) == 1:   # the one occurrence the card linked to, at a corrected time
                         near = [lid for lid in owners if lid not in claimed and _same_day(candidates[lid].starts_at, event.starts_at) and _related(candidates[lid].title, event.title)]
                         match = near[0] if len(near) == 1 else None
@@ -1185,7 +1216,7 @@ class SourcesProducer:
             page_targets[page_url] = set(card_targets)
             used = absorb(events, page_url, depth, site)
             owners = [lid for lid in linked_from.get(page_url, ()) if lid in candidates and lid in origin and origin[lid][2] != page_url]
-            if page_url in card_pages and owners and not used:   # an event page that states no usable date can still describe the occurrences that linked to it
+            if page_url in card_pages and owners and not events:   # an event page that states no usable date can still describe the occurrences that linked to it
                 venue, address, description = _page_facts(page)
                 if venue or address or description:
                     pseudo = [replace(candidates[lid], venue=venue or candidates[lid].venue, address=address or candidates[lid].address,
