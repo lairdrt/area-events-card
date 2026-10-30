@@ -13,10 +13,11 @@ from .repositories import compress
 
 
 class SqliteCrawlStorage:
-    def __init__(self, store, sources, pages, candidates, jobs, changes, retention, areas, settings, clock, trashcan=None):
+    def __init__(self, store, sources, pages, candidates, jobs, changes, retention, areas, settings, clock, trashcan=None, events=None):
         self._store, self._sources, self._pages, self._candidates = store, sources, pages, candidates
         self._jobs, self._changes, self._retention, self._areas, self._settings, self._clock = jobs, changes, retention, areas, settings, clock
         self._trashcan = trashcan   # SqliteTrashcan: a new candidate that is a deleted event found again is not stored
+        self._events = events       # EventRepository: a restated primary candidate whose verification changed is announced as a change of its event
 
     def _now(self):
         return int(self._clock())
@@ -138,6 +139,7 @@ class SqliteCrawlStorage:
                     page_id, new = self._pages.touch(tx, record.url, source["source_id"], "event", now)
                     page_ids[url] = page_id
                     counts["pages_new"] += int(new)
+            shown = self._events.verification_through(tx, key) if self._events is not None else None
             candidate_id, outcome = self._candidates.upsert(tx, key, source["source_id"], page_id, "adapter", item.extractor, record, now)
             counts[f"candidates_{outcome}"] += 1
             if outcome != "unchanged":
@@ -145,6 +147,10 @@ class SqliteCrawlStorage:
                 counts["evidence_written"] += self._candidates.replace_evidence(tx, candidate_id, rows)
                 self._changes.append(tx, "candidate", key, item.digest, now)
                 counts["changes_appended"] += 1
+                if shown is not None and self._events.verification_through(tx, key) != shown:
+                    # the source restated the event's corroboration without changing its facts: readers of the event (Home Assistant cards) are told it changed
+                    self._changes.append(tx, "event", shown[0], item.digest, now, kind="event.updated")
+                    counts["changes_appended"] += 1
         if plan.leads:
             self._sources.save_leads(tx, source["source_id"], plan.leads, now)
         return counts

@@ -218,7 +218,8 @@ class Pipeline(Fixture):
         self.assertEqual(self.count("events"), 7, "no duplicate event was created")
         self.assertEqual(self.count("extractions", f"candidate_id IN (SELECT candidate_id FROM event_candidates WHERE event_id={self.event_id(target.event_key)})"), 2,
                          "both revisions' extractions are kept")
-        self.assertEqual([c.kind for c in built.reader.changes(0, 500).changes].count("event.updated"), 4)
+        self.assertEqual([c.kind for c in built.reader.changes(0, 500).changes].count("event.updated"), 8,
+                         "4 when the crawl restated the events' verification evidence (it quotes the listing's date line), 4 when extraction revised the events")
         # restarting the worker neither loses nor repeats the update
         built.close()
         again = self.build()

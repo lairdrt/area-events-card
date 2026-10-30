@@ -67,7 +67,7 @@ def open_persistence(db_path, deduplicator, clock=time.time, store_options=None,
     media_store = SqliteMediaStore(store, media_repository, media_folder, clock)
     trashcan = SqliteTrashcan(store, changes, clock)
     return Persistence(
-        crawl=SqliteCrawlStorage(store, sources, pages, candidates, jobs, changes, Retention(changes, events), areas, settings, clock, trashcan),
+        crawl=SqliteCrawlStorage(store, sources, pages, candidates, jobs, changes, Retention(changes, events), areas, settings, clock, trashcan, events),
         scheduling=SqliteSchedulingStorage(store, areas, settings, jobs, clock),
         control=SqliteControlStorage(store, sources, areas, settings, jobs, changes, clock),
         processing=SqliteProcessingStorage(store, ProcessingRepository(), events, candidates, pages, changes, clock, deduplicator),

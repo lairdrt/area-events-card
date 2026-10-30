@@ -314,7 +314,8 @@ class DiscoveryHub:
     def _digest(self, message):
         stable = {k: v for k, v in message.items() if k not in ("generated_at", "revision")}
         stable["service"] = {k: v for k, v in message["service"].items() if k != "extraction_pending"}   # operational detail, not worth a push
-        stable["events"] = [(e["id"], e.get("revision"), (e.get("source") or {}).get("name")) for e in message["events"]]
+        # an event's verification is read from its source's current statement, so it can change while the event's revision does not
+        stable["events"] = [(e["id"], e.get("revision"), (e.get("source") or {}).get("name"), e.get("verified"), e.get("verification")) for e in message["events"]]
         return hashlib.sha256(json.dumps(stable, sort_keys=True, default=str).encode()).hexdigest()
 
     def _push(self, sub, area, feed, force=False):

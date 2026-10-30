@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 FEED_SCHEMA = "area-events.feed.v1"
 SOURCE_NAMES = types.MappingProxyType({"sandiego_gov": "City of San Diego"})
 UNVERIFIED_LOCATIONS = frozenset(("description_only", "unknown"))
+UNCONFIRMED_NOTE = "Read from the source's own listing; not independently confirmed."
 
 
 def _iso(epoch, zone_name):
@@ -35,6 +36,18 @@ def with_source_names(events, names):
     return [{**e, "source": {**e["source"], "name": source_name(e["source"]["key"], names)}} if (e.get("source") or {}).get("key") else e for e in events]
 
 
+def _verification(event):
+    """The service's verification of the event, passed through: 'verified' only with the service's explicit verified flag, 'corroborated' as recorded, and
+    'unverified' for anything else, including a service too old to report it."""
+    stored = event.get("verification") if isinstance(event.get("verification"), dict) else {}
+    lines = stored.get("evidence") if isinstance(stored.get("evidence"), list) else []
+    evidence = [line for line in lines if isinstance(line, str) and line]
+    verified = stored.get("verified") is True and stored.get("status") == "verified" and bool(evidence)
+    status = "verified" if verified else "corroborated" if stored.get("status") == "corroborated" and evidence else "unverified"
+    note = stored.get("note") if isinstance(stored.get("note"), str) and stored.get("note") else UNCONFIRMED_NOTE
+    return {"verified": verified, "verification": {"status": status, "evidence": evidence, "missing": list(event.get("missing") or []), "note": note}}
+
+
 def to_feed_event(event, names=None):
     """One `discovery.events.v1` event record -> the card's event dictionary."""
     zone = event.get("timezone")
@@ -55,9 +68,7 @@ def to_feed_event(event, names=None):
         "categories": [],
         "source": {"name": source_name(sources[0], names) if sources else None, "key": sources[0] if sources else None},
         "source_keys": list(sources),
-        "verified": False,
-        "verification": {"status": "unverified", "evidence": [], "missing": list(event.get("missing") or []),
-                         "note": "Read from the source's own listing; not independently confirmed."},
+        **_verification(event),
         "images": [image["url"]] if image else [],
         "image_credit": {"text": image.get("credit"), "license": image.get("license"), "source_url": image.get("source_url")} if image else None,
         "media": {key: media[key] for key in ("photo", "map") if media.get(key)} or None,

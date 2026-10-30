@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 from ..contracts.models import CleanEvent, DecisionRejected, NotFound
 from ..deduplication import ACTIONS, Association, DEDUP_MAINTENANCE_SCHEMA, Decision, ExistingEvent, Incoming, LOOKUP_PAGE_SIZE
-from ..api.events import EVENTS_SCHEMA, MAX_PAGE, EventDetail, EventPage, EventQuery, EventRecord
+from ..api.events import EVENTS_SCHEMA, MAX_PAGE, EventDetail, EventPage, EventQuery, EventRecord, verification_of
 
 FIELDS = ("title", "description", "starts_at", "ends_at", "timezone", "venue_name", "location_text", "address", "location_status", "source_url", "status")
 
@@ -110,7 +110,30 @@ class EventRepository:
         media, illustration = self._media.for_event(connection, row["event_id"]) if self._media is not None else (None, None)
         return EventRecord(row["event_key"], row["title"], row["description"], row["starts_at"], row["ends_at"], row["timezone"], row["venue_name"],
                            row["location_text"], row["address"], row["location_status"], row["source_url"], row["status"], tuple(json.loads(row["missing_json"])),
-                           row["revision"], row["updated_at"], sources, candidates, media, illustration)
+                           row["revision"], row["updated_at"], sources, candidates, media, illustration, self._verification(connection, row))
+
+    _PRIMARY = """SELECT e.event_key, c.candidate_key, c.payload_json FROM events e JOIN event_candidates ec ON ec.event_id = e.event_id AND ec.role = 'primary'
+                  JOIN candidates c ON c.candidate_id = ec.candidate_id JOIN extractions x ON x.extraction_id = e.extraction_id AND x.candidate_id = c.candidate_id"""
+
+    @staticmethod
+    def _verified_by(rows):
+        if len(rows) != 1:
+            return verification_of(None)
+        try:
+            stored = json.loads(rows[0]["payload_json"]).get("verification")
+        except (TypeError, ValueError, AttributeError):
+            stored = None
+        return verification_of(stored, rows[0]["candidate_key"])
+
+    def _verification(self, connection, row):
+        """What the producer recorded for the event's current primary candidate, and only when the event's current facts were extracted from that candidate:
+        a duplicate's statement, or a candidate the event no longer reflects, is never taken as the event's evidence."""
+        return self._verified_by(connection.execute(self._PRIMARY + " WHERE e.event_id = ?", (row["event_id"],)).fetchall())
+
+    def verification_through(self, tx, candidate_key):
+        """(event_key, verification) for the event whose verification is read from this candidate, or None: what a restatement of the candidate can change."""
+        rows = tx.execute(self._PRIMARY + " WHERE c.candidate_key = ?", (candidate_key,)).fetchall()
+        return (rows[0]["event_key"], self._verified_by(rows)) if len(rows) == 1 else None
 
     def query(self, connection, query, after):
         clauses, params = [], []
