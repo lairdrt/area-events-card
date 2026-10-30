@@ -127,6 +127,86 @@ class TheCardsOwnFacts(unittest.TestCase):
         self.assertEqual(scan({CALENDAR: PAGES[CALENDAR]}).candidates, (), "no year is assumed for a card whose event page was not read")
 
 
+# The line the event page added to its dated list after the excerpt was taken (verbatim, as stored on 2026-10-30): one bounded range, not two dated days.
+RANGE_LINE = ('<li><div class="awesome-box"><div class="awesome-box-icon"><i aria-hidden="true" class="far fa-calendar-day"></i></div><div class="awesome-box-link">'
+              '<span class="dldate">Wed, Nov 4, 2026 - Mon, Nov 30, 2026</span>&nbsp;&nbsp;<span class="dltime">10am - 4pm</span></div></div></li>\n</ul>')
+WITH_RANGE = dict(PAGES)
+WITH_RANGE[LOCALS] = PAGES[LOCALS].replace("</ul>", RANGE_LINE, 1)
+INTERVAL = ("2026-11-04T10:00:00-08:00", "2026-11-30T16:00:00-08:00")
+# The records the producer made of that line before ranges were read: one per end, in the production database.
+ENDPOINTS = {"2026-11-04T10:00:00-08:00": "bcc94d2c4783f9a21c280a2339acfc9a", "2026-11-30T10:00:00-08:00": "519a2ccc38f9db7ce6e930c02f0d2072"}
+
+
+class TheBoundedRange(unittest.TestCase):
+    def setUp(self):
+        self.result = scan(WITH_RANGE)
+        self.locals = sorted((c for c in self.result.candidates if c.url == LOCALS), key=lambda c: c.starts_at)
+
+    def test_the_four_dated_days_and_one_interval_are_the_exhibits_five_entries(self):
+        self.assertIn(RANGE_LINE.split("</ul>")[0], WITH_RANGE[LOCALS])
+        self.assertEqual([(c.title, c.starts_at, c.ends_at) for c in self.locals],
+                         [(TITLE, start, end) for start, (end, _) in OCCURRENCES.items()] + [(TITLE, *INTERVAL)])
+        interval = self.locals[-1]
+        self.assertEqual((interval.venue, interval.address), ("Dick Laub NTC Command Center", "2640 Historic Decatur Rd"))
+        self.assertIn("Date shown: Wed, Nov 4, 2026 - Mon, Nov 30, 2026 10am - 4pm", interval.verification.evidence)
+
+    def test_no_day_inside_the_range_and_not_its_last_day_becomes_an_occurrence(self):
+        inside = [c for c in self.result.candidates if "2026-11-05" <= c.starts_at[:10] <= "2026-11-30"]
+        self.assertEqual(inside, [])
+        self.assertEqual(len(self.result.candidates), 6, "the exhibit's five entries and the Día de los Muertos celebration")
+        self.assertEqual(len({c.local_id for c in self.result.candidates}), 6)
+
+    def test_the_interval_keeps_the_identity_of_its_first_day_and_the_last_days_record_is_not_made_again(self):
+        ids = {c.starts_at: c.local_id for c in self.locals}
+        self.assertEqual(ids[INTERVAL[0]], ENDPOINTS[INTERVAL[0]], "the stored record of the range's first day is the interval")
+        self.assertNotIn(ENDPOINTS["2026-11-30T10:00:00-08:00"], {c.local_id for c in self.result.candidates})
+        before = {(c.url, c.starts_at): c.local_id for c in scan().candidates}
+        self.assertEqual({(c.url, c.starts_at): c.local_id for c in self.result.candidates if (c.url, c.starts_at) in before}, before, "the dated days keep theirs")
+
+    def test_a_second_scan_changes_nothing(self):
+        again = scan(WITH_RANGE, previous=self.result.candidates)
+        self.assertEqual(sorted(again.candidates, key=lambda c: c.local_id), sorted(self.result.candidates, key=lambda c: c.local_id))
+
+
+class DateRanges(unittest.TestCase):
+    def events(self, line):
+        found, _ = _plain_text_events(page(f"<h1>Harbor Art Exhibit</h1><p>Paintings of the bay by local artists, shown in the old command center.</p><p>{line}</p>"),
+                                      "https://example.org/do/show", "Example", "2026-10-30T00:00:00+00:00", "America/Los_Angeles")
+        return [(e.starts_at, e.ends_at) for e in found]
+
+    def test_an_explicitly_bounded_range_is_one_interval(self):
+        cases = {
+            "Wed, Nov 4, 2026 - Mon, Nov 30, 2026 10am - 4pm": [("2026-11-04T10:00:00-08:00", "2026-11-30T16:00:00-08:00")],
+            "November 4 through November 30, 2026, 10am to 4pm": [("2026-11-04T10:00:00-08:00", "2026-11-30T16:00:00-08:00")],
+            "Nov 4 – Nov 30, 2026 · 10am–4pm": [("2026-11-04T10:00:00-08:00", "2026-11-30T16:00:00-08:00")],
+            "Dec 20, 2026 to Jan 3, 2027 6pm - 9pm": [("2026-12-20T18:00:00-08:00", "2027-01-03T21:00:00-08:00")],
+            "Dec 20 - Jan 3, 2027 6pm - 9pm": [("2026-12-20T18:00:00-08:00", "2027-01-03T21:00:00-08:00")],
+        }
+        for line, expected in cases.items():
+            with self.subTest(line):
+                self.assertEqual(self.events(line), expected)
+
+    def test_individually_dated_days_stay_separate_occurrences(self):
+        cases = {
+            "Saturday, November 14 and Sunday, November 15, 2026, 9am - 3pm": [("2026-11-14T09:00:00-08:00", "2026-11-14T15:00:00-08:00"),
+                                                                                ("2026-11-15T09:00:00-08:00", "2026-11-15T15:00:00-08:00")],
+            "Saturday, November 7, 2026 to Sunday, November 8, 2026 9am - 4pm": [("2026-11-07T09:00:00-08:00", "2026-11-07T16:00:00-08:00"),
+                                                                                  ("2026-11-08T09:00:00-08:00", "2026-11-08T16:00:00-08:00")],
+            "November 14–15, 2026 9am - 3pm": [("2026-11-14T09:00:00-08:00", "2026-11-14T15:00:00-08:00"), ("2026-11-15T09:00:00-08:00", "2026-11-15T15:00:00-08:00")],
+            "Nov 14, 2026 9am - 3pm, Nov 21, 2026 9am - 3pm": [("2026-11-14T09:00:00-08:00", "2026-11-14T15:00:00-08:00"), ("2026-11-21T09:00:00-08:00", "2026-11-21T15:00:00-08:00")],
+        }
+        for line, expected in cases.items():
+            with self.subTest(line):
+                self.assertEqual(self.events(line), expected)
+
+    def test_a_range_said_to_recur_is_not_one_continuous_interval(self):
+        for line in ("Saturdays, Nov 7 - Dec 19, 2026, 10am - 2pm", "Every Friday, Nov 6 through Dec 18, 2026 6pm - 8pm"):
+            with self.subTest(line):
+                found = self.events(line)
+                self.assertTrue(found)
+                self.assertTrue(all(start[:10] == end[:10] for start, end in found), found)
+
+
 def page(body, title="Arts District"):
     return f"<html><head><title>{title}</title></head><body><main>{body}</main></body></html>"
 

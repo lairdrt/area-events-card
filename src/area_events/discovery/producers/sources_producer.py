@@ -740,23 +740,79 @@ def _share_a_distinctive_word(left, right):
     return bool((_title_tokens(left) & _title_tokens(right)) - _GENERIC_WORDS)
 
 
+# What joins the two ends of a bounded date range ("Nov 4, 2026 - Mon, Nov 30, 2026", "June 3 through August 30"): a dash or range word, and the end's weekday.
+_RANGE_JOIN = re.compile(r"\s*,?\s*(?:-|–|—|\bto\b|\bthrough\b|\bthru\b|\buntil\b|\btill\b)\s*"
+                         r"(?:(?:mon|tue|tues|wed|weds|thu|thur|thurs|fri|sat|sun)(?:day|nesday|sday|rsday|urday)?\.?\s*,?\s*)?", re.I)
+# Words that say a range recurs on some of its days ("Saturdays, Nov 7 - Dec 19", "every Friday") rather than running through all of them.
+_RECURRING = re.compile(r"\b(?:every|each|weekly|daily|nightly|weekends|weekdays|mondays|tuesdays|wednesdays|thursdays|fridays|saturdays|sundays)\b", re.I)
+
+
+def _month_of(match):
+    name = match.group("month").rstrip(".").casefold()
+    return _MONTH_NAMES.get(name) or _MONTH_NAMES.get(name[:3])
+
+
+def _date_ranges(text, title):
+    """The explicitly bounded ranges in a date line: a complete date, a dash or range word, then a complete date at least two days later that names its own month ("Wed, Nov 4,
+    2026 - Mon, Nov 30, 2026"). {first day: (last day, (start, end) of the range in `text`)}. The range is ONE interval; no day between its ends is an occurrence of its own.
+    Ends on consecutive days ("Saturday, November 7 to Sunday, November 8"), "November 14–15" and "November 14 and Sunday, November 15" state each of their days and stay dated
+    days, and a range said to recur on some of its days ("Saturdays, Nov 7 - Dec 19") is not one continuous interval."""
+    if _RECURRING.search(text):
+        return {}
+    matches = list(_TEXT_DATE.finditer(text[:350]))
+    years = {int(m.group("year")) for m in matches if m.group("year")} or {int(year) for year in _YEAR.findall((text + " " + title)[:350])}
+    shared = next(iter(years)) if len(years) == 1 else None
+    ranges = {}
+    for a, b in zip(matches, matches[1:]):
+        if not _RANGE_JOIN.fullmatch(text[a.end():b.start()]):
+            continue
+        end_year = int(b.group("year")) if b.group("year") else shared
+        if not end_year or not _month_of(a) or not _month_of(b):
+            continue
+        # The start's year is its own, else the end's: a range that crosses the new year ("Dec 20 - Jan 3, 2027") starts in the year before.
+        start_year = int(a.group("year")) if a.group("year") else end_year - (_month_of(a) > _month_of(b))
+        try:
+            first, last = datetime(start_year, _month_of(a), int(a.group("day"))).date(), datetime(end_year, _month_of(b), int(b.group("day"))).date()
+        except ValueError:
+            continue
+        if 2 <= (last - first).days <= 366:
+            ranges[first] = (last, (a.start(), b.end()))
+    return ranges
+
+
 def _line_groups(line, title):
-    """Split a date line into its occurrences: each date (or consecutive dates of a range) with the first clock that FOLLOWS it in the same line. [(dates, clock-or-None)]."""
+    """Split a date line into its occurrences: each date (or consecutive dates of a range) with the first clock that FOLLOWS it in the same line.
+    [(dates, clock-or-None, {first day: last day} of the bounded ranges among the dates)]. A bounded range gives its first day only; its last day is in the mapping."""
     starts = sorted({m.start() for pattern in (_TEXT_DATE, _TEXT_DATES_ISO, _TEXT_DATES_NUMERIC) for m in pattern.finditer(line[:350])})
     if not starts:
         return []
     bounds = starts + [len(line)]
     groups, pending = [], []
+
+    def group(clock):
+        text = " ".join(pending)
+        ranges = _date_ranges(text, title)
+        if not ranges:
+            groups.append((_text_dates(text, title), clock, {}))
+            return
+        # A range gives its first day; the other dates are read from the rest of the text (with the years the whole text states).
+        rest = text
+        for _, (begin, end) in ranges.values():
+            rest = rest[:begin] + " " * (end - begin) + rest[end:]
+        others = _text_dates(rest, title + " " + " ".join(_YEAR.findall(text)))
+        dates = sorted(set(others) | set(ranges))
+        groups.append((dates, clock, {first: last for first, (last, _) in ranges.items()}))
+
     for index in range(len(starts)):
         segment = line[0 if index == 0 else starts[index]:bounds[index + 1]]
         pending.append(segment)
         clock = _text_clock([segment])
         if clock[0]:
-            groups.append((_text_dates(" ".join(pending), title), clock))
+            group(clock)
             pending = []
     if pending:
-        groups.append((_text_dates(" ".join(pending), title), (None, None, None)))
-    return [(dates, clock) for dates, clock in groups if dates]
+        group((None, None, None))
+    return [(dates, clock, through) for dates, clock, through in groups if dates]
 
 
 def _has_date(text):
@@ -948,12 +1004,12 @@ def _text_event_group(heading, lines, page_title, page_url, source_name, retriev
     if not raw_date_lines:
         return [], 0
     has_date = lambda value: bool(_TEXT_DATE.search(value) or _TEXT_DATES_ISO.search(value) or _TEXT_DATES_NUMERIC.search(value))   # noqa: E731
-    slots = {}   # day -> (clock start, clock end, date line, time line): the first statement of an occurrence wins
+    slots = {}   # day -> (clock start, clock end, date line, time line, last day of a bounded range or None): the first statement of an occurrence wins
     consumed = set()   # lines that gave a time to an earlier date
     for pos, line in raw_date_lines[:6]:
         if re.match(r"\s*(?:published|posted|updated|last updated|article date|news date)\s*:?\s*", line, re.I):
             continue  # Publication timestamps are not event dates.
-        for dates, (start, end, time_line) in _line_groups(line, heading + " " + page_title):
+        for dates, (start, end, time_line), through in _line_groups(line, heading + " " + page_title):
             if not start:   # the time is on a line right after this date or right before it; the search stops at any other date line and never reuses a line another date took
                 following = []
                 for index in range(pos + 1, min(len(lines), pos + 4)):
@@ -974,7 +1030,7 @@ def _text_event_group(heading, lines, page_title, page_url, source_name, retriev
             if not start:
                 continue
             for day in dates:
-                slots.setdefault(day, (start, end, line, time_line))
+                slots.setdefault(day, (start, end, line, time_line, through.get(day)))
     slots = dict(list(slots.items())[:10])
     if not slots:
         return [], len(raw_date_lines)
@@ -983,13 +1039,14 @@ def _text_event_group(heading, lines, page_title, page_url, source_name, retriev
                                     (_TEXT_DATE.search(line) or _TEXT_DATES_ISO.search(line) or _TEXT_DATES_NUMERIC.search(line))
                                     and not _CLOCK.search(line)), None)
     result = []
-    for day, (clock_start, clock_end, date_line, clock_line) in slots.items():
+    for day, (clock_start, clock_end, date_line, clock_line, last_day) in slots.items():
         begin = _local_instant(day, clock_start, zone)
         if begin is None:
             continue
         until = None
         if clock_end:
-            finish_day = day + timedelta(days=1) if clock_end < clock_start else day
+            # A bounded range ends on its last day at the stated closing time; a single day's end past midnight is the next day's.
+            finish_day = last_day or (day + timedelta(days=1) if clock_end < clock_start else day)
             until = _local_instant(finish_day, clock_end, zone)
         fingerprint = f"{page_url}|{candidate_title.casefold()}|{begin}"
         result.append(EventCandidate(

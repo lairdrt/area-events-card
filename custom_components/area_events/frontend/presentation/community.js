@@ -366,7 +366,7 @@ function renderCommunityEvent(event, context) {
 
     const body = el("div", "body");
     body.append(el("div", "title", event.title || "Untitled event"));
-    if (event.start) body.append(context.meta("mdi:calendar-clock", context.formatDate(event.start, event.timezone)));
+    if (event.start) body.append(context.meta("mdi:calendar-clock", context.formatWhen ? context.formatWhen(event.start, event.end, event.timezone) : context.formatDate(event.start, event.timezone)));
     if (event.location) body.append(context.meta("mdi:map-marker", event.location));
     if (event.locationStatus === "description_only" || event.locationStatus === "unknown") {
       body.append(context.meta("mdi:help-circle-outline", event.location ? "The location is the source's own description and is not verified." : "The source gave no location."));

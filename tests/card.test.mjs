@@ -1550,6 +1550,29 @@ test("an event's time is shown in the event's own time zone, not the viewer's, a
   assert.equal(new Date(card._normalizeEvent(austin).start).getTime(), Date.parse("2026-10-23T18:00:00Z"), "the stored instant is untouched");
 });
 
+test("an event that ends on a later day shows both its first and its last date; a one-day event shows its start as before", async () => {
+  const exhibit = event("Harbor Art Exhibit", 1, { start: "2026-11-04T10:00:00-08:00", end: "2026-11-30T16:00:00-08:00", timezone: "America/Los_Angeles" });
+  const evening = event("Evening Talk", 2, { start: "2026-11-05T18:00:00-08:00", end: "2026-11-05T20:00:00-08:00", timezone: "America/Los_Angeles" });
+  const late = event("Late Show", 3, { start: "2026-11-06T22:00:00-08:00", end: "2026-11-07T01:00:00-08:00", timezone: "America/Los_Angeles" });
+  const card = await make({}, { feed: makeFeed({ events: [] }) });
+  card._viewerZone = () => "America/Los_Angeles";
+  const when = (e) => card._formatWhen(e.start, e.end, e.timezone).replace(/ /g, " ");
+  assert.equal(when(exhibit), "Nov 4, 2026, 10:00 AM – Nov 30, 2026, 4:00 PM");
+  assert.equal(when(evening), "Nov 5, 2026, 6:00 PM", "the same day: the start only, as before");
+  assert.equal(when(late), "Nov 6, 2026, 10:00 PM – Nov 7, 2026, 1:00 AM", "an end past midnight is on another day and is said");
+  assert.equal(when({ ...exhibit, end: undefined }), "Nov 4, 2026, 10:00 AM");
+  assert.equal(when({ ...exhibit, end: "garbage" }), "Nov 4, 2026, 10:00 AM");
+  assert.equal(when({ ...exhibit, end: "2026-11-01T10:00:00-08:00" }), "Nov 4, 2026, 10:00 AM", "an end before the start is never shown");
+  // both renderers show it on the tile
+  for (const type of [undefined, "community.event"]) {
+    const running = event("Harbor Art Exhibit", 1, { end: iso(20 * day), type });
+    const shown = await make({}, { feed: makeFeed({ events: [running] }) });
+    const tile = text(shown.shadowRoot);
+    assert.ok(tile.includes(shown._formatWhen(running.start, running.end)), String(type));
+    assert.ok(shown._formatWhen(running.start, running.end).includes(" – "), String(type));
+  }
+});
+
 test("map badges name a place and never a sentence; the approximation is kept in the data", async () => {
   const mediaFor = (label) => ({ map: { light: "/area_events/media/m0123456789abcdef-light.svg", dark: "/area_events/media/m0123456789abcdef-dark.svg", approximate: true, confidence: "address", precision: "address", label } });
   const sentence = "The Little Italy Mercato operates on West Date Street from the cul de sac at Kettner to India Street, every Saturday morning.";

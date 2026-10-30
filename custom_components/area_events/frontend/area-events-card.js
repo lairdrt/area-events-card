@@ -11,7 +11,7 @@
  */
 
 import { PRESENTATIONS } from "./presentation/manifest.js";
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-cb1bde45";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-546084dd";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
@@ -841,6 +841,15 @@ class AreaEventsCard extends HTMLElement {
     return date.toLocaleString(locale, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: known, timeZoneName: "short" });
   }
 
+  /** When an event is: its start, and also its end when it ends on a later day (in the zone its time is shown in), so a multi-day event shows both dates. */
+  _formatWhen(start, end, zone) {
+    const first = new Date(start);
+    const last = new Date(end);
+    if (!end || Number.isNaN(first.getTime()) || Number.isNaN(last.getTime()) || last <= first) return this._formatDate(start, zone);
+    const day = (date) => date.toLocaleDateString("en-CA", { timeZone: validZone(zone) });
+    return day(last) === day(first) ? this._formatDate(start, zone) : `${this._formatDate(start, zone)} – ${this._formatDate(end, zone)}`;
+  }
+
   _ago(ms) {
     const minutes = Math.floor(ms / 60000);
     if (minutes < 1) return "just now";
@@ -1008,6 +1017,7 @@ class AreaEventsCard extends HTMLElement {
         icon: (name) => this._icon(name),
         meta: (icon, text) => this._meta(icon, text),
         formatDate: (value, zone) => this._formatDate(value, zone),
+        formatWhen: (start, end, zone) => this._formatWhen(start, end, zone),
         isDark: () => this._isDark(),
         showImages: this._settings.showImages,
         nextCreditId: () => (this._creditIds = (this._creditIds || 0) + 1),
