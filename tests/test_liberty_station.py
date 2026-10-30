@@ -39,6 +39,11 @@ def scan(pages=PAGES, previous=()):
     return result
 
 
+def unstamped(candidates):
+    """The candidates in id order with the moment of retrieval set aside: a second scan a second later is stamped a second later and is otherwise the same."""
+    return sorted((replace(c, provenance=replace(c.provenance, retrieved_at="")) for c in candidates), key=lambda c: c.local_id)
+
+
 def as_stored_earlier(candidates):
     """The records the earlier extractor made: titled by the page's field label, with the id that title gave them, and without the place it never read."""
     return [replace(c, title=LABELS[c.url], local_id=hashlib.sha256(f"{c.url}|{LABELS[c.url].casefold()}|{c.starts_at}".encode("utf-8")).hexdigest()[:32],
@@ -81,7 +86,7 @@ class TheExhibit(unittest.TestCase):
 
     def test_a_second_scan_changes_nothing(self):
         again = scan(previous=self.result.candidates)
-        self.assertEqual(sorted(again.candidates, key=lambda c: c.local_id), sorted(self.result.candidates, key=lambda c: c.local_id))
+        self.assertEqual(unstamped(again.candidates), unstamped(self.result.candidates))
 
 
 class StoredIdentities(unittest.TestCase):
@@ -165,7 +170,7 @@ class TheBoundedRange(unittest.TestCase):
 
     def test_a_second_scan_changes_nothing(self):
         again = scan(WITH_RANGE, previous=self.result.candidates)
-        self.assertEqual(sorted(again.candidates, key=lambda c: c.local_id), sorted(self.result.candidates, key=lambda c: c.local_id))
+        self.assertEqual(unstamped(again.candidates), unstamped(self.result.candidates))
 
 
 class DateRanges(unittest.TestCase):
