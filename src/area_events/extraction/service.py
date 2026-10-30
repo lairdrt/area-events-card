@@ -22,10 +22,11 @@ from urllib.parse import urlsplit
 from ..contracts import evidence as evidence_text
 from ..geolocation import textloc
 from ..contracts.models import LeaseLost, StaleResult, ValidationFailed
-from .text import decode_entities
+from .text import plain_text
 
 EXTRACTOR = "stored-candidate"
-VERSION = 2   # 2: character references in source text (&#039;) are decoded once; stored candidates and evidence keep the source's exact text
+VERSION = 3   # 2: character references in source text (&#039;) are decoded once; stored candidates and evidence keep the source's exact text
+              # 3: event text is plain text: HTML tags removed (their words kept), line and paragraph tags made line breaks, references decoded fully
 
 
 class ProcessingUnavailable(Exception):
@@ -33,7 +34,7 @@ class ProcessingUnavailable(Exception):
 
 
 def _text(value, limit):
-    value = re.sub(r"[ \t\r\f\v]+", " ", decode_entities(value)).strip()
+    value = re.sub(r"[ \t\r\f\v]+", " ", plain_text(value)).strip()
     value = re.sub(r"\n\s*\n+", "\n\n", value)
     return value[:limit] or None
 
