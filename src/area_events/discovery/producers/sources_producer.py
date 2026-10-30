@@ -430,6 +430,20 @@ _WEEKDAY = re.compile(r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|S
 _FIELD_LABEL = re.compile(
     r"\s+(?:dates?|when)(?:\s*(?:&|and)\s*times?)?\s*:\s*(?=$|(?:mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?|"
     r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\d).*$", re.I)
+_WEEKDAY_WORDS = frozenset(("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+                            "mon", "tue", "tues", "wed", "weds", "thu", "thur", "thurs", "fri", "sat", "sun"))
+_SCHEDULE_WORDS = _WEEKDAY_WORDS | frozenset(_MONTH_NAMES) | frozenset((
+    "sept", "st", "nd", "rd", "th", "am", "pm", "noon", "midnight", "and", "to", "through", "thru", "until", "till", "from", "at",
+    "date", "dates", "when", "time", "times", "hours"))
+
+
+def _schedule_only(text):
+    """Is this text nothing but scheduling: dates, weekdays, date ranges, times and their labels ("Saturday-Sunday December 5 & 6, 2026", "Date: Sat. Nov. 7", "Mar 14 10:00-11:00am")?
+    Such text is never an event's title. A title that contains a date ("Summer Fair — December 5", "May Day Festival") keeps its other words and is not schedule-only."""
+    words = re.findall(r"[a-z]+|\d+", _CLOCK.sub(" ", text or "").casefold())
+    scheduled = (any(pattern.search(text or "") for pattern in (_CLOCK, _TEXT_DATES_ISO, _TEXT_DATES_NUMERIC))
+                 or any(word in _WEEKDAY_WORDS or word in _MONTH_NAMES for word in words))
+    return scheduled and all(word.isdigit() or word in _SCHEDULE_WORDS for word in words)
 
 
 class _VisibleEventText(HTMLParser):
@@ -452,12 +466,25 @@ class _VisibleEventText(HTMLParser):
         self.card_hrefs = []
         self._anchors = []
         self.first_heading = ""
+        self._section_tag = None   # the heading that opened the current section
+        self._flushed_tag = None   # the heading that opened the last stored section
 
     def _section_flush(self):
         value = _visible_lines("".join(self._section))
+        self._flushed_tag = None
         if self._heading or value:
             self.sections.append((self._heading, value))
+            self._flushed_tag = self._section_tag
         self._section = []
+
+    def _dates_previous_heading(self, tag):
+        """Is a schedule-only heading (<h5>Saturday-Sunday December 5 & 6, 2026</h5>) the date line of the heading right before it? Only when that heading is a genuine title of
+        the same or a higher rank and nothing but its own text stands between the two."""
+        if not self.sections or not self._flushed_tag:
+            return False
+        title, lines = self.sections[-1]
+        return (bool(title) and not _schedule_only(title) and int(tag[1]) >= int(self._flushed_tag[1])
+                and _title_key(" ".join(lines)) == _title_key(title))
 
     def handle_starttag(self, tag, attrs):
         if tag in self.SKIP:
@@ -466,7 +493,7 @@ class _VisibleEventText(HTMLParser):
             return
         if tag in self.HEADINGS:
             self._section_flush()
-            self._heading_tag = tag
+            self._heading_tag = self._section_tag = tag
             self._heading = ""
             self._section.append("\n")
         elif tag in self.BLOCKS:
@@ -500,6 +527,11 @@ class _VisibleEventText(HTMLParser):
                 card[3].append((href, " ".join(text)))
         if tag in self.HEADINGS and tag == self._heading_tag:
             self._heading = _clean(self._heading, 160) or ""
+            if self._heading and _schedule_only(self._heading) and self._dates_previous_heading(tag):
+                # The date belongs to the title above it: it stays in that title's section as a line, and the title stays the heading.
+                title, lines = self.sections.pop()
+                self._heading, self._section_tag = title, self._flushed_tag
+                self._section[:0] = ["\n".join(lines), "\n"]
             if self._heading and not self.first_heading:
                 self.first_heading = self._heading
             for card in self._cards:
@@ -730,7 +762,8 @@ def _text_event_group(heading, lines, page_title, page_url, source_name, retriev
         candidate_title = candidate_title.title()
     if not candidate_title or _UNHELPFUL_HEADINGS.fullmatch(candidate_title):
         candidate_title = page_title
-    if not candidate_title or _UNHELPFUL_HEADINGS.fullmatch(candidate_title) or _JUNK_TITLES.fullmatch(candidate_title):
+    # A date or time is never a title: with no descriptive title there is no candidate, and none is invented.
+    if not candidate_title or _UNHELPFUL_HEADINGS.fullmatch(candidate_title) or _JUNK_TITLES.fullmatch(candidate_title) or _schedule_only(candidate_title):
         return [], 0
     raw_date_lines = [(i, line) for i, line in enumerate(lines[:35])
                       if _TEXT_DATE.search(line) or _TEXT_DATES_ISO.search(line)
@@ -860,6 +893,8 @@ def _carry_forward(candidate, old):
 def _stabilize_ids(candidates, previous):
     """An occurrence whose stated time was corrected would get a new id (ids are made from the time). When exactly ONE earlier record of the same listing, title and day exists and
     nothing now claims its id, the corrected occurrence keeps that earlier id, so the stored candidate is updated instead of a second one being created.
+    An occurrence whose title was corrected from a date line (an earlier extractor titled it "Saturday-Sunday December 5 & 6, 2026") likewise keeps the id of exactly ONE earlier
+    record of the same listing at the same instant whose title was schedule-only and states this occurrence's day, when no other new occurrence of that listing has that instant.
     Returns how many ids were kept and how many ambiguous corrections could not be matched."""
     known = {old.local_id: old for old in previous}
     free = {old.local_id: old for old in previous if old.local_id not in candidates}
@@ -867,10 +902,16 @@ def _stabilize_ids(candidates, previous):
     for local_id, candidate in list(candidates.items()):
         if local_id in known:
             continue
-        options = [old for old in free.values() if old.provenance.listing_url == candidate.provenance.listing_url
+        same_listing = lambda other: other.provenance.listing_url == candidate.provenance.listing_url   # noqa: E731
+        options = [old for old in free.values() if same_listing(old)
                    and _title_key(old.title) == _title_key(candidate.title) and _same_day(old.starts_at, candidate.starts_at)]
-        rivals = [other for lid, other in candidates.items() if lid not in known and other.provenance.listing_url == candidate.provenance.listing_url
+        rivals = [other for lid, other in candidates.items() if lid not in known and same_listing(other)
                   and _title_key(other.title) == _title_key(candidate.title) and _same_day(other.starts_at, candidate.starts_at)]
+        if not options and not _schedule_only(candidate.title):
+            day = _instant(candidate.starts_at)
+            options = [old for old in free.values() if same_listing(old) and _schedule_only(old.title) and _same_instant(old.starts_at, candidate.starts_at)
+                       and day is not None and day.date() in _text_dates(old.title, "")]
+            rivals = [other for lid, other in candidates.items() if lid not in known and same_listing(other) and _same_instant(other.starts_at, candidate.starts_at)]
         if len(options) == 1 and len(rivals) == 1:
             old = options[0]
             del candidates[local_id]
