@@ -38,7 +38,7 @@ class AreaEventsManager extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
-    this._tab = "sources";
+    this._tab = "overview";
     this._selectedSource = null;
     this._selectedArea = null;
     this._creating = false;
@@ -367,11 +367,16 @@ class AreaEventsManager extends HTMLElement {
   renderOverview() {
     const s = this._snapshot || {};
     const status = s.status || {};
+    // The card publishes the build it actually loaded; the placeholder of an unbuilt card is not a build.
+    const loaded = globalThis.__AREA_EVENTS_CARD_LOAD__?.build;
+    const cardBuild = typeof loaded === "string" && loaded && !loaded.includes("__AREA_EVENTS_CARD_BUILD__") ? loaded : "Unavailable";
     return "<div class='pane'><h2>Service overview</h2><p class='section-note'>This panel reads the authoritative Cubi service " +
       "through Home Assistant. Producer and area configuration is not duplicated in HA.</p>" +
       "<p>Discovery: <strong>" + escapeHtml(status.runtime?.state || "Unknown") + "</strong></p>" +
       "<p>Data schema: <strong>" + escapeHtml(status.schema || "—") + "</strong></p>" +
-      "<p>Control access: <strong>" + (s.can_control ? "Available" : "Read-only") + "</strong></p></div>";
+      "<p>Control access: <strong>" + (s.can_control ? "Available" : "Read-only") + "</strong></p>" +
+      "<p>Card build: <strong class='build-card'>" + escapeHtml(cardBuild) + "</strong></p>" +
+      "<p>Backend build: <strong class='build-backend'>" + escapeHtml(status.build || "Unavailable") + "</strong></p></div>";
   }
   render() {
     const tabs = [["overview","Overview"],["sources","Sources"],["areas","Areas"],["trashcan","Trashcan"]];

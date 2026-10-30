@@ -1182,6 +1182,12 @@ class WebSocket(Service):
         self.assertNotIn(CONTROL_TOKEN, json.dumps(snapshot))
         self.assertNotIn(READ_TOKEN, json.dumps(snapshot))
 
+    def test_the_backend_build_reaches_the_management_overview(self):
+        from area_events.api.http_api import backend_build
+        snapshot = self.call(websocket_module.ws_management, {}, admin=True).sent[0][2]
+        self.assertEqual(snapshot["status"]["build"], backend_build(), "passed through the existing snapshot unchanged")
+        self.assertRegex(snapshot["status"]["build"], r"^AREA-EVENTS-BACKEND \d+(\.\d+)*-[0-9a-f]{8}$")
+
     def test_administrator_can_manage_sources_without_exposing_control_tokens(self):
         create = {"action": "create", "source_id": "new-campus", "producer_type": "localist",
                   "name": "New Campus", "enabled": False, "interval_minutes": 30,

@@ -39,6 +39,7 @@ const setup = () => {
 
 test("panel renders inventory and the real source configuration instead of raw JSON", () => {
   const manager = setup();
+  manager._tab = "sources";
   manager.render();
   assert.match(manager.shadowRoot.innerHTML, /Example Campus/);
   assert.match(manager.shadowRoot.innerHTML, /Ready/);
@@ -83,6 +84,7 @@ test("retired producer status explicitly shows disabled state after save", () =>
   const manager = setup();
   manager._snapshot.sources[0].type = "uninstalled_adapter";
   manager._snapshot.sources[0].enabled = false;
+  manager._tab = "sources";
   manager.render();
   assert.match(manager.shadowRoot.innerHTML, /Disabled · Retired adapter/);
   assert.match(manager.shadowRoot.innerHTML, /data-action='toggle' disabled/);
@@ -166,4 +168,70 @@ test("the Trashcan section says so when the service has no trashcan, and when it
   manager._snapshot.trashcan = { schema: "discovery.trashcan.v1", total: 0, suppressed: 0, by_reason: {}, events: [] };
   manager.render();
   assert.match(manager.shadowRoot.innerHTML, /The trashcan is empty/);
+});
+
+const clickTab = (manager, value) => manager.handleClick({ target: { closest: () => ({ disabled: false, dataset: { action: "tab", value } }) } });
+const withCardLoad = (marker, run) => {
+  const saved = globalThis.__AREA_EVENTS_CARD_LOAD__;
+  if (marker === undefined) delete globalThis.__AREA_EVENTS_CARD_LOAD__; else globalThis.__AREA_EVENTS_CARD_LOAD__ = marker;
+  try { return run(); } finally {
+    if (saved === undefined) delete globalThis.__AREA_EVENTS_CARD_LOAD__; else globalThis.__AREA_EVENTS_CARD_LOAD__ = saved;
+  }
+};
+
+test("a new dashboard session opens on the Overview", () => {
+  const manager = new Registered();
+  assert.equal(manager._tab, "overview");
+  manager._snapshot = snapshot();
+  manager.render();
+  assert.match(manager.shadowRoot.innerHTML, /data-value='overview' class='active'>Overview/);
+  assert.match(manager.shadowRoot.innerHTML, /Service overview/);
+});
+
+test("Sources, Areas, Trashcan and Overview navigation still works", () => {
+  const manager = setup();
+  for (const [tab, marker] of [["sources", /Calendar URL/], ["areas", /Example Area/], ["trashcan", /does not report a trashcan/], ["overview", /Service overview/]]) {
+    clickTab(manager, tab);
+    assert.equal(manager._tab, tab);
+    assert.match(manager.shadowRoot.innerHTML, new RegExp(`data-value='${tab}' class='active'`));
+    assert.match(manager.shadowRoot.innerHTML, marker, tab);
+  }
+});
+
+test("refreshing the data keeps the selected tab", async () => {
+  const manager = setup();
+  manager._hass = { callWS: async () => snapshot() };
+  clickTab(manager, "areas");
+  await manager.refresh();
+  assert.equal(manager._tab, "areas");
+  assert.match(manager.shadowRoot.innerHTML, /data-value='areas' class='active'/);
+});
+
+test("the Overview shows the card build the page actually loaded and the backend build the service reports", () => {
+  const manager = setup();
+  manager._snapshot.status.build = "AREA-EVENTS-BACKEND 0.2.0-0123abcd";
+  withCardLoad({ build: "AREA-EVENTS 0.2.0-89abcdef", defined: true }, () => {
+    const html = manager.renderOverview();
+    assert.match(html, /Card build: <strong class='build-card'>AREA-EVENTS 0\.2\.0-89abcdef<\/strong>/);
+    assert.match(html, /Backend build: <strong class='build-backend'>AREA-EVENTS-BACKEND 0\.2\.0-0123abcd<\/strong>/);
+  });
+});
+
+test("a card that has not loaded, or a backend that reports no build, is shown as Unavailable, never guessed", () => {
+  const manager = setup();
+  for (const marker of [undefined, {}, { build: "" }, { build: "__AREA_EVENTS_CARD_BUILD__" }]) {
+    withCardLoad(marker, () => assert.match(manager.renderOverview(), /Card build: <strong class='build-card'>Unavailable</));
+  }
+  assert.match(manager.renderOverview(), /Backend build: <strong class='build-backend'>Unavailable</);
+});
+
+test("build identifiers are HTML escaped", () => {
+  const manager = setup();
+  manager._snapshot.status.build = "<img src=x onerror=alert(1)>";
+  withCardLoad({ build: "<script>alert(2)</script>" }, () => {
+    const html = manager.renderOverview();
+    assert.doesNotMatch(html, /<img|<script/);
+    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+    assert.match(html, /&lt;script&gt;alert\(2\)&lt;\/script&gt;/);
+  });
 });

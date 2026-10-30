@@ -1,6 +1,6 @@
 """The Discovery control and read API: authenticated HTTP/JSON over the standard library, versioned under /v1/.
 
-    GET   /v1/discovery/status           read      engine, settings, areas, sources, jobs
+    GET   /v1/discovery/status           read      engine, settings, areas, sources, jobs, and `build`: the identifier of the backend code this process runs
     GET   /v1/areas                      read      GET /v1/areas/{id} reads one
     POST  /v1/areas                      control   create (idempotent with request_id)
     PATCH /v1/areas/{id}                 control   body must carry expected_revision
@@ -27,6 +27,8 @@ mutations need `Content-Type: application/json`. Responses carry no CORS headers
 and no addresses to fetch. It binds to loopback unless remote binding is explicitly allowed, and refuses to start without tokens.
 """
 import dataclasses
+import functools
+import hashlib
 import hmac
 import json
 import logging
@@ -37,8 +39,10 @@ import sys
 import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from .. import __version__
 from ..control.service import (CONTROL_SCHEMA, ControlError, CreateAreaRequest, RevisionConflict, SettingsRequest, UpdateAreaRequest, ValidationFailed,
                                CreateSourceRequest, UpdateSourceRequest)
 from ..trashcan import TRASHCAN_SCHEMA
@@ -55,6 +59,20 @@ SOURCE_PATH = re.compile(r"^/v1/sources/([a-z][a-z0-9_-]{0,79})(?:/(enable|disab
 MEDIA_PATH = re.compile(r"^/v1/media/([a-z0-9][a-z0-9.-]{3,60}\.(?:svg|jpg|png|webp))$")
 TRASH_PATH = re.compile(r"^/v1/events/([A-Za-z0-9_-]{8,60})/trash$")
 SCOPES = ("read", "control", "process")
+
+
+def code_fingerprint(root):
+    """A short deterministic fingerprint of the Python code under `root`: SHA-1 over every module's relative path and bytes, in path order (compiled caches left out)."""
+    digest = hashlib.sha1()
+    for path in sorted(p for p in Path(root).rglob("*.py") if "__pycache__" not in p.parts):
+        digest.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()[:8]
+
+
+@functools.lru_cache(maxsize=None)
+def backend_build():
+    """The identifier of the backend this process runs, read once from its own installed package: "AREA-EVENTS-BACKEND <version>-<fingerprint>"."""
+    return f"AREA-EVENTS-BACKEND {__version__}-{code_fingerprint(Path(__file__).resolve().parents[1])}"
 
 
 def body_limit(path):
@@ -193,7 +211,7 @@ class DiscoveryApi:
         if path.startswith("/v1/media/"):
             return self._media_route(method, path)
         if method == "GET" and path == "/v1/discovery/status":
-            return 200, {"schema": CONTROL_SCHEMA, "status": to_jsonable(self._control.get_status())}
+            return 200, {"schema": CONTROL_SCHEMA, "status": {**to_jsonable(self._control.get_status()), "build": backend_build()}}
         if method == "GET" and path == "/v1/areas":
             return 200, {"schema": CONTROL_SCHEMA, "areas": to_jsonable(self._control.list_areas())}
         if method == "GET" and path == "/v1/producer-types":

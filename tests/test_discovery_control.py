@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from tests.db import database
@@ -400,6 +401,39 @@ class Api(ApiFixture):
             status, payload = self.call(method, path, token=READ_TOKEN, body=body)
             self.assertEqual((status, payload["error"]["code"]), (403, "forbidden"), path)
         self.assertEqual(self.count("areas"), 0)
+
+    def test_the_status_reports_the_build_of_the_installed_backend_code(self):
+        import area_events
+        from area_events.api import http_api
+        status, payload = self.call("GET", "/v1/discovery/status", token=READ_TOKEN)
+        self.assertEqual(status, 200)
+        build = payload["status"]["build"]
+        package = Path(area_events.__file__).resolve().parent
+        self.assertEqual(build, f"AREA-EVENTS-BACKEND {area_events.__version__}-{http_api.code_fingerprint(package)}", "version and fingerprint of the running package")
+        self.assertRegex(build, r"^AREA-EVENTS-BACKEND \d+(\.\d+)*-[0-9a-f]{8}$", "no path, schema number or anything else")
+        self.assertIn("areas", payload["status"], "the existing status fields are unchanged")
+        self.assertIn("settings", payload["status"])
+        misses = http_api.backend_build.cache_info().misses
+        for _ in range(3):
+            self.assertEqual(self.call("GET", "/v1/discovery/status", token=READ_TOKEN)[1]["status"]["build"], build)
+        self.assertEqual(http_api.backend_build.cache_info().misses, misses, "computed once per process, not per request")
+
+    def test_the_code_fingerprint_is_deterministic_and_follows_the_code(self):
+        from area_events.api.http_api import code_fingerprint
+        with tempfile.TemporaryDirectory() as root:
+            package = Path(root)
+            (package / "sub").mkdir()
+            (package / "a.py").write_bytes(b"x = 1\n")
+            (package / "sub" / "b.py").write_bytes(b"y = 2\n")
+            first = code_fingerprint(package)
+            self.assertRegex(first, r"^[0-9a-f]{8}$")
+            self.assertEqual(code_fingerprint(package), first)
+            (package / "__pycache__").mkdir()
+            (package / "__pycache__" / "a.cpython-313.py").write_bytes(b"cache")
+            (package / "notes.txt").write_bytes(b"not code")
+            self.assertEqual(code_fingerprint(package), first, "compiled caches and non-code files are not the installed code")
+            (package / "sub" / "b.py").write_bytes(b"y = 3\n")
+            self.assertNotEqual(code_fingerprint(package), first, "a changed module changes the build")
 
     def test_repeated_failures_are_rate_limited_and_the_token_is_never_echoed(self):
         for _ in range(5):
