@@ -755,6 +755,131 @@ def _labelled_facts(lines):
     return venue, address, description
 
 
+# A street address as a contact block writes it: house number and street, then "City, ST 12345" ("15602 Olde Highway 80, Flinn Springs, CA 92021").
+_CONTACT_ADDRESS = re.compile(r"(?P<street>\d{1,6}\s+[A-Za-z0-9][A-Za-z0-9 .'’#-]{1,60}?),\s*(?P<city>[A-Za-z][A-Za-z .'’-]{1,40}),\s*(?P<state>[A-Z]{2})\s+(?P<zip>\d{5})(?:-\d{4})?\b")
+_PREMISES = r"(?:lawn|grounds|gardens?|barn|property|premises|farm|ranch|store|shop|patio|courtyard|field|orchard|vineyard|winery|venue|location)"
+_OUR_PREMISES = re.compile(rf"\b(?:at|on|in|to|around|through)\s+our\s+(?!(?:other|sister|partner|second|new)\b)(?:[a-z]+\s+){{0,2}}{_PREMISES}\b", re.I)
+
+
+class _ContactBlocks(HTMLParser):
+    """The lines of a page's contact blocks: the text of its <footer> and <address> elements."""
+    LINES = frozenset(("br", "p", "li", "div", "tr", "address", "footer", "h1", "h2", "h3", "h4", "h5", "h6"))
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.blocks, self._open, self._skip = [], [], 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style", "noscript", "template", "svg"):
+            self._skip += 1
+        elif tag in ("footer", "address"):
+            self._open.append([tag, []])
+        if tag in self.LINES:
+            for block in self._open:
+                block[1].append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style", "noscript", "template", "svg"):
+            self._skip = max(0, self._skip - 1)
+        elif tag in ("footer", "address") and self._open and self._open[-1][0] == tag:
+            self.blocks.append(_visible_lines("".join(self._open.pop()[1])))
+        if tag in self.LINES:
+            for block in self._open:
+                block[1].append("\n")
+
+    def handle_data(self, data):
+        if not self._skip:
+            for block in self._open:
+                block[1].append(data)
+
+
+def _address_key(address):
+    match = _CONTACT_ADDRESS.search(address or "")
+    return (_title_key(match.group("street")), match.group("zip")) if match else None
+
+
+def _page_contact(html, page_url):
+    """The page's own contact address and the name the website goes by, or (None, None) when the page does not establish exactly one of each.
+    The address is the one distinct street address its <footer> and <address> elements write (a line, or a street line and the city line after it). The name is a run of words
+    on the page (its <title> or contact blocks) that spells the website's own domain ("Summers Past Farms" on summerspastfarms.com)."""
+    parser = _ContactBlocks()
+    try:
+        parser.feed(html[:1_500_000])
+        parser.close()
+    except (ValueError, TypeError):
+        return None, None
+    found = {}
+    for lines in parser.blocks:
+        lines = [_ADDRESS_LABEL.sub("", line) for line in lines]
+        for index, line in enumerate(lines):
+            for text in (line, line + ", " + lines[index + 1] if index + 1 < len(lines) else ""):
+                match = _CONTACT_ADDRESS.match(text.strip())
+                if match:
+                    found.setdefault(_address_key(match.group(0)), _clean(match.group(0), 250))
+                    break
+    if len(found) != 1:
+        return None, None
+    title = re.search(r"<title[^>]*>(.*?)</title>", html[:200_000], re.I | re.S)
+    texts = [unescape(title.group(1)) if title else ""] + [" ".join(lines) for lines in parser.blocks]
+    parts = (urlsplit(page_url).hostname or "").split(".")
+    domain = re.sub(r"[^a-z0-9]", "", parts[-2] if len(parts) >= 2 else "")
+    for text in texts if len(domain) >= 3 else ():
+        words = re.findall(r"[A-Za-z0-9]+(?:['’&][A-Za-z0-9]+)*", text)
+        for start in range(len(words)):
+            spelled = ""
+            for end in range(start, min(start + 6, len(words))):
+                spelled += re.sub(r"[^a-z0-9]", "", words[end].casefold())
+                if spelled == domain:
+                    return next(iter(found.values())), " ".join(words[start:end + 1])
+                if not domain.startswith(spelled):
+                    break
+    return None, None
+
+
+def _on_site(text, name):
+    """Does an event's own text place it at the website's own establishment? Only by an explicit phrase: "at <name>" or "the gardens of <name>", "at the <kind>" where the
+    kind is the last word of the name ("at the Farm" for Summers Past Farms), or the owner's own premises ("on our spacious lawn area"). The quoted phrase, or None."""
+    words = r"\s+".join(re.escape(word) for word in name.split())
+    kind = re.escape(re.sub(r"s$", "", name.split()[-1], flags=re.I))
+    for pattern in (rf"\b(?:at|visit)\s+(?:the\s+)?{words}\b", rf"\b{_PREMISES}\s+(?:of|at)\s+{words}\b",
+                    rf"\b(?:at|to|on|in|around|through|visit)\s+(?:the|our)\s+{kind}s?\b"):
+        match = re.search(pattern, text, re.I)
+        if match:
+            return match.group(0)
+    match = _OUR_PREMISES.search(text)
+    return match.group(0) if match else None
+
+
+def _inherit_contact_address(events, texts, html, page_url, stated_elsewhere=(), described_elsewhere=()):
+    """Give the page's contact address to the events read from THIS page that state no place of their own and whose own text places them at the website's establishment.
+    Nothing is inherited when the page has no single contact address or name, or when any event on it states a different place (a labelled location or address, a venue, or
+    a street address in its text): such a page cannot establish one location. Only the address is inherited, never a venue name, and the evidence says where it came from.
+    `described_elsewhere`: ids of events that have their own event page; they inherit nothing here (their places still count as conflicts)."""
+    address, name = _page_contact(html, page_url)
+    if not address:
+        return events, 0
+    home = _address_key(address)
+    lines = [line for text in texts.values() for line in text.split("\n")]
+    elsewhere = [m.group(1) for m in (_LOCATION.match(line) for line in lines) if m]
+    elsewhere += [e.venue for e in list(events) + list(stated_elsewhere) if e.venue] + [e.address for e in list(events) + list(stated_elsewhere) if e.address]
+    elsewhere += [m.group(0) for text in texts.values() for m in _CONTACT_ADDRESS.finditer(text)]
+    if any(_address_key(place) != home and _title_key(place) != _title_key(name) for place in elsewhere if place):
+        return events, 0
+    result, inherited = [], 0
+    for e in events:
+        phrase = None if (e.venue or e.address or e.local_id in described_elsewhere) else _on_site(texts.get(e.local_id, ""), name)
+        if not phrase:
+            result.append(e)
+            continue
+        evidence = tuple(e.verification.evidence) + (
+            f"Address from the contact block (footer/address) of {page_url}: {address}",
+            f"The event's own text places it at {name}: {phrase!r}",
+            "The event states no venue or address of its own")
+        result.append(replace(e, address=address, verification=stated(evidence, False, e.ends_at, e.venue, address, e.description, e.image_url)))
+        inherited += 1
+    return result, inherited
+
+
 def _text_event_group(heading, lines, page_title, page_url, source_name, retrieved_at, zone):
     """Return only candidates with independently visible heading + explicit date + time. Every occurrence takes the time stated WITH its own date."""
     candidate_title = re.sub(r"^\s*20\d{2}\s+", "", heading or "").strip(" :–—")
@@ -927,8 +1052,9 @@ def _title_key(title):
     return re.sub(r"[^a-z0-9]+", " ", title.casefold()).strip()
 
 
-def _plain_text_events(html, page_url, source_name, retrieved_at, zone, links=None):
-    """Events read from visible text. When `links` (a dict) is given it is filled with {local_id: href} for events read from a listing card that links to a page."""
+def _plain_text_events(html, page_url, source_name, retrieved_at, zone, links=None, structured=()):
+    """Events read from visible text. When `links` (a dict) is given it is filled with {local_id: href} for events read from a listing card that links to a page.
+    `structured`: the events this page also states in structured data (their places count when deciding whether the page establishes one location)."""
     parser = _VisibleEventText()
     try:
         parser.feed(html[:1_500_000])
@@ -936,11 +1062,14 @@ def _plain_text_events(html, page_url, source_name, retrieved_at, zone, links=No
     except (ValueError, TypeError):
         return [], 0
     events, missing = [], 0
+    texts = {}   # local_id -> the event's own text (its heading section or listing card)
     for heading, lines in groups[:100]:
         extracted, skipped = _text_event_group(heading, lines, page_title,
                                                page_url, source_name, retrieved_at, zone)
         events.extend(extracted)
         missing += skipped
+        for e in extracted:
+            texts.setdefault(e.local_id, "\n".join([heading] + lines[:35]))
     # Listing cards often have no headings, e.g. <li>Craft Fair — Nov 14 at 9am</li>.
     card_links = {}
     for card, card_heading, card_href in zip(cards[:120], parser.card_headings[:120], parser.card_hrefs[:120]):
@@ -961,6 +1090,8 @@ def _plain_text_events(html, page_url, source_name, retrieved_at, zone, links=No
                                                page_url, source_name, retrieved_at, zone)
         events.extend(extracted)
         missing += skipped
+        for e in extracted:
+            texts.setdefault(e.local_id, "\n".join(card))
         if card_href:
             for e in extracted:
                 card_links.setdefault((_title_key(e.title), e.starts_at), card_href)
@@ -972,7 +1103,10 @@ def _plain_text_events(html, page_url, source_name, retrieved_at, zone, links=No
         for key, e in distinct.items():
             if key in card_links:
                 links[e.local_id] = card_links[key]
-    return list(distinct.values())[:MAX_EVENTS], missing
+    # A listing card that links to its own event page is described by that page (and by that page's contact block), not by the listing's.
+    own_page = {e.local_id for key, e in distinct.items() if key in card_links and _page_key(urljoin(page_url, card_links[key])) != _page_key(page_url)}
+    found, _ = _inherit_contact_address(list(distinct.values())[:MAX_EVENTS], texts, html, page_url, structured, own_page)
+    return found, missing
 
 
 
@@ -1248,7 +1382,7 @@ class SourcesProducer:
                         rejected += discarded
                     discovered = parser.links
                     visible, from_text = _plain_text_events(page, page_url, name, retrieved_at,
-                                                            cfg.get("timezone"), page_links)
+                                                            cfg.get("timezone"), page_links, events)
                     # Favor exact structured source claims when the same event is also visible as text.
                     existing = {(_title_key(e.title), _instant(e.starts_at) or e.starts_at) for e in events}
                     text_events = [e for e in visible if (_title_key(e.title), _instant(e.starts_at) or e.starts_at) not in existing]
