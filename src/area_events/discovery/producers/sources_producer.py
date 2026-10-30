@@ -430,6 +430,12 @@ _WEEKDAY = re.compile(r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|S
 _FIELD_LABEL = re.compile(
     r"\s+(?:dates?|when)(?:\s*(?:&|and)\s*times?)?\s*:\s*(?=$|(?:mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?|"
     r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\d).*$", re.I)
+# A heading that names a field of the event above it ("Dates and Times", "Location", "Cost", "Description"): its section is that event's field, never an event of its own.
+_FIELD_HEADING = re.compile(
+    r"^(?:event\s+)?(?:dates?|times?|dates?\s*(?:&|and)\s*times?|when|where|location|venue|address|cost|costs|price|prices|pricing|admission|tickets?|fees?|"
+    r"description|details|event details)\s*:?$", re.I)
+# A date a card writes day first and without a year ("Fri 30 Oct").
+_DAY_MONTH = re.compile(rf"\b(?P<day>\d{{1,2}})(?:st|nd|rd|th)?\s+(?P<month>{_MONTH})\b\.?(?!\s*\d)", re.I)
 _WEEKDAY_WORDS = frozenset(("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
                             "mon", "tue", "tues", "wed", "weds", "thu", "thur", "thurs", "fri", "sat", "sun"))
 _SCHEDULE_WORDS = _WEEKDAY_WORDS | frozenset(_MONTH_NAMES) | frozenset((
@@ -468,6 +474,8 @@ class _VisibleEventText(HTMLParser):
         self.first_heading = ""
         self._section_tag = None   # the heading that opened the current section
         self._flushed_tag = None   # the heading that opened the last stored section
+        self.link_cards = []       # (href, lines) of links that wrap a whole card (<a class="card"><div>title</div><div>date</div></a>)
+        self._link_cards = []      # open ones: [href, parts, wraps blocks]
 
     def _section_flush(self):
         value = _visible_lines("".join(self._section))
@@ -486,11 +494,24 @@ class _VisibleEventText(HTMLParser):
         return (bool(title) and not _schedule_only(title) and int(tag[1]) >= int(self._flushed_tag[1])
                 and _title_key(" ".join(lines)) == _title_key(title))
 
+    def _field_of_previous(self, tag):
+        """Is a field-label heading (<h2>Dates and Times</h2>, <h2>Location</h2>) a field of the event titled by the heading before it? Only when that heading is a genuine title
+        (not itself a label, a date or a generic word) of the same or a higher rank."""
+        if not self.sections or not self._flushed_tag:
+            return False
+        title = self.sections[-1][0]
+        return (bool(title) and not _schedule_only(title) and not _FIELD_HEADING.fullmatch(title) and not _UNHELPFUL_HEADINGS.fullmatch(title)
+                and not _JUNK_TITLES.fullmatch(title) and int(tag[1]) >= int(self._flushed_tag[1]))
+
     def handle_starttag(self, tag, attrs):
         if tag in self.SKIP:
             self._ignored.append(tag)
         if self._ignored:
             return
+        if tag in self.HEADINGS or tag in self.BLOCKS:
+            for card in self._link_cards:
+                card[1].append("\n")
+                card[2] = True
         if tag in self.HEADINGS:
             self._section_flush()
             self._heading_tag = self._section_tag = tag
@@ -502,6 +523,7 @@ class _VisibleEventText(HTMLParser):
             self._cards.append([tag, [], "", []])
         if tag == "a":
             self._anchors.append([dict(attrs).get("href") or "", []])
+            self._link_cards.append([dict(attrs).get("href") or "", [], False])
         if tag in ("td", "th") and self._cards and self._cards[-1][0] == "tr":
             self._cards[-1][1].append(" — ")
 
@@ -515,27 +537,43 @@ class _VisibleEventText(HTMLParser):
             anchor[1].append(data)
         for card in self._cards:
             card[1].append(data)
+        for card in self._link_cards:
+            card[1].append(data)
 
     def handle_endtag(self, tag):
         if self._ignored:
             if tag == self._ignored[-1]:
                 self._ignored.pop()
             return
+        if tag in self.HEADINGS or tag in self.BLOCKS:
+            for card in self._link_cards:
+                card[1].append("\n")
         if tag == "a" and self._anchors:
             href, text = self._anchors.pop()
             for card in self._cards:
                 card[3].append((href, " ".join(text)))
+        if tag == "a" and self._link_cards:
+            href, parts, wraps_blocks = self._link_cards.pop()
+            if wraps_blocks and href:
+                self.link_cards.append((href, _visible_lines("".join(parts))))
         if tag in self.HEADINGS and tag == self._heading_tag:
             self._heading = _clean(self._heading, 160) or ""
+            label = False
             if self._heading and _schedule_only(self._heading) and self._dates_previous_heading(tag):
                 # The date belongs to the title above it: it stays in that title's section as a line, and the title stays the heading.
                 title, lines = self.sections.pop()
                 self._heading, self._section_tag = title, self._flushed_tag
                 self._section[:0] = ["\n".join(lines), "\n"]
+            elif self._heading and _FIELD_HEADING.fullmatch(self._heading) and self._field_of_previous(tag):
+                # A field of the event above ("Dates and Times", "Location"): its text stays in that event's section under a labelled line ("Location:").
+                title, lines = self.sections.pop()
+                self._section = ["\n".join(lines), "\n", self._heading.rstrip(" :") + ":", "\n"]
+                self._heading, self._section_tag, label = title, self._flushed_tag, True
             if self._heading and not self.first_heading:
                 self.first_heading = self._heading
-            for card in self._cards:
-                card[2] = card[2] or self._heading
+            if not label:
+                for card in self._cards:
+                    card[2] = card[2] or self._heading
             self._heading_tag = None
             self._section.append("\n")
         elif tag in self.BLOCKS:
@@ -721,15 +759,28 @@ def _line_groups(line, title):
     return [(dates, clock) for dates, clock in groups if dates]
 
 
+def _has_date(text):
+    return bool(_TEXT_DATE.search(text) or _TEXT_DATES_ISO.search(text) or _TEXT_DATES_NUMERIC.search(text))
+
+
+def _place_name(text):
+    """Can a line on its own name a place: short, no field label, no date or time, not a street address?"""
+    return (0 < len(text) <= 120 and len(text.split()) <= 12 and not _FIELD_LINE.match(text) and not _has_date(text) and not _CLOCK.search(text)
+            and not re.match(r"\d{1,6}\s+[A-Za-z]", text))
+
+
 def _labelled_facts(lines):
     """The place and description a page states in labelled fields (Location/Venue/Where, Address, Description): (venue, address, description) with None for what it omits."""
     venue = address = description = None
     for index, line in enumerate(lines[:35]):
         match = _LOCATION.match(line)
         if match:
-            venue = _clean(match.group(1), 160)
-            # Only use a nearby explicit street/city line, never a footer address.
-            following = lines[index+1:index+3]
+            value, following = match.group(1), lines[index+1:index+3]
+            if not value and following and _place_name(following[0]):   # "Location:" on its own line (a heading made a label): the place is the next line
+                value, following = following[0], lines[index+2:index+4]
+            venue = _clean(value, 160)
+            # Only use a nearby explicit street/city line, never a footer address, and stop at the next field or date.
+            following = following[:next((i for i, v in enumerate(following) if _FIELD_LINE.match(v) or _has_date(v)), len(following))]
             address_lines = [_ADDRESS_LABEL.sub("", v) for v in following if re.search(r"\b\d{1,5}\s+[A-Za-z]|\b[A-Za-z][A-Za-z ]+,\s*[A-Z]{2}\b", v)]
             address = _clean(", ".join(address_lines), 250) if address_lines else None
             break
@@ -885,10 +936,11 @@ def _text_event_group(heading, lines, page_title, page_url, source_name, retriev
     candidate_title = re.sub(r"^\s*20\d{2}\s+", "", heading or "").strip(" :–—")
     if candidate_title.isupper() and len(candidate_title) > 6:
         candidate_title = candidate_title.title()
-    if not candidate_title or _UNHELPFUL_HEADINGS.fullmatch(candidate_title):
+    if not candidate_title or _UNHELPFUL_HEADINGS.fullmatch(candidate_title) or _FIELD_HEADING.fullmatch(candidate_title):
         candidate_title = page_title
-    # A date or time is never a title: with no descriptive title there is no candidate, and none is invented.
-    if not candidate_title or _UNHELPFUL_HEADINGS.fullmatch(candidate_title) or _JUNK_TITLES.fullmatch(candidate_title) or _schedule_only(candidate_title):
+    # A date, a time or a field label is never a title: with no descriptive title there is no candidate, and none is invented.
+    if (not candidate_title or _UNHELPFUL_HEADINGS.fullmatch(candidate_title) or _JUNK_TITLES.fullmatch(candidate_title) or _schedule_only(candidate_title)
+            or _FIELD_HEADING.fullmatch(candidate_title)):
         return [], 0
     raw_date_lines = [(i, line) for i, line in enumerate(lines[:35])
                       if _TEXT_DATE.search(line) or _TEXT_DATES_ISO.search(line)
@@ -1020,6 +1072,7 @@ def _stabilize_ids(candidates, previous):
     nothing now claims its id, the corrected occurrence keeps that earlier id, so the stored candidate is updated instead of a second one being created.
     An occurrence whose title was corrected from a date line (an earlier extractor titled it "Saturday-Sunday December 5 & 6, 2026") likewise keeps the id of exactly ONE earlier
     record of the same listing at the same instant whose title was schedule-only and states this occurrence's day, when no other new occurrence of that listing has that instant.
+    One corrected from a field label ("Dates and Times") keeps the id of exactly ONE earlier record of the same event page at the same instant titled by such a label.
     Returns how many ids were kept and how many ambiguous corrections could not be matched."""
     known = {old.local_id: old for old in previous}
     free = {old.local_id: old for old in previous if old.local_id not in candidates}
@@ -1037,6 +1090,11 @@ def _stabilize_ids(candidates, previous):
             options = [old for old in free.values() if same_listing(old) and _schedule_only(old.title) and _same_instant(old.starts_at, candidate.starts_at)
                        and day is not None and day.date() in _text_dates(old.title, "")]
             rivals = [other for lid, other in candidates.items() if lid not in known and same_listing(other) and _same_instant(other.starts_at, candidate.starts_at)]
+        if not options and not _FIELD_HEADING.fullmatch(candidate.title):
+            # an earlier extractor titled the occurrence by a field label of its page ("Dates and Times"): the same event page at the same instant identifies it
+            same_page = lambda other: same_listing(other) and bool(other.url) and _page_key(other.url) == _page_key(candidate.url or "")   # noqa: E731
+            options = [old for old in free.values() if same_page(old) and _FIELD_HEADING.fullmatch(old.title or "") and _same_instant(old.starts_at, candidate.starts_at)]
+            rivals = [other for lid, other in candidates.items() if lid not in known and same_page(other) and _same_instant(other.starts_at, candidate.starts_at)]
         if len(options) == 1 and len(rivals) == 1:
             old = options[0]
             del candidates[local_id]
@@ -1052,15 +1110,64 @@ def _title_key(title):
     return re.sub(r"[^a-z0-9]+", " ", title.casefold()).strip()
 
 
-def _plain_text_events(html, page_url, source_name, retrieved_at, zone, links=None, structured=()):
+def _card_occurrence(href, lines):
+    """What one linked listing card says that is not enough for an event on its own: its title (its first line), ONE date written without a year ("Fri 30 Oct"), the time stated
+    with it and, when one other short line is left, the place it names. None when the card states no such single date and time. Nothing is read from outside the card."""
+    if not lines or not href or _has_date(lines[0]) or _CLOCK.search(lines[0]) or _schedule_only(lines[0]) or _UNHELPFUL_HEADINGS.fullmatch(lines[0]) or _FIELD_HEADING.fullmatch(lines[0]):
+        return None
+    rest = lines[1:]
+    row = " ".join(rest)
+    if _YEAR.search(row) or _TEXT_DATES_ISO.search(row) or _TEXT_DATES_NUMERIC.search(row):
+        return None   # a card with a full date is read as an event by the card and section rules, not here
+    days = {(_MONTH_NAMES.get(m.group("month").rstrip(".").casefold()) or _MONTH_NAMES.get(m.group("month")[:3].casefold()), int(m.group("day")))
+            for pattern in (_TEXT_DATE, _DAY_MONTH) for m in pattern.finditer(row)}
+    start, end, clock_line = _text_clock(rest)
+    if len(days) != 1 or not start:
+        return None
+    month, day = next(iter(days))
+    others = [line for line in rest if line != clock_line and not _CLOCK.search(line)
+              and not all(word.isdigit() or word in _SCHEDULE_WORDS for word in re.findall(r"[a-z]+|\d+", line.casefold()))]
+    venue = others[0] if len(others) == 1 and _place_name(others[0]) else None
+    return {"href": href, "title": _clean(lines[0], 200), "month": month, "day": day, "start": start, "end": end, "clock": clock_line,
+            "date": " ".join(line for line in rest if line not in others and line != clock_line), "venue": venue}
+
+
+def _with_listing_card(event, occurrences, page_url):
+    """An event page's occurrence, with the evidence of the ONE listing card that links to this page and states the same title, day and time. The card gives no year: the event
+    page's own date stands. Agreement is recorded as corroboration; any disagreement is kept in the evidence and leaves the occurrence uncorroborated."""
+    start = _instant(event.starts_at)
+    if start is None or not occurrences:
+        return event
+    fits = [o for o in occurrences if (o["month"], o["day"]) == (start.month, start.day) and o["start"] == (start.hour, start.minute) and _related(o["title"], event.title)]
+    if len(fits) != 1:
+        return event
+    card = fits[0]
+    end = _instant(event.ends_at) if event.ends_at else None
+    disagreements = []
+    if card["end"] and end is not None and card["end"] != (end.hour, end.minute):
+        disagreements.append(f"end: the listing card says {card['clock']!r}, the event page {event.ends_at}")
+    if card["venue"] and event.venue and _title_key(card["venue"]) != _title_key(event.venue):
+        disagreements.append(f"venue: the listing card says {card['venue']!r}, the event page {event.venue!r}")
+    lines = ((f"Listing card on {', '.join(card['listings'])} links to {page_url}: {card['title']!r}, {card['date']}, {card['clock']}"
+              + (f", at {card['venue']}" if card["venue"] else "")),
+             "The listing card states no year; the date is the event page's") + tuple("Listing card and event page disagree on " + line for line in disagreements)
+    return replace(event, provenance=Provenance(event.provenance.source_name, event.provenance.listing_url, event.provenance.retrieved_at,
+                                                tuple(dict.fromkeys(tuple(event.provenance.found_on) + tuple(card["listings"])))),
+                   verification=stated(tuple(event.verification.evidence) + lines, not disagreements, event.ends_at, event.venue, event.address, event.description, event.image_url))
+
+
+def _plain_text_events(html, page_url, source_name, retrieved_at, zone, links=None, structured=(), undated=None):
     """Events read from visible text. When `links` (a dict) is given it is filled with {local_id: href} for events read from a listing card that links to a page.
-    `structured`: the events this page also states in structured data (their places count when deciding whether the page establishes one location)."""
+    `structured`: the events this page also states in structured data (their places count when deciding whether the page establishes one location).
+    `undated` (a list), when given, receives the linked listing cards that state a day and time but no year (`_card_occurrence`)."""
     parser = _VisibleEventText()
     try:
         parser.feed(html[:1_500_000])
         groups, cards, page_title = parser.finish()
     except (ValueError, TypeError):
         return [], 0
+    if undated is not None:
+        undated.extend(card for card in (_card_occurrence(href, lines) for href, lines in parser.link_cards[:200]) if card)
     events, missing = [], 0
     texts = {}   # local_id -> the event's own text (its heading section or listing card)
     for heading, lines in groups[:100]:
@@ -1253,6 +1360,7 @@ class SourcesProducer:
         linked_from = {}     # absolute event-page URL -> local_ids of the listing candidates whose card links to it
         page_targets = {}    # page -> the event pages its cards link to
         card_pages = set()   # event pages reached through a listing card
+        card_dates = {}      # event page (page key) -> {card identity: occurrence}: listing cards that link to it with a day and time but no year
         counts = {"followed": 0, "merged": 0, "failed": 0, "not_added": 0, "ignored": 0, "detail_only": 0, "facts_only": 0}
         warnings = SourcesProducer.configuration_warnings(cfg)
 
@@ -1282,6 +1390,8 @@ class SourcesProducer:
             """Add a page's events. An event the site already described on its listing is MERGED into that candidate instead of duplicating it; an event page speaks only for the
             occurrences whose cards linked to it. Returns how many of its events were used."""
             owners = [lid for lid in linked_from.get(page_url, ()) if lid in candidates]
+            yearless = list(card_dates.get(_page_key(page_url), {}).values())
+            page_events = [_with_listing_card(event, yearless, page_url) for event in page_events]
             used, claimed = 0, set()
             for event in page_events:
                 if event.local_id in candidates:
@@ -1381,8 +1491,18 @@ class SourcesProducer:
                         events.extend(extracted)
                         rejected += discarded
                     discovered = parser.links
+                    undated = []
                     visible, from_text = _plain_text_events(page, page_url, name, retrieved_at,
-                                                            cfg.get("timezone"), page_links, events)
+                                                            cfg.get("timezone"), page_links, events, undated)
+                    for card in undated:   # the same card on two listing pages (/events and /events/calendar) is one card, seen on both
+                        try:
+                            target = _url(urljoin(page_url, card["href"]))
+                        except ValueError:
+                            continue
+                        if urlsplit(target).hostname == urlsplit(page_url).hostname and _page_key(target) != _page_key(page_url):
+                            identity = (_title_key(card["title"]), card["month"], card["day"], card["start"], card["end"], _title_key(card["venue"] or ""))
+                            known = card_dates.setdefault(_page_key(target), {}).setdefault(identity, {**card, "listings": []})
+                            known["listings"] = list(dict.fromkeys(known["listings"] + [page_url]))
                     # Favor exact structured source claims when the same event is also visible as text.
                     existing = {(_title_key(e.title), _instant(e.starts_at) or e.starts_at) for e in events}
                     text_events = [e for e in visible if (_title_key(e.title), _instant(e.starts_at) or e.starts_at) not in existing]
