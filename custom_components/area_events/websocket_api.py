@@ -194,12 +194,15 @@ async def ws_area_update(hass, connection, msg):
     vol.Required("expected_revision"): REVISION,
     vol.Optional("mode"): vol.In(("automatic", "manual")),
     vol.Optional("intensity"): INTENSITY,
+    vol.Optional("serpapi_auto_pause"): bool,
+    vol.Optional("serpapi_pause_at"): vol.All(int, vol.Range(min=1, max=10000)),
 })
 @websocket_api.async_response
 async def ws_settings(hass, connection, msg):
-    """Discovery mode and intensity. A success means the service saved the setting, not that any crawl has finished."""
+    """Discovery mode and intensity, and the account-wide SerpApi usage policy. A success means the service saved the setting, not that any crawl has finished."""
     async def action(hub):
-        return await hub.set_settings(msg["expected_revision"], msg.get("mode"), msg.get("intensity"))
+        return await hub.set_settings(msg["expected_revision"], msg.get("mode"), msg.get("intensity"),
+                                      serpapi_auto_pause=msg.get("serpapi_auto_pause"), serpapi_pause_at=msg.get("serpapi_pause_at"))
     await _serve(hass, connection, msg, action)
 
 

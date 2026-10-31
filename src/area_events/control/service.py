@@ -22,6 +22,7 @@ from ..persistence.ports import ControlStorage
 MAX_SOURCES_PER_AREA = 20
 MAX_RADIUS = types.MappingProxyType({"mi": 250.0, "km": 400.0})
 SOURCE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,79}$")
+MAX_SERPAPI_PAUSE_AT = 10000   # the free-tier hard stop applies whatever this is set to
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,8 @@ class SettingsRequest:
     expected_revision: int
     mode: Optional[str] = None
     intensity: Optional[str] = None
+    serpapi_auto_pause: Optional[bool] = None     # the account-wide SerpApi usage policy: pause scheduled searches at serpapi_pause_at searches
+    serpapi_pause_at: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -252,7 +255,12 @@ class LocalDiscoveryControl:
         expected = _revision(request.expected_revision)
         mode = None if request.mode is None else _choice(request.mode, "mode", MODES)
         intensity = None if request.intensity is None else _choice(request.intensity, "intensity", INTENSITIES)
-        return self._storage.set_settings(expected, mode, intensity)
+        if request.serpapi_auto_pause is not None and not isinstance(request.serpapi_auto_pause, bool):
+            raise ValidationFailed("serpapi_auto_pause must be true or false")
+        pause_at = request.serpapi_pause_at
+        if pause_at is not None and (isinstance(pause_at, bool) or not isinstance(pause_at, int) or not 1 <= pause_at <= MAX_SERPAPI_PAUSE_AT):
+            raise ValidationFailed(f"serpapi_pause_at must be a whole number of searches from 1 to {MAX_SERPAPI_PAUSE_AT}")
+        return self._storage.set_settings(expected, mode, intensity, request.serpapi_auto_pause, pause_at)
 
     def _source_spec(self, source_key, adapter, name, interval_minutes, options):
         if not isinstance(adapter, str) or adapter not in self._adapters:

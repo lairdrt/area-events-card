@@ -67,10 +67,13 @@ class SettingsRepository:
     def all(self, connection) -> SettingsRecord:
         values = {r[0]: (r[1], r[2]) for r in connection.execute("SELECT key, value, updated_at FROM settings")}
         return SettingsRecord(values["mode"][0], values["intensity"][0], values["paused"][0] == "1", int(values["revision"][0]),
-                              max(updated for _, updated in values.values()))
+                              max(updated for _, updated in values.values()),
+                              values.get("serpapi_auto_pause", ("1",))[0] == "1", int(values.get("serpapi_pause_at", ("200",))[0]))
 
     def set(self, tx, key, value, now):
-        tx.execute("UPDATE settings SET value=?, updated_at=? WHERE key=?", (str(value), now, key))
+        """Set one setting; a key that a later version introduced is added the first time it is set."""
+        tx.execute("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                   (key, str(value), now))
 
     def bump(self, tx, now):
         tx.execute("UPDATE settings SET value=CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at=? WHERE key='revision'", (now,))

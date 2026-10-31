@@ -20,6 +20,7 @@ repeats the key is refused instead of returned.
 """
 import http.client
 import ipaddress
+import json
 import re
 import socket
 import ssl
@@ -227,6 +228,29 @@ def _texty(content_type):
     return not kind or kind.startswith("text/") or any(word in kind for word in ("json", "xml", "calendar", "javascript"))
 
 
+def _field_names(names):
+    """`drop_fields`, checked: a list or tuple of non-empty text names (empty: nothing is dropped)."""
+    if isinstance(names, (str, bytes)) or not isinstance(names, (list, tuple, frozenset, set)) or not all(isinstance(n, str) and n for n in names):
+        raise BlockedError("fields to drop must be a list of names")
+    return frozenset(names)
+
+
+def _without_fields(body, names):
+    """A JSON body without the named object members, at any depth. A body that is not JSON is returned as it came (so it is judged as it is)."""
+    try:
+        document = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return body
+
+    def strip(value):
+        if isinstance(value, dict):
+            return {key: strip(item) for key, item in value.items() if key not in names}
+        if isinstance(value, list):
+            return [strip(item) for item in value]
+        return value
+    return json.dumps(strip(document), ensure_ascii=False).encode("utf-8")
+
+
 class SafeFetcher:
     """`get(url)` returns text; `fetch(url)` also returns the final address and content type."""
 
@@ -234,22 +258,26 @@ class SafeFetcher:
         self.interval, self.resolver, self.send, self.clock, self.sleep = interval, resolver, send, clock, sleep
         self.state = state if state is not None else HostPolicy()
 
-    def get(self, url, check_robots=True, secret_query=None):
-        return self.fetch(url, check_robots, secret_query=secret_query).text
+    def get(self, url, check_robots=True, secret_query=None, drop_fields=()):
+        return self.fetch(url, check_robots, secret_query=secret_query, drop_fields=drop_fields).text
 
-    def fetch(self, url, check_robots=True, binary=None, timeout=TIMEOUT, secret_query=None):
+    def fetch(self, url, check_robots=True, binary=None, timeout=TIMEOUT, secret_query=None, drop_fields=()):
         """The response for `url`. `binary` is a tuple of accepted content types (for example ("image/jpeg",)) to fetch a
         non-text body, which is then in `response.body`; without it only text-like documents are accepted. `secret_query` holds
-        credential parameters added only to the request sent (see SecretQuery); the response and every error name `url` alone."""
+        credential parameters added only to the request sent (see SecretQuery); the response and every error name `url` alone.
+        `drop_fields` names JSON object members (at any depth) taken out of a JSON response as soon as it arrives, before anything
+        else sees it: an API that reports a request's own key back in a known field is read without that field, and the key anywhere
+        else is still refused as an echo."""
         secret = SecretQuery(url, secret_query) if secret_query is not None else None
+        drop = _field_names(drop_fields)
         host = urlsplit(url).hostname
         if host and self.state.backing_off(host, self.clock()):
             raise BlockedError(f"{host} asked us to slow down; waiting before asking again")
         if secret is None:
-            response = self._request(url, check_robots, timeout)
+            response = self._request(url, check_robots, timeout, drop=drop)
         else:
             try:
-                response = self._request(url, check_robots, timeout, secret)
+                response = self._request(url, check_robots, timeout, secret, drop)
             except FetchError as error:   # the message may quote what the connection was asked for: only its scrubbed text goes on
                 raise type(error)(secret.scrub(str(error))) from None
             except Exception:
@@ -293,7 +321,7 @@ class SafeFetcher:
         if slot > now:
             self.sleep(slot - now)
 
-    def _request(self, url, check_robots, timeout=TIMEOUT, secret=None):
+    def _request(self, url, check_robots, timeout=TIMEOUT, secret=None, drop=frozenset()):
         current = url
         for _ in range(MAX_REDIRECTS + 1):
             parts, port = self._check(current)
@@ -310,6 +338,8 @@ class SafeFetcher:
             headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,application/xml,text/calendar,application/json;q=0.9,*/*;q=0.5",
                        "Accept-Encoding": "gzip, identity"}
             status, received, body = self.send(parts.scheme, parts.hostname, port, ips[0], target, headers, timeout, MAX_BYTES)
+            if drop and status not in REDIRECTS:
+                body = _without_fields(body, drop)
             if secret is not None:
                 if status in REDIRECTS:   # never carried to another address
                     raise BlockedError(f"{parts.hostname}: an authenticated request was redirected (HTTP {status}); the redirect is not followed")
