@@ -11,7 +11,12 @@
   compressed bodies are inflated with a limit, and only text-like documents are accepted.
 
 A site that answers 401, 403 or 429 is reported as blocked and never retried with other tricks: there is no
-authentication or CAPTCHA handling, and no JavaScript is run anywhere in this program.
+login or CAPTCHA handling, and no JavaScript is run anywhere in this program.
+
+An API that takes its key as a query parameter is asked with `secret_query={"api_key": key}` beside the public address (see
+SecretQuery). The key is added only to the request target sent to the server: every address this module returns, records or
+quotes in an error is the public one, the request is refused unless it is https, a redirect is not followed, and a response that
+repeats the key is refused instead of returned.
 """
 import http.client
 import ipaddress
@@ -21,7 +26,8 @@ import threading
 import time
 import urllib.robotparser
 import zlib
-from urllib.parse import urljoin, urlsplit
+from collections.abc import Mapping
+from urllib.parse import parse_qsl, quote, quote_plus, urlencode, urljoin, urlsplit
 
 USER_AGENT = "area-events-card-poc/0.1 (personal Home Assistant project; +https://github.com/lairdrt/area-events-card)"
 
@@ -41,6 +47,48 @@ REDIRECTS = (301, 302, 303, 307, 308)
 
 class BlockedError(FetchError):
     """The site (or robots.txt, or a safety rule) refuses this request."""
+
+
+class SecretQuery:
+    """Query parameters that carry a credential, kept apart from the public address they are sent with.
+
+    Checked on creation: a non-empty mapping of non-empty text names to non-empty text values, for an https address whose own query
+    has none of those names (a name in both would leave which one the server reads to chance). `query` is the standard URL encoding
+    (application/x-www-form-urlencoded) that is appended to the request target. Error messages name the rule, never a value."""
+
+    def __init__(self, url, secret_query):
+        if not isinstance(secret_query, Mapping) or not secret_query:
+            raise BlockedError("secret query parameters must be a non-empty mapping of names to values")
+        pairs = []
+        for name, value in secret_query.items():
+            if not isinstance(name, str) or not isinstance(value, str) or not name or not value:
+                raise BlockedError("secret query parameter names and values must be non-empty text")
+            pairs.append((name, value))
+        parts = urlsplit(url)
+        if parts.scheme != "https":
+            raise BlockedError("a request carrying credentials is only sent over https")
+        clash = sorted({name for name, _ in parse_qsl(parts.query, keep_blank_values=True)} & {name for name, _ in pairs})
+        if clash:
+            raise BlockedError(f"the address already has the query parameter {clash[0]!r} that a credential would set")
+        self.query = urlencode(pairs)
+        # every spelling of a value that could come back: as given, and URL-encoded either way
+        self._forms = sorted({form for _, value in pairs for form in (value, quote_plus(value), quote(value, safe=""))}, key=len, reverse=True)
+
+    def scrub(self, text):
+        """`text` with every spelling of every value replaced."""
+        for form in self._forms:
+            text = text.replace(form, "[credential]")
+        return text
+
+    def echoed(self, *data):
+        """Does any of these texts or byte strings contain a value (in any spelling, ignoring case)?"""
+        for item in data:
+            if not item:
+                continue
+            haystack = (item.decode("utf-8", errors="replace") if isinstance(item, (bytes, bytearray)) else str(item)).lower()
+            if any(form.lower() in haystack for form in self._forms):
+                return True
+        return False
 
 
 class Response:
@@ -180,16 +228,26 @@ class SafeFetcher:
         self.interval, self.resolver, self.send, self.clock, self.sleep = interval, resolver, send, clock, sleep
         self.state = state if state is not None else HostPolicy()
 
-    def get(self, url, check_robots=True):
-        return self.fetch(url, check_robots).text
+    def get(self, url, check_robots=True, secret_query=None):
+        return self.fetch(url, check_robots, secret_query=secret_query).text
 
-    def fetch(self, url, check_robots=True, binary=None, timeout=TIMEOUT):
+    def fetch(self, url, check_robots=True, binary=None, timeout=TIMEOUT, secret_query=None):
         """The response for `url`. `binary` is a tuple of accepted content types (for example ("image/jpeg",)) to fetch a
-        non-text body, which is then in `response.body`; without it only text-like documents are accepted."""
+        non-text body, which is then in `response.body`; without it only text-like documents are accepted. `secret_query` holds
+        credential parameters added only to the request sent (see SecretQuery); the response and every error name `url` alone."""
+        secret = SecretQuery(url, secret_query) if secret_query is not None else None
         host = urlsplit(url).hostname
         if host and self.state.backing_off(host, self.clock()):
             raise BlockedError(f"{host} asked us to slow down; waiting before asking again")
-        response = self._request(url, check_robots, timeout)
+        if secret is None:
+            response = self._request(url, check_robots, timeout)
+        else:
+            try:
+                response = self._request(url, check_robots, timeout, secret)
+            except FetchError as error:   # the message may quote what the connection was asked for: only its scrubbed text goes on
+                raise type(error)(secret.scrub(str(error))) from None
+            except Exception:
+                raise FetchError(f"{host}: the authenticated request failed") from None
         host = urlsplit(response.url).hostname
         if response.status in (429, 503):
             self.state.refused(host, self.clock(), response.headers.get("Retry-After"))
@@ -229,21 +287,28 @@ class SafeFetcher:
         if slot > now:
             self.sleep(slot - now)
 
-    def _request(self, url, check_robots, timeout=TIMEOUT):
+    def _request(self, url, check_robots, timeout=TIMEOUT, secret=None):
         current = url
         for _ in range(MAX_REDIRECTS + 1):
             parts, port = self._check(current)
             ips = public_addresses(parts.hostname, port, self.resolver)
             delay = 0
-            if check_robots:
+            if check_robots:   # robots.txt is read, and judged, for the public address
                 allowed, delay = self._robots(parts, port, ips[0])
                 if not allowed:
                     raise BlockedError(f"robots.txt of {parts.hostname} does not allow this page")
             self._pace(parts.hostname, delay)
             target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+            if secret is not None:   # the only place the credential joins the address: the request line itself
+                target += ("&" if parts.query else "?") + secret.query
             headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,application/xml,text/calendar,application/json;q=0.9,*/*;q=0.5",
                        "Accept-Encoding": "gzip, identity"}
             status, received, body = self.send(parts.scheme, parts.hostname, port, ips[0], target, headers, timeout, MAX_BYTES)
+            if secret is not None:
+                if status in REDIRECTS:   # never carried to another address
+                    raise BlockedError(f"{parts.hostname}: an authenticated request was redirected (HTTP {status}); the redirect is not followed")
+                if secret.echoed(body, *(str(value) for value in received.values())):
+                    raise BlockedError(f"{parts.hostname}: the response repeated the request's credential; it is not kept")
             if status in REDIRECTS:
                 location = received.get("Location")
                 if not location:

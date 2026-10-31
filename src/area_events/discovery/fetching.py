@@ -7,8 +7,9 @@ page the adapter read. One instance per job run; it holds that run's bodies in m
 import time
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import urlsplit
 
-from .safe import BlockedError, FetchError
+from .safe import BlockedError, FetchError, SecretQuery
 
 
 @dataclass
@@ -54,17 +55,31 @@ class RecordingFetcher:
     def requests(self):
         return len(self.fetches)
 
-    def fetch(self, url, check_robots=True, binary=None, timeout=None):
+    def fetch(self, url, check_robots=True, binary=None, timeout=None, secret_query=None):
+        """`secret_query` (credential parameters, see safe.SecretQuery) goes to the client beside `url` and is never joined to it here:
+        the page is recorded under `url`, an error only in scrubbed form, and a response that carries a credential is not recorded."""
         if len(self.fetches) >= self.max_requests:
             raise BudgetExceeded(f"the request budget of this job ({self.max_requests}) is spent")
         if self.max_seconds is not None and self.monotonic() - self.started > self.max_seconds:
             raise BudgetExceeded(f"the time budget of this job ({self.max_seconds} s) is spent")
+        secret = None
         try:
-            response = self.client.fetch(url, binary=binary) if binary else self.client.fetch(url)
+            options = {"binary": binary} if binary else {}
+            if secret_query is not None:
+                secret = SecretQuery(url, secret_query)
+                options["secret_query"] = secret_query
+            response = self.client.fetch(url, **options)
         except FetchError as error:
-            self.fetches.append(PageFetch(url, classify_failure(error), error=str(error)[:300]))
+            message = (secret.scrub(str(error)) if secret else str(error))[:300]
+            self.fetches.append(PageFetch(url, classify_failure(error), error=message))
+            if secret:
+                raise type(error)(message) from None
             raise
         body = response.body if response.body else response.text.encode("utf-8")
+        if secret and secret.echoed(response.url, body):   # whatever the client: nothing that carries the credential is kept
+            error = BlockedError(f"{urlsplit(url).hostname}: the response carried the request's credential; it is not kept")
+            self.fetches.append(PageFetch(url, "blocked", error=str(error)))
+            raise error
         self.fetches.append(PageFetch(url, "ok", response.url, getattr(response, "status", 200), (response.content_type or "").split(";")[0].strip() or None, body))
         return response
 
@@ -78,6 +93,6 @@ class RecordingFetcher:
         self.image_requests += 1
         return self.client.fetch(url, binary=IMAGE_TYPES).body
 
-    def get(self, url, check_robots=True):
+    def get(self, url, check_robots=True, secret_query=None):
         """Return the fetched page text through the standard producer interface."""
-        return self.fetch(url, check_robots).text
+        return self.fetch(url, check_robots, secret_query=secret_query).text
