@@ -12,7 +12,7 @@
 
 import { PRESENTATIONS } from "./presentation/manifest.js";
 import { PRESETS as DATE_PRESETS, calendarDate, eventOverlapsWindow, normalizeSelection, resolveWindow } from "./filters/date-windows.js";
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-f85bbefa";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-667713b6";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never

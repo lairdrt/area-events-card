@@ -37,13 +37,14 @@ RELEVANT_KINDS = ("area.configuration_changed",)
 
 
 def window_floor(now):
-    """The earliest moment any of the card's date windows can begin, wherever its events are: Monday 00:00 of the current calendar week (This Week;
-    This Weekend lies within it). Time zones run from UTC-12 to UTC+14, so the westernmost one's date decides which week it is, and the easternmost
-    one's Monday begins first. Each area's view holds every event still going on at that moment or later, so a card can show this week's past days
-    and an event that began long before, and still hides what has ended when no date is chosen."""
+    """The earliest moment any of the card's date windows can begin, wherever its events are: the earlier of Monday 00:00 of the current calendar
+    week (This Week; This Weekend lies within it) and the first of the current month, 00:00 (This Month; a week that began in the previous month
+    begins first). Time zones run from UTC-12 to UTC+14, so the westernmost one's date decides which week and month it is, and the easternmost
+    one's midnight comes first. Each area's view holds every event still going on at that moment or later, so a card can show this week's and this
+    month's past days and an event that began long before, and still hides what has ended when no date is chosen."""
     westernmost = datetime.fromtimestamp(now - 12 * 3600, tz=timezone.utc).date()
-    monday = westernmost - timedelta(days=westernmost.weekday())
-    return int(datetime(monday.year, monday.month, monday.day, tzinfo=timezone.utc).timestamp()) - 14 * 3600
+    earliest = min(westernmost - timedelta(days=westernmost.weekday()), westernmost.replace(day=1))
+    return int(datetime(earliest.year, earliest.month, earliest.day, tzinfo=timezone.utc).timestamp()) - 14 * 3600
 
 
 class UnknownArea(LookupError):
@@ -60,6 +61,7 @@ class _Feed:
     def __init__(self, area_key):
         self.area_key = area_key
         self.events, self.latest_seq, self.loaded_at, self.truncated = [], 0, 0.0, False
+        self.floor = None   # the window_floor it was read from
 
     @property
     def keys(self):
@@ -196,6 +198,9 @@ class DiscoveryHub:
             if self._feeds or self._subs:
                 self._processing = await self._read.processing()
                 dirty = await self._changed_feeds(was_down)
+                if dirty != "all":   # a new week or month: read the area again from its new floor, so its view stays the windows' span
+                    floor = window_floor(self._clock())
+                    dirty = set(dirty) | {key for key, feed in self._feeds.items() if feed.floor != floor}
             else:
                 dirty = set()
         except DiscoveryConnectionError as error:
@@ -251,7 +256,8 @@ class DiscoveryHub:
 
     async def _load(self, area):
         feed = _Feed(area["area_key"])
-        cursor, window = None, {"ends_from": window_floor(self._clock())}
+        feed.floor = window_floor(self._clock())
+        cursor, window = None, {"ends_from": feed.floor}
         for page_number in range(MAX_EVENT_PAGES):
             try:
                 page = await self._read.events(area=area["area_key"], after=cursor, limit=EVENT_PAGE, **window)

@@ -167,7 +167,7 @@ class CardInABrowser(unittest.TestCase):
             self.assertEqual(dates["summaryFont"], filters["summaryFont"])
             self.assertEqual(dates["summaryColor"], filters["summaryColor"], "the same typography and theme colour as the category summary")
         self.assertEqual(narrow["closed"]["panels"], [0, 0])
-        self.assertEqual(narrow["datesOpen"]["panels"][0], 3, "All, This Week, This Weekend")
+        self.assertEqual(narrow["datesOpen"]["panels"][0], 4, "All, This Week, This Weekend, This Month")
         self.assertEqual(narrow["datesOpen"]["panels"][1], 0)
         self.assertEqual(narrow["filtersOpen"]["panels"][0], 0, "opening Filters closed Dates")
         self.assertGreater(narrow["filtersOpen"]["panels"][1], 0)

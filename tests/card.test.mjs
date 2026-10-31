@@ -1972,10 +1972,10 @@ test("an event is in a window when its interval overlaps it; one without an end 
   assert.equal(inside("not a date", "2026-11-14T09:00:00Z"), false);
   assert.equal(dates.eventOverlapsWindow({ start: "2026-11-14T10:00:00Z" }, null), false);
   assert.equal(dates.resolveWindow(null, Date.now(), PT), null, "no selection, no window");
-  assert.equal(dates.resolveWindow({ preset: "this-month" }, Date.now(), PT), null, "an unknown preset is no selection");
+  assert.equal(dates.resolveWindow({ preset: "next-year" }, Date.now(), PT), null, "an unknown preset is no selection");
   assert.deepEqual([dates.normalizeSelection({ preset: "this-week", extra: 1 }), dates.normalizeSelection("this-week"), dates.normalizeSelection([])],
     [{ preset: "this-week" }, null, null]);
-  assert.deepEqual(dates.PRESETS.map((p) => [p.id, p.label]), [["this-week", "This Week"], ["this-weekend", "This Weekend"]]);
+  assert.deepEqual(dates.PRESETS.map((p) => [p.id, p.label]), [["this-week", "This Week"], ["this-weekend", "This Weekend"], ["this-month", "This Month"]]);
 });
 
 // The week of Monday November 9, 2026, in San Diego: what the hub now delivers (this week's past days, and an exhibit that began weeks ago).
@@ -2021,7 +2021,8 @@ test("Dates opens its own row of the same chips as Filters: All first and select
   const row = byClass(root, "date-chips")[0];
   assert.ok(row.className.split(" ").includes("chips"), "the same .chips container as the categories");
   assert.deepEqual(row.children.map((c) => [c.tag, c.className, c.attrs["aria-pressed"], text(c)]),
-    [["button", "chip chip-all", "true", "✓ All"], ["button", "chip", "false", "This Week | 6"], ["button", "chip", "false", "This Weekend | 4"]],
+    [["button", "chip chip-all", "true", "✓ All"], ["button", "chip", "false", "This Week | 6"], ["button", "chip", "false", "This Weekend | 4"],
+     ["button", "chip", "false", "This Month | 8"]],
     "the category chips' markup: All first, pressed and checked like the category All; each preset a .chip with a .count");
   openFilters(root);
   const categoryAll = byClass(root, "chip-all")[0];
@@ -2149,7 +2150,7 @@ test("the date window is applied before max_events, and each date chip counts wh
   const root = card.shadowRoot;
   assert.deepEqual(visibleTitles(root), ["Month-long Exhibit", "Wednesday Concert"]);
   openDates(root);
-  assert.deepEqual(byClass(root, "date-chips")[0].children.map((c) => byClass(c, "count").map(text)), [[], ["2"], ["2"]], "All has no count, like the category All");
+  assert.deepEqual(byClass(root, "date-chips")[0].children.map((c) => byClass(c, "count").map(text)), [[], ["2"], ["2"], ["2"]], "All has no count, like the category All");
   click(dateChip(root, "this-week"));
   assert.deepEqual(visibleTitles(root), ["Month-long Exhibit", "Monday Lecture"], "the week's first two, not the first two upcoming then filtered");
   click(dateChip(root, "this-weekend"));
@@ -2258,4 +2259,107 @@ test("when the calendar day changes while the card is open, This Week moves on w
   assert.deepEqual(visibleTitles(root), ["Month-long Exhibit", "Sunday Late Show", "Next Tuesday Talk"], "Monday: the new week (the late show runs past midnight)");
   assert.equal(byClass(root, "event").find((el) => text(el).includes("Month-long Exhibit")), exhibit, "a tile that stays is kept");
   assert.match(text(dateChip(root, "this-weekend")), /This Weekend \| 1/, "the counts move too");
+});
+
+// --- This Month ------------------------------------------------------------------------------------
+
+test("This Month is the first of the month 00:00 to the first of the next month 00:00, past days included, whatever its length", () => {
+  assert.deepEqual(windowOf("this-month", "2026-10-31T20:00:00Z"), ["2026-10-01T07:00:00.000Z", "2026-11-01T07:00:00.000Z"], "October 31: all of October (31 days)");
+  assert.deepEqual(windowOf("this-month", "2026-11-01T07:00:00Z"), ["2026-11-01T07:00:00.000Z", "2026-12-01T08:00:00.000Z"], "November 1, 00:00: all of November (30 days)");
+  assert.deepEqual(windowOf("this-month", "2026-11-01T06:59:59Z"), ["2026-10-01T07:00:00.000Z", "2026-11-01T07:00:00.000Z"], "a second before: still October");
+  assert.deepEqual(windowOf("this-month", "2026-02-14T20:00:00Z"), ["2026-02-01T08:00:00.000Z", "2026-03-01T08:00:00.000Z"], "February 2026: 28 days");
+  assert.deepEqual(windowOf("this-month", "2028-02-29T20:00:00Z"), ["2028-02-01T08:00:00.000Z", "2028-03-01T08:00:00.000Z"], "February 2028, a leap year: 29 days");
+  const days = (now) => { const [a, b] = windowOf("this-month", now, "UTC").map(Date.parse); return (b - a) / 86400000; };
+  assert.deepEqual(["2026-02-10T12:00:00Z", "2028-02-10T12:00:00Z", "2026-04-10T12:00:00Z", "2026-07-10T12:00:00Z"].map(days), [28, 29, 30, 31]);
+  assert.deepEqual(windowOf("this-month", "2026-12-31T20:00:00Z"), ["2026-12-01T08:00:00.000Z", "2027-01-01T08:00:00.000Z"], "December runs into the new year");
+  assert.deepEqual(windowOf("this-month", "2027-01-01T08:00:00Z"), ["2027-01-01T08:00:00.000Z", "2027-02-01T08:00:00.000Z"], "January 1 begins the new month and year");
+});
+
+test("This Month follows daylight saving and each event's own time zone", () => {
+  const span = (now, zone) => { const [a, b] = windowOf("this-month", now, zone).map(Date.parse); return (b - a) / 3600000; };
+  assert.equal(span("2026-11-10T20:00:00Z", PT), 30 * 24 + 1, "November in California gains the hour of November 1");
+  assert.equal(span("2027-03-10T20:00:00Z", PT), 31 * 24 - 1, "March loses one");
+  assert.deepEqual(windowOf("this-month", "2026-10-10T12:00:00Z", "Europe/London"), ["2026-09-30T23:00:00.000Z", "2026-11-01T00:00:00.000Z"], "London: October begins in summer time and ends in winter time");
+  const instant = "2026-11-01T02:00:00Z";   // Saturday evening, October 31, in California; already November 1 in London
+  assert.deepEqual(windowOf("this-month", instant, PT), ["2026-10-01T07:00:00.000Z", "2026-11-01T07:00:00.000Z"]);
+  assert.deepEqual(windowOf("this-month", instant, "Europe/London"), ["2026-11-01T00:00:00.000Z", "2026-12-01T00:00:00.000Z"]);
+});
+
+test("an event is in This Month when it overlaps it: the month's first instant counts, the next month's first does not", () => {
+  const w = dates.resolveWindow({ preset: "this-month" }, Date.parse("2026-10-15T19:00:00Z"), PT);
+  const inside = (start, end) => dates.eventOverlapsWindow({ start, end }, w);
+  assert.equal(inside("2026-10-01T07:00:00Z"), true, "no end, at October 1 00:00");
+  assert.equal(inside("2026-10-01T06:59:59Z"), false, "no end, a second before");
+  assert.equal(inside("2026-11-01T07:00:00Z"), false, "no end, at November 1 00:00");
+  assert.equal(inside("2026-09-25T17:00:00Z", "2026-10-02T01:00:00Z"), true, "began in September, still on in October");
+  assert.equal(inside("2026-10-28T17:00:00Z", "2026-11-03T01:00:00Z"), true, "runs on into November");
+  assert.equal(inside("2026-09-20T17:00:00Z", "2026-10-01T07:00:00Z"), false, "ended exactly as October began");
+  assert.equal(inside("2026-08-01T17:00:00Z", "2026-12-31T08:00:00Z"), true, "a season-long event covering the whole month");
+});
+
+const monthFeed = () => {
+  const feed = weekFeed();
+  feed.events.push(
+    weekEvent("October Gala", "2026-10-15T19:00", 3),
+    weekEvent("Harvest Market", "2026-11-21T09:00", 4),
+    weekEvent("Thanksgiving Run", "2026-11-26T07:00", 2),
+    weekEvent("December Market", "2026-12-05T09:00", 4),
+  );
+  return feed;
+};
+const THIS_MONTH = ["Month-long Exhibit", "Last Week Fair", "Monday Lecture", "Wednesday Concert", "Saturday Market", "Sunday Hike", "Sunday Late Show",
+  "Next Tuesday Talk", "Harvest Market", "Thanksgiving Run"];
+
+test("This Month comes after This Weekend, shows the whole month including its past days, and counts what it shows", async () => {
+  clockAt(TUESDAY);
+  const card = await make({}, { feed: monthFeed() });
+  const root = card.shadowRoot;
+  openDates(root);
+  assert.deepEqual(byClass(root, "date-chips")[0].children.map((c) => [c.attrs["data-date"], c.className, c.attrs["aria-pressed"], text(c)]),
+    [["all", "chip chip-all", "true", "✓ All"], ["this-week", "chip", "false", "This Week | 6"], ["this-weekend", "chip", "false", "This Weekend | 4"],
+     ["this-month", "chip", "false", "This Month | 10"]]);
+  click(dateChip(root, "this-month"));
+  assert.deepEqual(visibleTitles(root), THIS_MONTH, "last week's fair is back; October's gala and December's market are not; the exhibit from October is in");
+  assert.deepEqual([dateChip(root, "all").attrs["aria-pressed"], dateChip(root, "this-month").attrs["aria-pressed"]], ["false", "true"]);
+  assert.match(text(dateChip(root, "this-month")), /^✓ This Month \| 10/);
+  assert.deepEqual([text(byClass(root, "date-summary")[0]), text(byClass(root, "filter-summary")[0])], ["Showing: This Month", "Showing all categories"]);
+  click(dateChip(root, "this-week"));
+  assert.deepEqual(visibleTitles(root), THIS_WEEK, "another preset replaces it");
+  assert.equal(dateChip(root, "this-month").attrs["aria-pressed"], "false");
+  click(dateChip(root, "this-month"));
+  click(dateChip(root, "all"));
+  assert.deepEqual(visibleTitles(root), [...UPCOMING.slice(0, 6), "Harvest Market", "Thanksgiving Run", "December Market"], "All: the usual upcoming view");
+  assert.equal(text(byClass(root, "date-summary")[0]), "Showing all dates");
+});
+
+test("This Month combines with categories, is saved and restored, and makes no requests", async () => {
+  clockAt(TUESDAY);
+  const first = await make({ title: "Month" }, { feed: monthFeed() });
+  const root = first.shadowRoot;
+  const calls = first.hassStub.calls.length;
+  openFilters(root);
+  click(chip(root, "Markets"));
+  openDates(root);
+  click(dateChip(root, "this-month"));
+  assert.deepEqual(visibleTitles(root), ["Saturday Market", "Harvest Market"]);
+  assert.deepEqual(stored(first), { v: 1, selected: ["markets"], custom: [], date: { preset: "this-month" } });
+  await wait(400);
+  assert.equal(first.hassStub.eventsCalls().length, 1, "no new subscription");
+  assert.deepEqual([...new Set(first.hassStub.calls.slice(calls).map((m) => m.type))], ["frontend/set_user_data"]);
+  const second = await make({ title: "Month" }, { feed: monthFeed() });
+  assert.deepEqual(visibleTitles(second.shadowRoot), ["Saturday Market", "Harvest Market"]);
+  assert.deepEqual([text(byClass(second.shadowRoot, "date-summary")[0]), text(byClass(second.shadowRoot, "filter-summary")[0])], ["Showing: This Month", "Showing: Markets"]);
+});
+
+test("when the month changes while the card is open, This Month moves on without a reload", async () => {
+  clockAt(Date.parse("2026-11-30T23:58:00-08:00"));
+  const card = await make({}, { feed: monthFeed() });
+  const root = card.shadowRoot;
+  openDates(root);
+  click(dateChip(root, "this-month"));
+  assert.deepEqual(visibleTitles(root), THIS_MONTH);
+  clockAt(Date.parse("2026-12-01T00:01:00-08:00"));
+  card._tick();
+  assert.deepEqual(visibleTitles(root), ["December Market"], "December: November's events, the exhibit that ended November 30 among them, have gone");
+  assert.match(text(dateChip(root, "this-month")), /This Month \| 1/);
 });

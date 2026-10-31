@@ -9,7 +9,7 @@
  * A selection is a plain object naming a preset, { preset: "this-week" }. Each preset turns today's calendar date into a span of
  * whole calendar days, and resolveWindow turns those days into instants at local midnight in the given IANA time zone, so a window
  * follows real calendar boundaries (month and year ends, daylight-saving changes) rather than a rolling number of hours. Adding a
- * preset (This Month) is one more entry in PRESETS; a range a person enters can become one more kind of selection that names its
+ * preset is one more entry in PRESETS; a range a person enters can become one more kind of selection that names its
  * own first and last day and goes through the same day-to-instant step and the same matching.
  */
 
@@ -72,6 +72,7 @@ export function startOfDay(date, timeZone) {
  * The presets: each maps today's calendar date to its first day and the day after its last (whole days, end exclusive).
  *   this-week      Monday through Sunday of the current week, including the days already past
  *   this-weekend   Saturday and Sunday: the coming ones on a weekday, the current ones on Saturday or Sunday
+ *   this-month     the first of the current month through its last day, including the days already past
  */
 export const PRESETS = [
   {
@@ -86,6 +87,13 @@ export const PRESETS = [
     days(today) {
       const saturday = addDays(today, 5 - weekday(today));   // Monday +5 ... Friday +1, Saturday 0, Sunday -1
       return { first: saturday, after: addDays(saturday, 2) };
+    },
+  },
+  {
+    id: "this-month", label: "This Month",
+    days(today) {
+      const first = { year: today.year, month: today.month, day: 1 };
+      return { first, after: today.month === 12 ? { year: today.year + 1, month: 1, day: 1 } : { year: today.year, month: today.month + 1, day: 1 } };
     },
   },
 ];

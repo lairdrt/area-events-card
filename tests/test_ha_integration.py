@@ -348,7 +348,7 @@ class SourceNames(Service):
 
 
 class DateWindowCoverage(Service):
-    """The shared view of an area holds what the card's date choices need: this week's past days and events that began before them."""
+    """The shared view of an area holds what the card's date choices need: this week's and this month's past days and events that began before them."""
 
     def iso(self, moment):
         from datetime import datetime, timezone
@@ -360,9 +360,9 @@ class DateWindowCoverage(Service):
         floor = hub_module.window_floor(now)
         timed = {
             "Long Exhibit": (now - 30 * 86400, now + 5 * 86400),        # began a month ago, still on: the old start-time window lost it
-            "Earlier This Week": (floor + 3600, floor + 7200),          # this week, already over
+            "Earlier This Week": (floor + 3600, floor + 7200),          # the earliest window (this week or this month), already over
             "Before The Week": (floor - 7200, floor - 3600),            # over before any date window begins
-            "Old Fair": (now - 20 * 86400, now - 19 * 86400),
+            "Old Fair": (floor - 20 * 86400, floor - 19 * 86400),
         }
         for i, (title, (start, end)) in enumerate(timed.items()):
             self.add_candidate(self.built, "sandiego_gov", f"sandiego_gov:timed{i}", document(title, starts_at=self.iso(start), ends_at=self.iso(end)))
@@ -383,21 +383,66 @@ class DateWindowCoverage(Service):
         self.assertIn("events", self.read.calls)
         self.assertEqual({(e.event_key, e.revision) for e in self.all_events(self.built)}, before, "reading changes no event")
 
-    def test_the_floor_is_the_earliest_monday_midnight_of_the_current_week_in_any_time_zone(self):
+    def test_the_floor_is_the_earliest_monday_or_first_of_the_month_midnight_in_any_time_zone(self):
         from datetime import datetime, timedelta, timezone
         from zoneinfo import ZoneInfo
-        tuesday = int(datetime(2026, 11, 10, 20, tzinfo=timezone.utc).timestamp())
-        self.assertEqual(hub_module.window_floor(tuesday), int(datetime(2026, 11, 8, 10, tzinfo=timezone.utc).timestamp()), "Monday 00:00 at UTC+14")
+        utc = lambda *parts: int(datetime(*parts, tzinfo=timezone.utc).timestamp())
+        self.assertEqual(hub_module.window_floor(utc(2026, 11, 10, 20)), utc(2026, 10, 31, 10), "Tuesday November 10: November 1 00:00 at UTC+14 (This Month)")
+        self.assertEqual(hub_module.window_floor(utc(2026, 11, 1, 20)), utc(2026, 10, 25, 10), "Sunday November 1: the week began on October 26, before the month")
+        self.assertEqual(hub_module.window_floor(utc(2026, 11, 2, 5)), utc(2026, 10, 25, 10), "early Monday UTC is still Sunday in the west: that week still counts")
+        self.assertEqual(hub_module.window_floor(utc(2027, 1, 6, 12)), utc(2026, 12, 31, 10), "a new year: January 1, and the week that began in December was not earlier")
         zones = [ZoneInfo(z) for z in ("Pacific/Kiritimati", "Pacific/Auckland", "Asia/Tokyo", "Europe/London", "America/New_York", "America/Los_Angeles",
                                         "Pacific/Honolulu", "Pacific/Pago_Pago", "America/Santiago")]
-        start = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp())
-        for moment in range(start, start + 366 * 86400, 7 * 3600 + 13 * 60):
+        start = utc(2026, 1, 1)
+        for moment in range(start, start + 2 * 366 * 86400, 7 * 3600 + 13 * 60):
             floor = hub_module.window_floor(moment)
-            self.assertGreater(floor, moment - 9 * 86400, "bounded: a little over a week back")
+            self.assertGreater(floor, moment - 33 * 86400, "bounded: a little over a month back")
             for zone in zones:
                 local = datetime.fromtimestamp(moment, tz=zone).date()
-                monday = local - timedelta(days=local.weekday())
-                self.assertLessEqual(floor, int(datetime(monday.year, monday.month, monday.day, tzinfo=zone).timestamp()), (moment, zone))
+                for first in (local - timedelta(days=local.weekday()), local.replace(day=1)):
+                    self.assertLessEqual(floor, int(datetime(first.year, first.month, first.day, tzinfo=zone).timestamp()), (moment, zone, first))
+
+    def test_a_new_week_or_month_reads_the_area_again_from_its_new_floor_and_otherwise_nothing_is_read(self):
+        async def scenario():
+            hub = self.hub()
+            card = Inbox()
+            await hub.subscribe("San Diego", card)
+            first_floor = hub._feeds[self.sd.area_key].floor
+            self.read.calls.clear()
+            await hub.refresh()
+            quiet = list(self.read.calls)
+            self.clock.t += 40 * 86400   # the HA session stays up into a later month
+            self.read.calls.clear()
+            await hub.refresh()
+            moved = list(self.read.calls)
+            self.read.calls.clear()
+            await hub.refresh()
+            return first_floor, hub._feeds[self.sd.area_key].floor, quiet, moved, list(self.read.calls)
+
+        first_floor, later_floor, quiet, moved, settled = run(scenario())
+        self.assertEqual(first_floor, hub_module.window_floor(self.clock() - 40 * 86400))
+        self.assertEqual(later_floor, hub_module.window_floor(self.clock()))
+        self.assertGreater(later_floor, first_floor)
+        self.assertNotIn("events", quiet, "the same week and month: nothing is read again")
+        self.assertIn("events", moved, "a new month: the area is read again from its new floor")
+        self.assertNotIn("events", settled)
+
+    def test_an_area_beyond_the_cap_is_read_to_1000_events_and_reported_as_truncated(self):
+        asked = []
+
+        class Crowded:
+            async def events(self, **query):
+                asked.append(query)
+                n = len(asked)
+                return {"events": [{"event_key": f"ev-{n}-{i}", "title": f"Event {n}.{i}", "starts_at": 1_800_000_000 + n * 1000 + i, "timezone": "UTC", "sources": ["s"]}
+                                   for i in range(hub_module.EVENT_PAGE)], "next_cursor": f"c{n}", "latest_seq": 3}
+
+        hub = hub_module.DiscoveryHub(Crowded(), clock=lambda: 1_800_000_000)
+        area = {"area_key": "busy", "name": "Busy", "enabled": True, "intensity": "normal", "revision": 1, "radius": 10, "unit": "mi", "sources": ["s"]}
+        feed = run(hub._load(area))
+        self.assertEqual((len(asked), len(feed.events), feed.truncated), (hub_module.MAX_EVENT_PAGES, 1000, True), "the existing cap: five pages of 200")
+        self.assertTrue(all(q["ends_from"] == hub_module.window_floor(1_800_000_000) for q in asked))
+        self.assertIs(hub._present(area, feed)["truncated"], True, "the view says it is incomplete")
 
     def test_a_service_that_cannot_select_by_end_time_is_read_as_before(self):
         asked = []
