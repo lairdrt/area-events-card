@@ -17,7 +17,7 @@ from area_events.control.service import CreateAreaRequest, CreateSourceRequest, 
 from area_events.discovery import producer as contract
 from area_events.discovery.fetching import RecordingFetcher
 from area_events.discovery.producers.serpapi_google_events import (FREE_TIER_RESERVE, SEARCH_URL, SerpApiAccount, SerpApiGoogleEventsProducer, Unusable,
-                                                                   UsageBlocked, decide, parse_when, read_account)
+                                                                   UsageBlocked, decide, parse_when, query_year, read_account)
 from area_events.discovery.safe import BlockedError, FetchError, HostPolicy, SafeFetcher
 from tests.records import document
 from tests.test_extraction import Fixture
@@ -125,7 +125,7 @@ class ResultsBecomeStandardCandidates(unittest.TestCase):
         accepted = contract.accept(answer)
         self.assertEqual(accepted.rejections, (), "everything produced passes the standard boundary")
         by_title = {c.title: c for c in accepted.candidates}
-        self.assertEqual(sorted(by_title), ["Holiday Market", "Jazz Night", "Late Show", "Year End Gala"])
+        self.assertEqual(sorted(by_title), ["Holiday Market", "Jazz Night", "Late Show", "No Weekday", "Year End Gala"])
         market = by_title["Holiday Market"]
         self.assertEqual((market.starts_at, market.ends_at, market.timezone), ("2026-11-07T10:00:00-08:00", "2026-11-07T16:00:00-08:00", "America/Los_Angeles"))
         self.assertEqual((market.venue, market.address, market.url), ("Balboa Park", "Balboa Park, 1549 El Prado, San Diego, CA", "https://example.org/holiday-market"))
@@ -137,10 +137,12 @@ class ResultsBecomeStandardCandidates(unittest.TestCase):
             self.assertEqual((candidate.verification.status, candidate.verification.verified), ("unverified", False), "aggregated results are not verified")
             self.assertEqual(candidate.provenance.listing_url, SerpApiGoogleEventsProducer.search_url(SD))
             self.assertNotIn("api_key", candidate.provenance.listing_url)
-        self.assertTrue(any("Year 2026: the year in which November 7 falls on the stated Saturday" in line for line in market.verification.evidence))
-        self.assertEqual((answer.notes["results"], answer.notes["candidates"], answer.notes["set_aside"], answer.notes["searches"]), (11, 4, 7, 1))
+        self.assertTrue(any("Year 2026 inferred as the next calendar occurrence of November 7 within the configured 90-day look-ahead window" in line
+                            for line in market.verification.evidence))
+        self.assertTrue(any(line == "Year 2026 as stated in Google's date" for line in by_title["Year End Gala"].verification.evidence))
+        self.assertEqual((answer.notes["results"], answer.notes["candidates"], answer.notes["set_aside"], answer.notes["searches"]), (11, 5, 6, 1))
         reasons = " ".join(str(v) for k, v in answer.notes.items() if k.startswith("set_aside_"))
-        for reason in ("neither a year nor a weekday", "no start time", "relative days", "no single year", "no title", "does not say AM or PM"):
+        for reason in ("no start time", "relative days", "does not match the date of its next occurrence", "no title", "does not say AM or PM"):
             self.assertIn(reason, reasons)
         self.assertEqual(fake.searches, 1)
 
@@ -151,17 +153,6 @@ class ResultsBecomeStandardCandidates(unittest.TestCase):
         _, client, _, producer = setup(FakeSerpApi(pages=[reordered]))
         self.assertEqual({c.title: c.local_id for c in crawl(producer, client)[0].candidates}, first)
         self.assertEqual(len(set(first.values())), 4)
-
-    def test_a_year_is_only_taken_from_the_stated_weekday_within_a_year_of_the_search(self):
-        zone = __import__("zoneinfo").ZoneInfo("America/New_York")
-        start, end, derived = parse_when("Sat, Jan 2, 11 AM – 1 PM", zone, datetime(2026, 12, 28).date())
-        self.assertEqual((start.isoformat(), end.isoformat(), derived), ("2027-01-02T11:00:00-05:00", "2027-01-02T13:00:00-05:00", True))
-        with self.assertRaises(Unusable):   # November 7 is a Saturday in 2026, more than a year after June 1, 2025, and a Friday in 2025: no year
-            parse_when("Sat, Nov 7, 11 AM", zone, datetime(2025, 6, 1).date())
-        with self.assertRaises(Unusable):
-            parse_when("Sat, Nov 7, 2027, 10 AM", zone, datetime(2026, 10, 31).date())   # the stated year contradicts the weekday
-        start, _, derived = parse_when("Sun, Nov 7, 2027, 10 AM", zone, datetime(2026, 10, 31).date())
-        self.assertEqual((start.year, derived), (2027, False))
 
     def test_pagination_is_bounded_and_each_page_is_one_counted_search(self):
         full = page([result(f"Event {i}", f"Sat, Nov 7, {i % 12 + 1} PM") for i in range(10)], more=True)
@@ -192,6 +183,128 @@ class ResultsBecomeStandardCandidates(unittest.TestCase):
         _, client, _, producer = setup(FakeSerpApi(pages=[{"error": "Invalid location."}]))
         with self.assertRaises(FetchError):
             crawl(producer, client)
+
+
+PT_ZONE = __import__("zoneinfo").ZoneInfo("America/Los_Angeles")
+SCAN_DAY = datetime(2026, 10, 31).date()          # the pilots' scan date, in San Diego
+# Every date Google returned in the three live searches of 2026-10-31 (San Diego, Austin, and San Diego with "November 2026" in the query)
+PILOT_SAN_DIEGO = ["Nov 1", "Nov 1, 9:30 PM", "Oct 31, 3:00 PM", "Nov 6, 6:30 PM", "Nov 8, 12:00 PM", "Nov 7, 5:00 PM", "Nov 7, 12:00 PM", "Nov 6, 8:00 PM"]
+PILOT_AUSTIN = ["Nov 6, 7:00 PM", "Nov 5, 1:00 PM", "Dec 13, 7:30 PM", "Nov 7, 8:00 PM", "Nov 21, 11:00 AM", "Nov 15, 2:00 PM", "Nov 28, 1:00 PM"]
+PILOT_YEAR_QUERY = ["Nov 6", "Nov 6, 9:30 AM", "Nov 1", "Nov 6, 5:00 PM", "Nov 13", "Nov 1, 5:00 PM", "Nov 6, 6:00 PM"]
+
+
+def when(text, today=SCAN_DAY, lookahead=90, year=None, zone=PT_ZONE):
+    start, end, how = parse_when(text, zone, today, lookahead, year)
+    return start.isoformat(), end.isoformat() if end else None, how
+
+
+class TheLookAheadWindow(unittest.TestCase):
+    def test_a_yearless_day_is_its_nearest_upcoming_occurrence_and_no_time_or_end_is_invented(self):
+        self.assertEqual(when("Nov 6, 7:00 PM"), ("2026-11-06T19:00:00-08:00", None, "inferred"))
+        self.assertEqual(when("Jan 15, 7:00 PM"), ("2027-01-15T19:00:00-08:00", None, "inferred"), "this year's January 15 has passed: next year's")
+        self.assertEqual(when("Nov 6, 9:30 AM"), ("2026-11-06T09:30:00-08:00", None, "inferred"))
+        self.assertEqual(when("Nov 1, 5:00 PM"), ("2026-11-01T17:00:00-08:00", None, "inferred"), "after the clocks went back")
+        for text in ("Nov 6", "Nov 13"):
+            with self.subTest(text=text), self.assertRaises(Unusable) as caught:
+                when(text)
+            self.assertIn("no start time", str(caught.exception))
+
+    def test_the_window_includes_today_and_its_last_day_and_nothing_outside(self):
+        self.assertEqual(when("Oct 31, 3:00 PM")[0], "2026-10-31T15:00:00-07:00", "today is inside")
+        self.assertEqual(when("Jan 29, 7:00 PM")[0], "2027-01-29T19:00:00-08:00", "October 31 + 90 days is inside")
+        for text in ("Jan 30, 7:00 PM", "Oct 30, 3:00 PM"):   # one day too far; yesterday (its next occurrence is a year away)
+            with self.subTest(text=text), self.assertRaises(Unusable) as caught:
+                when(text)
+            self.assertIn("outside the 90-day look-ahead window", str(caught.exception))
+        self.assertEqual(when("Nov 30, 7:00 PM", lookahead=30)[0], "2026-11-30T19:00:00-08:00")
+        with self.assertRaises(Unusable):
+            when("Dec 1, 7:00 PM", lookahead=30)
+        self.assertEqual(when("Oct 30, 3:00 PM", lookahead=365)[0], "2027-10-30T15:00:00-07:00", "a year's window reaches next year's day")
+
+    def test_december_to_january_and_leap_days(self):
+        self.assertEqual(when("Jan 2, 11:00 AM", today=datetime(2026, 12, 28).date())[0], "2027-01-02T11:00:00-08:00")
+        self.assertEqual(when("Dec 31, 11:00 PM", today=datetime(2026, 12, 28).date())[0], "2026-12-31T23:00:00-08:00")
+        self.assertEqual(when("Feb 29, 6:00 PM", today=datetime(2028, 2, 1).date())[0], "2028-02-29T18:00:00-08:00", "2028 is a leap year")
+        with self.assertRaises(Unusable):   # 2027 has no February 29, and 2028's is outside 90 days of February 1, 2027
+            when("Feb 29, 6:00 PM", today=datetime(2027, 2, 1).date())
+        self.assertEqual(when("Feb 29, 6:00 PM", today=datetime(2027, 3, 1).date(), lookahead=365)[0], "2028-02-29T18:00:00-08:00")
+
+    def test_a_stated_year_is_kept_and_still_held_to_the_window(self):
+        self.assertEqual(when("Wed, Dec 30, 2026, 6 PM"), ("2026-12-30T18:00:00-08:00", None, "stated"))
+        self.assertEqual(when("Nov 6, 2026, 7:00 PM"), ("2026-11-06T19:00:00-08:00", None, "stated"))
+        for text, reason in (("Nov 6, 2027, 7:00 PM", "outside the 365-day"), ("Nov 6, 2025, 7:00 PM", "outside the 365-day"),
+                             ("Sat, Nov 7, 2027, 10 AM", "weekday does not match the date"), ("Feb 30, 2027, 10 AM", "does not exist")):
+            with self.subTest(text=text), self.assertRaises(Unusable) as caught:
+                when(text, lookahead=365)
+            self.assertIn(reason, str(caught.exception))
+        self.assertEqual(when("Sun, Nov 7, 2027, 10 AM", today=datetime(2027, 9, 1).date())[2], "stated", "never replaced by an inferred year")
+
+    def test_a_stated_weekday_must_agree_with_the_inferred_date(self):
+        self.assertEqual(when("Sat, Nov 7, 10 AM – 4 PM")[:2], ("2026-11-07T10:00:00-08:00", "2026-11-07T16:00:00-08:00"))
+        with self.assertRaises(Unusable) as caught:
+            when("Fri, Nov 7, 10 AM")
+        self.assertIn("does not match the date of its next occurrence", str(caught.exception))
+
+    def test_a_search_naming_one_year_accepts_only_that_year(self):
+        self.assertEqual(query_year("events in San Diego November 2026"), 2026)
+        self.assertEqual([query_year(q) for q in ("events in San Diego", "events 2026 to 2027", "top 100 events", "events in 20260")], [None, None, None, None])
+        self.assertEqual(when("Dec 13, 7:30 PM", year=2026)[0], "2026-12-13T19:30:00-08:00")
+        with self.assertRaises(Unusable) as caught:
+            when("Jan 15, 7:00 PM", year=2026)
+        self.assertIn("the search asks for 2026 events; this one is in 2027", str(caught.exception))
+        self.assertEqual(when("Jan 15, 7:00 PM")[0][:4], "2027", "an ordinary rolling search crosses the year")
+        self.assertEqual(SerpApiGoogleEventsProducer.search_url(SD), "https://serpapi.com/search?engine=google_events&q=events+in+San+Diego&location=San+Diego%2C+California%2C+United+States",
+                         "no year is ever added to the query")
+
+    def test_the_rejections_that_stay(self):
+        for text, reason in (("Today, 7 – 9 PM", "relative days"), ("Sat, Nov 7", "no start time"), ("Nov 7, 11 – 1 PM", "AM or PM"), ("Nov 7, 7", "AM or PM"),
+                             ("Feb 30, 7:00 PM", "does not exist"), ("Thu, Nov 12 – Sat, Nov 14", "no start time"), ("Nov 7, 10 PM – Nov 7, 9 PM", "the end is not after")):
+            with self.subTest(text=text), self.assertRaises(Unusable) as caught:
+                when(text)
+            self.assertIn(reason, str(caught.exception))
+
+    def test_the_look_ahead_is_a_validated_source_option(self):
+        base = {k: SD[k] for k in ("query", "location", "timezone")}
+        for days in (30, 90, 365):
+            self.assertEqual(SerpApiGoogleEventsProducer.validate_options({**base, "lookahead_days": days})[1]["lookahead_days"], days)
+        self.assertNotIn("lookahead_days", SerpApiGoogleEventsProducer.validate_options(base)[1], "the default is not stored")
+        for bad in (29, 366, 0, -5, "90", 90.0, True, None):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                SerpApiGoogleEventsProducer.validate_options({**base, "lookahead_days": bad})
+        field = [f for f in SerpApiGoogleEventsProducer.configuration_fields if f["name"] == "lookahead_days"]
+        self.assertEqual(field, [{"name": "lookahead_days", "label": "Event look-ahead (days)", "kind": "integer", "default": 90, "min": 30, "max": 365}])
+
+    def test_the_configured_window_reaches_the_candidates_and_identities_are_stable_across_scans(self):
+        results = [result(f"Event {n}", text) for n, text in enumerate(("Nov 6, 7:00 PM", "Jan 15, 7:00 PM", "Mar 1, 7:00 PM"))]
+        _, client, _, producer = setup(FakeSerpApi(pages=[page(results)]))
+        default = crawl(producer, client)[0]
+        self.assertEqual(sorted(c.starts_at for c in default.candidates), ["2026-11-06T19:00:00-08:00", "2027-01-15T19:00:00-08:00"])
+        self.assertIn("outside the 90-day look-ahead window", " ".join(str(v) for k, v in default.notes.items() if k.startswith("set_aside_")))
+        wide = crawl(producer, client, {**SD, "lookahead_days": 180})[0]
+        self.assertEqual(len(wide.candidates), 3)
+        again = crawl(producer, client, {**SD, "lookahead_days": 180})[0]
+        self.assertEqual({c.local_id for c in again.candidates}, {c.local_id for c in wide.candidates}, "the same events keep their identities")
+        year_bound = crawl(producer, client, {**SD, "query": "events in San Diego November 2026"})[0]
+        self.assertEqual([c.title for c in year_bound.candidates], ["Event 0"])
+        for candidate in wide.candidates:
+            self.assertEqual(candidate.verification.status, "unverified")
+            self.assertFalse(any(line.endswith("as stated in Google's date") for line in candidate.verification.evidence), "an inferred year is never reported as stated")
+            self.assertTrue(any("inferred as the next calendar occurrence" in line and "180-day" in line for line in candidate.verification.evidence))
+
+    def test_the_live_pilot_dates_reconsidered_offline(self):
+        def usable(texts, year=None, zone=PT_ZONE):
+            kept = []
+            for text in texts:
+                try:
+                    when(text, year=year, zone=zone)
+                    kept.append(text)
+                except Unusable:
+                    pass
+            return kept
+        self.assertEqual(usable(PILOT_SAN_DIEGO), [t for t in PILOT_SAN_DIEGO if t != "Nov 1"], "all but 'Nov 1', which states no time")
+        self.assertEqual(usable(PILOT_AUSTIN, zone=__import__("zoneinfo").ZoneInfo("America/Chicago")), PILOT_AUSTIN, "all seven")
+        self.assertEqual(usable(PILOT_YEAR_QUERY, year=2026), ["Nov 6, 9:30 AM", "Nov 6, 5:00 PM", "Nov 1, 5:00 PM", "Nov 6, 6:00 PM"],
+                         "the three without a time stay out")
 
 
 # --- credentials ---------------------------------------------------------------------------------------------------
@@ -247,7 +360,7 @@ class TheKeyStaysOut(unittest.TestCase):
         fake = FakeSerpApi(robots=PUBLISHED_ROBOTS)
         _, client, account, producer = setup(fake)
         answer, recording = crawl(producer, client)
-        self.assertEqual((fake.searches, fake.reads, len(answer.candidates)), (1, 1, 4))
+        self.assertEqual((fake.searches, fake.reads, len(answer.candidates)), (1, 1, 5))
         self.assertEqual([(p.url, p.outcome) for p in recording.fetches], [(SerpApiGoogleEventsProducer.search_url(SD), "ok")])
         self.assertIn("/robots.txt", fake.targets, "robots.txt was still read: the Account API request honours it")
 

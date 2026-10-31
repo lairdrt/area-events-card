@@ -18,9 +18,11 @@ check_robots=False. The Account API, which robots.txt allows, is read with robot
 
 A search is permitted only when the account reports account_status "Active" (any case); a missing, empty or other status refuses it.
 
-Facts are taken only as the result states them. Google gives a day such as "Sat, Nov 7" without a year: the year is the one in which that day falls on the stated
-weekday, within a year of the search; with no weekday, or no single such year, the result is set aside. A result without a stated start time is set aside too.
-Aggregated results are never treated as verified.
+Facts are taken only as the result states them. Google gives a day such as "Nov 6, 7:00 PM" without a year: the start is the nearest upcoming occurrence of
+that month and day (from the scan's local date in the source's time zone), recorded as inferred, never as stated. A stated year is always kept, a stated weekday
+must agree, and every start must lie within the source's rolling look-ahead window (lookahead_days, default 90, 30 to 365; both ends included); a search that
+names one year ("events in San Diego November 2026") accepts only events in that year. A result without a stated start time is set aside, and no time or end
+is ever invented. Aggregated results are never treated as verified.
 """
 import hashlib
 import json
@@ -43,6 +45,7 @@ KEY_FIELD = "api_key"
 ACCOUNT_PRIVATE_FIELDS = ("api_key", "account_email", "account_id")   # dropped from the Account API's answer the moment it arrives
 RESULTS_PER_PAGE = 10
 MAX_PAGES = 3
+DEFAULT_LOOKAHEAD_DAYS, MIN_LOOKAHEAD_DAYS, MAX_LOOKAHEAD_DAYS = 90, 30, 365
 FREE_TIER_RESERVE = 5        # the hard stop: the last five free searches are never used (searches made elsewhere, a provider count that lags)
 DEFAULT_PAUSE_AT = 200
 REPORT_MAX_AGE_S = 300       # how long the management view reuses an account reading; a search never does
@@ -300,33 +303,46 @@ def _clock(t, fallback_meridiem=None):
     return ((t["hour"] % 12) + (12 if meridiem == "p" else 0), t["minute"])
 
 
-def _year_of(day, today):
-    """The year of a stated day: its own, or the single year within a year of `today` in which it falls on its stated weekday."""
-    if day["year"] is not None:
+def _upcoming(month, day_of_month, today):
+    """The nearest occurrence of a month and day on or after `today`: this year's, else next year's (a 29 February only in a leap year)."""
+    for year in (today.year, today.year + 1, today.year + 2):
         try:
-            stated_day = date(day["year"], day["month"], day["day"])
-        except ValueError:
-            raise Unusable("the stated date does not exist") from None
-        if day["weekday"] is not None and stated_day.weekday() != day["weekday"]:
-            raise Unusable("the stated weekday does not match the stated date")
-        return day["year"], False
-    if day["weekday"] is None:
-        raise Unusable("the date states neither a year nor a weekday")
-    found = []
-    for year in (today.year - 1, today.year, today.year + 1):
-        try:
-            candidate = date(year, day["month"], day["day"])
+            found = date(year, month, day_of_month)
         except ValueError:
             continue
-        if today - timedelta(days=1) <= candidate <= today + timedelta(days=366) and candidate.weekday() == day["weekday"]:
-            found.append(year)
-    if len(found) != 1:
-        raise Unusable("no single year within a year of the search has that date on the stated weekday")
-    return found[0], True
+        if found >= today:
+            return found
+    raise Unusable("the stated date does not exist")
 
 
-def parse_when(when, zone, today):
-    """(start, end or None, year_derived) as aware datetimes in `zone`, from Google's 'when' text, or Unusable."""
+def _start_date(day, today, lookahead, query_year):
+    """(date, how) of the stated start day, `how` being 'stated' (the year is the result's own) or 'inferred' (the nearest upcoming occurrence).
+    The start must lie in the rolling window [today, today + lookahead days] and, when the search names one year, in that year."""
+    if day["year"] is not None:
+        try:
+            found, how = date(day["year"], day["month"], day["day"]), "stated"
+        except ValueError:
+            raise Unusable("the stated date does not exist") from None
+    else:
+        found, how = _upcoming(day["month"], day["day"], today), "inferred"
+    if day["weekday"] is not None and found.weekday() != day["weekday"]:
+        raise Unusable("the stated weekday does not match the date" + ("" if how == "stated" else " of its next occurrence"))
+    if not today <= found <= today + timedelta(days=lookahead):
+        raise Unusable(f"the date is outside the {lookahead}-day look-ahead window")
+    if query_year is not None and found.year != query_year:
+        raise Unusable(f"the search asks for {query_year} events; this one is in {found.year}")
+    return found, how
+
+
+def query_year(query):
+    """The one calendar year a search names ('events in San Diego November 2026'), or None when it names none or several."""
+    years = set(re.findall(r"\b(?:19|20)\d{2}\b", query or ""))
+    return int(years.pop()) if len(years) == 1 else None
+
+
+def parse_when(when, zone, today, lookahead=DEFAULT_LOOKAHEAD_DAYS, year_constraint=None):
+    """(start, end or None, how) as aware datetimes in `zone`, from Google's 'when' text, or Unusable. `how` says where the start's year came from:
+    'stated' (the text gives it) or 'inferred' (the nearest upcoming occurrence of the month and day; see _start_date). No time is ever invented."""
     if not isinstance(when, str) or not when.strip():
         raise Unusable("no date is stated")
     parts = [p for p in _DASH.split(when.strip()) if p.strip()]
@@ -344,8 +360,7 @@ def parse_when(when, zone, today):
     start_clock = _clock(left_time, right_time["meridiem"] if borrowed else None)   # '7 – 10 PM': the start shares the end's PM
     if start_clock is None:
         raise Unusable("the start time does not say AM or PM")
-    year, derived = _year_of(left_day, today)
-    start_date = date(year, left_day["month"], left_day["day"])
+    start_date, how = _start_date(left_day, today, lookahead, year_constraint)
     start = datetime(start_date.year, start_date.month, start_date.day, *start_clock, tzinfo=zone)
     end = None
     if right_time is not None:
@@ -354,7 +369,7 @@ def parse_when(when, zone, today):
             raise Unusable("the end time does not say AM or PM")
         if right_day is not None:
             if right_day["year"] is not None:
-                end_year, _ = _year_of(right_day, today)
+                end_year = right_day["year"]
             else:   # the end day follows the start: the first such date on or after it
                 end_year = start_date.year if (right_day["month"], right_day["day"]) >= (start_date.month, start_date.day) else start_date.year + 1
             try:
@@ -372,7 +387,7 @@ def parse_when(when, zone, today):
             end += timedelta(days=1)   # '10 PM – 2 AM': the end is on the next day
         if end <= start:
             raise Unusable("the end is not after the start")
-    return start, end, derived
+    return start, end, how
 
 
 def _text(value, limit=2000):
@@ -394,6 +409,8 @@ class SerpApiGoogleEventsProducer:
         {"name": "location", "label": "Search location", "kind": "text", "required": True, "placeholder": "San Diego, California, United States"},
         {"name": "timezone", "label": "Event time zone", "kind": "text", "required": True, "placeholder": "America/Los_Angeles"},
         {"name": "max_pages", "label": "Result pages per scan (each page is one billable search)", "kind": "integer", "default": 1, "min": 1, "max": MAX_PAGES},
+        {"name": "lookahead_days", "label": "Event look-ahead (days)", "kind": "integer", "default": DEFAULT_LOOKAHEAD_DAYS, "min": MIN_LOOKAHEAD_DAYS,
+         "max": MAX_LOOKAHEAD_DAYS},
     )
 
     def __init__(self, account=None, clock=time.time):
@@ -403,7 +420,7 @@ class SerpApiGoogleEventsProducer:
     def validate_options(options):
         if any(not isinstance(key, str) for key in options):
             raise ValueError("option names must be text")
-        unknown = sorted(set(options) - {"query", "location", "timezone", "max_pages", "url"})
+        unknown = sorted(set(options) - {"query", "location", "timezone", "max_pages", "lookahead_days", "url"})
         if unknown:
             raise ValueError(f"unsupported serpapi_google_events options: {', '.join(unknown)[:100]}")
         clean = {}
@@ -425,6 +442,11 @@ class SerpApiGoogleEventsProducer:
             raise ValueError(f"max_pages must be an integer between 1 and {MAX_PAGES}")
         if "max_pages" in options:
             clean["max_pages"] = pages
+        lookahead = options.get("lookahead_days", DEFAULT_LOOKAHEAD_DAYS)
+        if isinstance(lookahead, bool) or not isinstance(lookahead, int) or not MIN_LOOKAHEAD_DAYS <= lookahead <= MAX_LOOKAHEAD_DAYS:
+            raise ValueError(f"lookahead_days must be an integer between {MIN_LOOKAHEAD_DAYS} and {MAX_LOOKAHEAD_DAYS}")
+        if "lookahead_days" in options:
+            clean["lookahead_days"] = lookahead
         if "url" in options and options["url"] not in (SEARCH_URL, SEARCH_URL + "/"):
             raise ValueError(f"the address of a SerpApi search is always {SEARCH_URL}")
         return SEARCH_URL, clean
@@ -498,7 +520,8 @@ class SerpApiGoogleEventsProducer:
         if not title:
             raise Unusable("no title is stated")
         when = (result.get("date") or {}).get("when") if isinstance(result.get("date"), dict) else None
-        start, end, derived = parse_when(when, zone, today)
+        lookahead = int(options.get("lookahead_days", DEFAULT_LOOKAHEAD_DAYS))
+        start, end, how = parse_when(when, zone, today, lookahead, query_year(options.get("query")))
         venue = _text((result.get("venue") or {}).get("name"), 200) if isinstance(result.get("venue"), dict) else None
         lines = [line for line in (result.get("address") or []) if isinstance(line, str) and line.strip()] if isinstance(result.get("address"), list) else []
         address = _text(", ".join(lines), 300)
@@ -509,8 +532,11 @@ class SerpApiGoogleEventsProducer:
         identity = "|".join((re.sub(r"[^a-z0-9]+", " ", title.lower()).strip(), start.isoformat(), re.sub(r"[^a-z0-9]+", " ", (lines[0] if lines else venue or "").lower()).strip()))
         evidence = [f"Title from a SerpApi Google Events result for '{options['query']}' near {options['location']}", f"Date shown: {when.strip()}",
                     f"Local timezone supplied by configured source: {options['timezone']}"]
-        if derived:
-            evidence.append(f"Year {start.year}: the year in which {start:%B} {start.day} falls on the stated {start:%A}, within a year of the search")
+        if how == "inferred":
+            evidence.append(f"Google stated '{when.strip()}' without a year. Year {start.year} inferred as the next calendar occurrence of {start:%B} {start.day} "
+                            f"within the configured {lookahead}-day look-ahead window (from {today.isoformat()} in {options['timezone']})")
+        else:
+            evidence.append(f"Year {start.year} as stated in Google's date")
         if address:
             evidence.append(f"Address shown: {address}")
         return EventCandidate(local_id=hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32], title=title, starts_at=start.isoformat(),

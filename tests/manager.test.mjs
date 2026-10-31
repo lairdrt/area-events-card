@@ -246,7 +246,8 @@ const serpapiSnapshot = (usage = {}) => {
     { name: "query", label: "Event search query", kind: "text", required: true },
     { name: "location", label: "Search location", kind: "text", required: true },
     { name: "timezone", label: "Event time zone", kind: "text", required: true },
-    { name: "max_pages", label: "Result pages per scan", kind: "integer", default: 1, min: 1, max: 3 }] });
+    { name: "max_pages", label: "Result pages per scan", kind: "integer", default: 1, min: 1, max: 3 },
+    { name: "lookahead_days", label: "Event look-ahead (days)", kind: "integer", default: 90, min: 30, max: 365 }] });
   s.status.settings = { revision: 9 };
   s.status.sources.push({ source_key: "serpapi_sd", eligible: true });
   s.usage = { schema: "discovery.usage.v1", serpapi: {
@@ -271,7 +272,8 @@ test("a SerpApi producer's panel shows the account's real usage, the shared poli
   for (const shown of [/SerpApi account usage/i, /Plan:<\/span> <strong>Free Plan \(\$0\)/, /Monthly allowance:<\/span> <strong>250/, /Searches used:<\/span> <strong>124/,
     /Searches remaining:<\/span> <strong>126/, /Next renewal:<\/span> <strong>2026-11-20/, /Effective status:<\/span> <strong>Active/,
     /name='usage:auto_pause' checked/, /name='usage:pause_at' type='number' min='1' max='10000' required value='200'/, /free-tier safety stop is always on/,
-    /Shared by every SerpApi producer/, /Save changes/, /data-action='toggle'/]) assert.match(html, shown);
+    /Shared by every SerpApi producer/, /Save changes/, /data-action='toggle'/,
+    /Event look-ahead \(days\)<input name='opt:lookahead_days' type='number' value='90' min='30' max='365'>/]) assert.match(html, shown);
   assert.doesNotMatch(html, /api_key|serpapi-test-key/i);
   assert.doesNotMatch(manager.sourceForm(manager._snapshot.sources[0]), /SerpApi account usage/, "other producers have no usage section");
 });
@@ -312,7 +314,7 @@ test("saving a SerpApi producer saves a changed policy through the existing sett
   globalThis.FormData = class { constructor(form) { this.form = form; } get(key) { return this.form.values[key] ?? null; } };
   try {
     const fields = { "opt:query": { value: "events in San Diego" }, "opt:location": { value: "San Diego, California, United States" },
-      "opt:timezone": { value: "America/Los_Angeles" }, "opt:max_pages": { value: "1" },
+      "opt:timezone": { value: "America/Los_Angeles" }, "opt:max_pages": { value: "1" }, "opt:lookahead_days": { value: "120" },
       "usage:auto_pause": { checked: false }, "usage:pause_at": { value: "150" } };
     const form = { values: { source_id: "serpapi_sd", name: "SerpApi San Diego", producer_type: "serpapi_google_events", interval_minutes: "720" },
       elements: { namedItem(name) { return fields[name]; } } };
@@ -321,7 +323,8 @@ test("saving a SerpApi producer saves a changed policy through the existing sett
     assert.deepEqual(calls[0], ["settings", { expected_revision: 9, serpapi_auto_pause: false, serpapi_pause_at: 150 }]);
     assert.equal(calls[1][0], "source_command");
     assert.equal(calls[1][1].action, "update");
-    assert.deepEqual(calls[1][1].options, { query: "events in San Diego", location: "San Diego, California, United States", timezone: "America/Los_Angeles", max_pages: 1 });
+    assert.deepEqual(calls[1][1].options, { query: "events in San Diego", location: "San Diego, California, United States", timezone: "America/Los_Angeles", max_pages: 1,
+      lookahead_days: 120 }, "the look-ahead is saved as a number with the producer's options");
     calls.length = 0;
     fields["usage:auto_pause"].checked = true;
     fields["usage:pause_at"].value = "200";
