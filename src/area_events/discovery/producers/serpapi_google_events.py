@@ -46,6 +46,7 @@ ACCOUNT_PRIVATE_FIELDS = ("api_key", "account_email", "account_id")   # dropped 
 RESULTS_PER_PAGE = 10
 MAX_PAGES = 3
 DEFAULT_LOOKAHEAD_DAYS, MIN_LOOKAHEAD_DAYS, MAX_LOOKAHEAD_DAYS = 90, 30, 365
+MAX_ROLLOVER_DAYS = 31       # the longest event accepted when its end's year is inferred as the year after its start's
 FREE_TIER_RESERVE = 5        # the hard stop: the last five free searches are never used (searches made elsewhere, a provider count that lags)
 DEFAULT_PAUSE_AT = 200
 REPORT_MAX_AGE_S = 300       # how long the management view reuses an account reading; a search never does
@@ -367,11 +368,13 @@ def parse_when(when, zone, today, lookahead=DEFAULT_LOOKAHEAD_DAYS, year_constra
         end_clock = _clock(right_time)
         if end_clock is None:
             raise Unusable("the end time does not say AM or PM")
+        rolled = False   # the end's year is inferred as the year after the start's
         if right_day is not None:
             if right_day["year"] is not None:
                 end_year = right_day["year"]
             else:   # the end day follows the start: the first such date on or after it
                 end_year = start_date.year if (right_day["month"], right_day["day"]) >= (start_date.month, start_date.day) else start_date.year + 1
+                rolled = end_year != start_date.year
             try:
                 end_date = date(end_year, right_day["month"], right_day["day"])
             except ValueError:
@@ -387,6 +390,8 @@ def parse_when(when, zone, today, lookahead=DEFAULT_LOOKAHEAD_DAYS, year_constra
             end += timedelta(days=1)   # '10 PM – 2 AM': the end is on the next day
         if end <= start:
             raise Unusable("the end is not after the start")
+        if rolled and end - start > timedelta(days=MAX_ROLLOVER_DAYS):   # 'Nov 7 – Nov 6' is not a year-long event
+            raise Unusable(f"the end date, read as next year's, would make the event last more than {MAX_ROLLOVER_DAYS} days")
     return start, end, how
 
 

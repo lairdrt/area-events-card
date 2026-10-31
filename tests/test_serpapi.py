@@ -307,6 +307,53 @@ class TheLookAheadWindow(unittest.TestCase):
                          "the three without a time stay out")
 
 
+class InferredEndYear(unittest.TestCase):
+    """An end whose year is not stated may be read as next year's only for an event of at most 31 days."""
+
+    def test_an_end_before_the_start_is_not_read_as_a_year_long_event(self):
+        with self.assertRaises(Unusable) as caught:
+            when("Nov 7, 10 PM – Nov 6, 2 AM")
+        self.assertIn("read as next year's, would make the event last more than 31 days", str(caught.exception))
+
+    def test_overnight_and_cross_year_ranges_are_kept(self):
+        self.assertEqual(when("Nov 7, 10 PM – Nov 8, 2 AM"), ("2026-11-07T22:00:00-08:00", "2026-11-08T02:00:00-08:00", "inferred"))
+        self.assertEqual(when("Nov 7, 10 PM – 2 AM"), ("2026-11-07T22:00:00-08:00", "2026-11-08T02:00:00-08:00", "inferred"), "the time-only overnight rule")
+        self.assertEqual(when("Dec 31, 10 PM – Jan 1, 2 AM"), ("2026-12-31T22:00:00-08:00", "2027-01-01T02:00:00-08:00", "inferred"))
+        self.assertEqual(when("Dec 30, 10 AM – Jan 2, 4 PM"), ("2026-12-30T10:00:00-08:00", "2027-01-02T16:00:00-08:00", "inferred"))
+        self.assertEqual(when("Dec 31, 10 PM – 2 AM")[1], "2027-01-01T02:00:00-08:00", "time only, across the year: unchanged")
+
+    def test_the_31_day_boundary(self):
+        self.assertEqual(when("Dec 15, 10:00 AM – Jan 15, 10:00 AM")[1], "2027-01-15T10:00:00-08:00", "exactly 31 days is accepted")
+        with self.assertRaises(Unusable):
+            when("Dec 15, 10:00 AM – Jan 15, 10:01 AM")
+        with self.assertRaises(Unusable):
+            when("Dec 1, 10:00 AM – Jan 15, 4:00 PM")
+
+    def test_stated_years_and_same_year_ranges_keep_their_existing_behaviour(self):
+        self.assertEqual(when("Nov 7, 2026, 10 AM – Dec 31, 2026, 4 PM", lookahead=365)[1], "2026-12-31T16:00:00-08:00", "a long same-year range: no new limit")
+        self.assertEqual(when("Nov 7, 10 AM – Dec 31, 4 PM")[1], "2026-12-31T16:00:00-08:00", "a long range inside one year, no years stated: no new limit")
+        self.assertEqual(when("Dec 1, 10 AM – Mar 1, 2027, 4 PM")[1], "2027-03-01T16:00:00-08:00", "a stated end year: no new limit")
+        with self.assertRaises(Unusable) as caught:
+            when("Nov 7, 2026, 10 PM – Nov 6, 2026, 2 AM", lookahead=365)
+        self.assertIn("the end is not after the start", str(caught.exception), "an explicit backwards range is still refused as before")
+
+    def test_a_refused_range_is_never_a_candidate_and_is_noted_and_identities_stay(self):
+        results = [result("Overnight", "Dec 31, 10 PM – Jan 1, 2 AM"), result("Backwards", "Nov 7, 10 PM – Nov 6, 2 AM"), result("Market", "Nov 7, 10 AM – 4 PM")]
+        _, client, _, producer = setup(FakeSerpApi(pages=[page(results)]))
+        first = crawl(producer, client)[0]
+        accepted = contract.accept(first)
+        self.assertEqual(sorted(c.title for c in accepted.candidates), ["Market", "Overnight"])
+        self.assertEqual(accepted.rejections, ())
+        notes = " ".join(str(v) for k, v in first.notes.items() if k.startswith("set_aside_"))
+        self.assertIn("1: the end date, read as next year's, would make the event last more than 31 days", notes)
+        overnight = next(c for c in accepted.candidates if c.title == "Overnight")
+        self.assertEqual((overnight.starts_at, overnight.ends_at), ("2026-12-31T22:00:00-08:00", "2027-01-01T02:00:00-08:00"))
+        self.assertTrue(any("Year 2026 inferred as the next calendar occurrence of December 31" in line for line in overnight.verification.evidence),
+                        "the start's inferred year is recorded")
+        again = crawl(producer, client)[0]
+        self.assertEqual({c.local_id for c in again.candidates}, {c.local_id for c in first.candidates})
+
+
 # --- credentials ---------------------------------------------------------------------------------------------------
 
 class TheKeyStaysOut(unittest.TestCase):
