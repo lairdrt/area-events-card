@@ -76,12 +76,13 @@ class OrdinaryRequests(unittest.TestCase):
         self.assertEqual(response.url, URL)
         self.assertEqual(fetcher(Transport()).get(URL), '{"events_results": []}')
 
-    def test_the_interfaces_only_gained_an_optional_keyword(self):
+    def test_the_interfaces_only_gained_optional_keywords(self):
         for method, before in ((SafeFetcher.get, ["self", "url", "check_robots"]), (SafeFetcher.fetch, ["self", "url", "check_robots", "binary", "timeout"]),
                                (RecordingFetcher.get, ["self", "url", "check_robots"]), (RecordingFetcher.fetch, ["self", "url", "check_robots", "binary", "timeout"])):
             parameters = inspect.signature(method).parameters
-            self.assertEqual(list(parameters), before + ["secret_query"], method.__qualname__)
+            self.assertEqual(list(parameters), before + ["secret_query", "drop_fields"], method.__qualname__)
             self.assertIsNone(parameters["secret_query"].default)
+            self.assertEqual(parameters["drop_fields"].default, ())
 
     def test_test_clients_without_the_keyword_still_work_for_ordinary_calls(self):
         class OldClient:   # the shape of the existing test doubles: fetch(url) and fetch(url, binary=...)

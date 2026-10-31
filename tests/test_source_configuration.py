@@ -91,7 +91,9 @@ class SourceConfiguration(unittest.TestCase):
         metadata = self.app.control.list_producer_types()
         self.assertEqual(metadata["schema"], "area_events.producer_forms.v1")
         configured = {item["id"]: item for item in metadata["types"]}
-        self.assertEqual(set(configured), {"localist", "sandiego_gov", "sources_producer"})
+        self.assertEqual(set(configured), {"localist", "sandiego_gov", "sources_producer", "serpapi_google_events"})
+        self.assertEqual([field["name"] for field in configured["serpapi_google_events"]["fields"]], ["query", "location", "timezone", "max_pages"],
+                         "no field for a key: the SerpApi key is the host's, never a source option")
         self.assertIn("days", {field["name"] for field in configured["localist"]["fields"]})
         self.assertIn("url", {field["name"] for field in configured["sandiego_gov"]["fields"]})
 

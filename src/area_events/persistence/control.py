@@ -147,18 +147,24 @@ class SqliteControlStorage:
             seq = self._record_area_change(tx, area, now)
         return ControlResult(CONTROL_SCHEMA, area.revision, seq, False, area=area)
 
-    def set_settings(self, expected_revision, mode, intensity):
+    def set_settings(self, expected_revision, mode, intensity, serpapi_auto_pause=None, serpapi_pause_at=None):
         now = self._now()
         with self._store.write() as tx:
             current = self._settings.all(tx)
             if current.revision != expected_revision:
                 raise RevisionConflict(f"the settings are at revision {current.revision}, not {expected_revision}", current.revision)
-            if mode in (None, current.mode) and intensity in (None, current.intensity):
+            unchanged = (mode in (None, current.mode) and intensity in (None, current.intensity)
+                         and serpapi_auto_pause in (None, current.serpapi_auto_pause) and serpapi_pause_at in (None, current.serpapi_pause_at))
+            if unchanged:
                 return ControlResult(CONTROL_SCHEMA, current.revision, None, True, settings=current)
             if mode is not None:
                 self._settings.set(tx, "mode", mode, now)
             if intensity is not None:
                 self._settings.set(tx, "intensity", intensity, now)
+            if serpapi_auto_pause is not None:
+                self._settings.set(tx, "serpapi_auto_pause", "1" if serpapi_auto_pause else "0", now)
+            if serpapi_pause_at is not None:
+                self._settings.set(tx, "serpapi_pause_at", int(serpapi_pause_at), now)
             self._settings.bump(tx, now)
             settings = self._settings.all(tx)
             seq = self._changes.append(tx, "settings", "discovery", digest_of(settings), now, kind="discovery.settings_changed")

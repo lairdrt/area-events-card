@@ -130,13 +130,16 @@ class DiscoveryControlClient:
     async def update_area(self, area_key, expected_revision, **changes):
         return await self._request("PATCH", f"/v1/areas/{quote(area_key, safe='')}", {"expected_revision": expected_revision, **changes})
 
-    async def set_settings(self, expected_revision, mode=None, intensity=None):
+    async def set_settings(self, expected_revision, mode=None, intensity=None, serpapi_auto_pause=None, serpapi_pause_at=None):
         body = {"expected_revision": expected_revision}
-        if mode is not None:
-            body["mode"] = mode
-        if intensity is not None:
-            body["intensity"] = intensity
+        for name, value in (("mode", mode), ("intensity", intensity), ("serpapi_auto_pause", serpapi_auto_pause), ("serpapi_pause_at", serpapi_pause_at)):
+            if value is not None:
+                body[name] = value
         return await self._request("PUT", "/v1/discovery/settings", body)
+
+    async def usage(self):
+        """Paid-API usage (`discovery.usage.v1`): the SerpApi account's allowance and use, the policy and each SerpApi source's state. Never the key."""
+        return await self._request("GET", "/v1/usage")
 
     async def pause(self):
         return await self._request("POST", "/v1/discovery/pause", {})

@@ -235,3 +235,118 @@ test("build identifiers are HTML escaped", () => {
     assert.match(html, /&lt;script&gt;alert\(2\)&lt;\/script&gt;/);
   });
 });
+
+// --- SerpApi usage in the existing producer panel --------------------------------------------------------------------
+
+const serpapiSnapshot = (usage = {}) => {
+  const s = snapshot();
+  s.sources.push({ id: "serpapi_sd", type: "serpapi_google_events", name: "SerpApi San Diego", enabled: true, interval_minutes: 720, revision: 2,
+    options: { query: "events in San Diego", location: "San Diego, California, United States", timezone: "America/Los_Angeles" } });
+  s.producer_types.types.push({ id: "serpapi_google_events", name: "SerpApi Google Events", fields: [
+    { name: "query", label: "Event search query", kind: "text", required: true },
+    { name: "location", label: "Search location", kind: "text", required: true },
+    { name: "timezone", label: "Event time zone", kind: "text", required: true },
+    { name: "max_pages", label: "Result pages per scan", kind: "integer", default: 1, min: 1, max: 3 }] });
+  s.status.settings = { revision: 9 };
+  s.status.sources.push({ source_key: "serpapi_sd", eligible: true });
+  s.usage = { schema: "discovery.usage.v1", serpapi: {
+    configured: true, stale: false, error: null, state: "active", reason: null, resumes: null,
+    account: { plan_name: "Free Plan", monthly_price: 0, searches_per_month: 250, used: 124, remaining: 126, renewal: "2026-11-20", checked_at: 1793462400 },
+    policy: { auto_pause: true, pause_at: 200, free_tier_reserve: 5 },
+    sources: { serpapi_sd: { state: "active", reason: null } }, ...usage } };
+  return s;
+};
+const serpapiManager = (usage) => {
+  const manager = new Registered();
+  manager._snapshot = serpapiSnapshot(usage);
+  manager._selectedSource = "serpapi_sd";
+  manager._tab = "sources";
+  return manager;
+};
+
+test("a SerpApi producer's panel shows the account's real usage, the shared policy and the effective status, and never a key", () => {
+  const manager = serpapiManager();
+  manager.render();
+  const html = manager.shadowRoot.innerHTML;
+  for (const shown of [/SerpApi account usage/i, /Plan:<\/span> <strong>Free Plan \(\$0\)/, /Monthly allowance:<\/span> <strong>250/, /Searches used:<\/span> <strong>124/,
+    /Searches remaining:<\/span> <strong>126/, /Next renewal:<\/span> <strong>2026-11-20/, /Effective status:<\/span> <strong>Active/,
+    /name='usage:auto_pause' checked/, /name='usage:pause_at' type='number' min='1' max='10000' required value='200'/, /free-tier safety stop is always on/,
+    /Shared by every SerpApi producer/, /Save changes/, /data-action='toggle'/]) assert.match(html, shown);
+  assert.doesNotMatch(html, /api_key|serpapi-test-key/i);
+  assert.doesNotMatch(manager.sourceForm(manager._snapshot.sources[0]), /SerpApi account usage/, "other producers have no usage section");
+});
+
+test("why searches stopped, when they can resume, and stale or unavailable readings are said plainly", () => {
+  let manager = serpapiManager({ state: "paused_threshold", reason: "200 searches used this cycle; automatic pause stops scheduled searches at 200", resumes: "2026-11-20",
+    sources: { serpapi_sd: { state: "paused_threshold", reason: "200 searches used this cycle; automatic pause stops scheduled searches at 200" } } });
+  manager.render();
+  let html = manager.shadowRoot.innerHTML;
+  assert.match(html, /Effective status:<\/span> <strong>Paused by usage threshold/);
+  assert.match(html, /automatic pause stops scheduled searches at 200\. Searches can resume when SerpApi reports a new allowance \(renewal 2026-11-20\)/);
+  assert.match(html, /Paused · usage threshold/, "the list row says so too");
+  manager = serpapiManager({ stale: true, error: "the SerpApi account could not be read (FetchError)", state: "usage_unavailable",
+    sources: { serpapi_sd: { state: "usage_unavailable", reason: "the SerpApi account could not be read (FetchError)" } } });
+  manager.render();
+  html = manager.shadowRoot.innerHTML;
+  assert.match(html, /usage-stale'>Account information is unavailable: the SerpApi account could not be read/);
+  assert.match(html, /Effective status:<\/span> <strong>Usage unavailable/);
+  manager = serpapiManager({ account: null, stale: true, error: "no SerpApi key is configured (SERPAPI_API_KEY)", state: "usage_unavailable", sources: {} });
+  manager.render();
+  assert.match(manager.shadowRoot.innerHTML, /Monthly allowance:<\/span> <strong>—/);
+  const disabled = serpapiManager({ sources: { serpapi_sd: { state: "manually_disabled", reason: "disabled by an operator" } } });
+  disabled._snapshot.sources[1].enabled = false;
+  disabled.render();
+  assert.match(disabled.shadowRoot.innerHTML, /Effective status:<\/span> <strong>Manually disabled/);
+  assert.match(disabled.shadowRoot.innerHTML, /data-action='toggle'[^>]*>Enable</, "the existing enable control");
+  const old = serpapiManager();
+  delete old._snapshot.usage;
+  old.render();
+  assert.match(old.shadowRoot.innerHTML, /does not report SerpApi usage/);
+});
+
+test("saving a SerpApi producer saves a changed policy through the existing settings command, then the producer", async () => {
+  const manager = serpapiManager();
+  const calls = [];
+  manager.call = async (type, params) => { calls.push([type, params]); return type === "management" ? serpapiSnapshot() : {}; };
+  const previous = globalThis.FormData;
+  globalThis.FormData = class { constructor(form) { this.form = form; } get(key) { return this.form.values[key] ?? null; } };
+  try {
+    const fields = { "opt:query": { value: "events in San Diego" }, "opt:location": { value: "San Diego, California, United States" },
+      "opt:timezone": { value: "America/Los_Angeles" }, "opt:max_pages": { value: "1" },
+      "usage:auto_pause": { checked: false }, "usage:pause_at": { value: "150" } };
+    const form = { values: { source_id: "serpapi_sd", name: "SerpApi San Diego", producer_type: "serpapi_google_events", interval_minutes: "720" },
+      elements: { namedItem(name) { return fields[name]; } } };
+    await manager.saveSource(form);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(calls[0], ["settings", { expected_revision: 9, serpapi_auto_pause: false, serpapi_pause_at: 150 }]);
+    assert.equal(calls[1][0], "source_command");
+    assert.equal(calls[1][1].action, "update");
+    assert.deepEqual(calls[1][1].options, { query: "events in San Diego", location: "San Diego, California, United States", timezone: "America/Los_Angeles", max_pages: 1 });
+    calls.length = 0;
+    fields["usage:auto_pause"].checked = true;
+    fields["usage:pause_at"].value = "200";
+    await manager.saveSource(form);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(calls.map(([type]) => type).filter((type) => type !== "management"), ["source_command"], "an unchanged policy is not saved again");
+    fields["usage:pause_at"].value = "0";
+    calls.length = 0;
+    await manager.saveSource(form);
+    assert.equal(calls.length, 0);
+    assert.match(manager._error, /Pause at must be a whole number/);
+  } finally {
+    globalThis.FormData = previous;
+  }
+});
+
+test("Sources and Areas share one 50/50 split that still stacks on narrow screens", () => {
+  const manager = serpapiManager();
+  manager.render();
+  const css = manager.shadowRoot.innerHTML;
+  assert.match(css, /\.split\{display:grid;grid-template-columns:minmax\(0,1fr\) minmax\(0,1fr\);gap:14px\}/);
+  assert.equal((css.match(/\.split\{display:grid/g) || []).length, 1, "one shared layout rule for both pages");
+  assert.match(css, /@media\(max-width:900px\)\{[^\n]*?\.split\{grid-template-columns:1fr\}/, "stacked below 900px, as before");
+  assert.match(css, /<div class='split'><div class='list'>/);
+  manager._tab = "areas";
+  manager.render();
+  assert.match(manager.shadowRoot.innerHTML, /<div class='split'><div class='list'>/);
+});

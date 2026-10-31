@@ -8,7 +8,8 @@
     POST  /v1/sources                    control   create a configured instance
     PATCH /v1/sources/<id>               control   update; body must carry expected_revision
     POST  /v1/sources/<id>/enable|disable control   enable or disable; body must carry expected_revision
-    PUT   /v1/discovery/settings         control   mode and intensity; body must carry expected_revision
+    PUT   /v1/discovery/settings         control   mode, intensity and the SerpApi usage policy (serpapi_auto_pause, serpapi_pause_at); body must carry expected_revision
+    GET   /v1/usage                      read      paid-API usage: the SerpApi account's allowance and use, the usage policy, and each SerpApi source's effective state (no key)
     POST  /v1/discovery/pause|resume     control   idempotent
     GET   /v1/changes?after=N&limit=K    read      the durable change feed (hints are not needed; this is authoritative)
     POST  /v1/service/stop               control   graceful shutdown of the serving process
@@ -128,9 +129,9 @@ class ApiError(Exception):
 class DiscoveryApi:
     """Routes a request to the DiscoveryControl and DiscoveryReader contracts. Knows nothing about HTTP sockets."""
 
-    def __init__(self, control, reader, tokens: ApiTokens, clock, on_stop=None, processing=None, events=None, media=None, trashcan=None):
+    def __init__(self, control, reader, tokens: ApiTokens, clock, on_stop=None, processing=None, events=None, media=None, trashcan=None, usage=None):
         self._control, self._reader, self._tokens, self._clock, self._on_stop = control, reader, tokens, clock, on_stop
-        self._processing, self._events, self._media, self._trashcan = processing, events, media, trashcan
+        self._processing, self._events, self._media, self._trashcan, self._usage = processing, events, media, trashcan, usage
         self._failures, self._failure_lock = {}, threading.Lock()
 
     def handle(self, method, target, headers, body, client):
@@ -213,6 +214,12 @@ class DiscoveryApi:
             return self._media_route(method, path)
         if method == "GET" and path == "/v1/discovery/status":
             return 200, {"schema": CONTROL_SCHEMA, "status": {**to_jsonable(self._control.get_status()), "build": backend_build()}}
+        if path == "/v1/usage":
+            if self._usage is None:
+                raise ApiError(404, "not_found", "this service does not report paid-API usage")
+            if method != "GET":
+                raise ApiError(405, "method_not_allowed", "method not allowed")
+            return 200, self._usage()
         if method == "GET" and path == "/v1/areas":
             return 200, {"schema": CONTROL_SCHEMA, "areas": to_jsonable(self._control.list_areas())}
         if method == "GET" and path == "/v1/producer-types":
@@ -285,10 +292,11 @@ class DiscoveryApi:
         if method == "PUT" and path == "/v1/discovery/settings":
             self._need(scope, "control")
             data = self._json(headers, body)
-            self._only(data, ("expected_revision", "mode", "intensity"))
+            self._only(data, ("expected_revision", "mode", "intensity", "serpapi_auto_pause", "serpapi_pause_at"))
             if "expected_revision" not in data:
                 raise ValidationFailed("expected_revision is required")
-            return 200, to_jsonable(self._control.set_discovery_mode(SettingsRequest(data["expected_revision"], data.get("mode"), data.get("intensity"))))
+            return 200, to_jsonable(self._control.set_discovery_mode(SettingsRequest(data["expected_revision"], data.get("mode"), data.get("intensity"),
+                                                                                     data.get("serpapi_auto_pause"), data.get("serpapi_pause_at"))))
         if method == "POST" and path in ("/v1/discovery/pause", "/v1/discovery/resume"):
             self._need(scope, "control")
             self._json(headers, body)

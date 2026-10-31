@@ -19,7 +19,7 @@ const CSS = [
   ".stat{padding:16px 18px}.value{font-size:26px;font-weight:650;margin-top:5px}.layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:16px}",
   ".nav{display:flex;flex-direction:column;gap:4px;align-self:start}.nav button{text-align:left;border:0;border-radius:9px;background:transparent;padding:12px 13px;color:var(--primary-text-color);font-weight:550}",
   ".nav button.active{background:color-mix(in srgb,var(--ae-accent) 12%,transparent);color:var(--ae-accent)}.pane{padding:20px;margin-bottom:15px}.pane-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:15px}",
-  ".split{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(280px,1fr);gap:14px}.list{border:1px solid var(--ae-line);border-radius:9px;overflow:hidden}.source-row{display:grid;grid-template-columns:minmax(0,1fr) 95px 70px;align-items:center;gap:10px;padding:13px;border:0;border-bottom:1px solid var(--ae-line);background:transparent;color:inherit;width:100%;text-align:left}",
+  ".split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}.list{border:1px solid var(--ae-line);border-radius:9px;overflow:hidden}.source-row{display:grid;grid-template-columns:minmax(0,1fr) 95px 70px;align-items:center;gap:10px;padding:13px;border:0;border-bottom:1px solid var(--ae-line);background:transparent;color:inherit;width:100%;text-align:left}",
   ".source-row:last-child{border:0}.source-row.selected{background:color-mix(in srgb,var(--ae-accent) 9%,transparent)}.source-row:hover{background:color-mix(in srgb,var(--ae-accent) 7%,transparent)}",
   ".source-name{font-size:13px;font-weight:650;display:block}.small{font-size:11px;color:var(--ae-muted);margin-top:4px}.state{font-size:12px;font-weight:600}.state.warn{color:#c48e3a}.state.good{color:#36a46b}",
   ".detail{background:var(--secondary-background-color,rgba(120,130,140,.06));border:1px solid var(--ae-line);border-radius:10px;padding:16px;min-width:0}",
@@ -27,6 +27,7 @@ const CSS = [
   "input[type=checkbox]{width:auto;display:inline-block;margin-right:8px}fieldset{border:0;padding:0;margin:10px 0}.inline{display:flex;align-items:center;gap:9px}.inline input{width:auto;margin:0}",
   "textarea{display:block;width:100%;min-height:120px;resize:vertical;margin-top:5px;border:1px solid var(--ae-line);border-radius:8px;padding:9px 10px;background:var(--ae-surface);color:var(--primary-text-color);font:inherit;font-size:13px}",
   ".detail .actions{margin-top:18px}.message{padding:12px 14px;margin:0 0 16px;border:1px solid var(--ae-line);border-radius:8px;background:var(--ae-surface);font-size:13px}.message.error{border-color:var(--error-color,#bf4646)}",
+  ".usage{display:grid;gap:6px;margin-top:9px;font-size:13px}.usage-row{overflow-wrap:anywhere}.usage-stale,.usage-unavailable{color:var(--warning-color,#c48e3a)}",
   ".empty{color:var(--ae-muted);font-size:13px;padding:25px;text-align:center}.area-row{padding:13px 0;border-top:1px solid var(--ae-line)}.section-note{font-size:12px;color:var(--ae-muted);line-height:1.55}",
   "table.trash{width:100%;border-collapse:collapse;font-size:13px}table.trash th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--ae-muted);padding:10px 12px;border-bottom:1px solid var(--ae-line)}",
   "table.trash td{padding:11px 12px;border-bottom:1px solid var(--ae-line);vertical-align:top;overflow-wrap:anywhere}table.trash tr:last-child td{border-bottom:0}table.trash .num{text-align:right}",
@@ -186,7 +187,45 @@ class AreaEventsManager extends HTMLElement {
     }
     return options;
   }
-  saveSource(form) {
+  usageMarkup(source) {
+    // The SerpApi account is shared by every SerpApi producer: one allowance, one policy, saved with the existing settings command.
+    const usage = this._snapshot?.usage?.serpapi;
+    const date = (epoch) => epoch ? new Date(epoch * 1000).toLocaleString() : "—";
+    const STATES = { active: "Active", manually_disabled: "Manually disabled", paused_threshold: "Paused by usage threshold",
+      blocked_free_tier: "Blocked by free-tier safety limit", usage_unavailable: "Usage unavailable", waiting_for_renewal: "Waiting for allowance renewal" };
+    if (!usage) return "<div class='eyebrow' style='margin-top:19px'>SerpApi account usage</div><p class='section-note usage-unavailable'>" +
+      "This Discovery Service does not report SerpApi usage, so no search status can be shown.</p>";
+    const account = usage.account;
+    const own = usage.sources?.[source.id] || { state: usage.state, reason: usage.reason };
+    const policy = usage.policy || {};
+    const row = (label, value) => "<div class='usage-row'><span class='muted'>" + escapeHtml(label) + ":</span> <strong>" + escapeHtml(value) + "</strong></div>";
+    const plan = account ? (account.monthly_price === 0 ? (account.plan_name || "Free") + " ($0)" : (account.plan_name || "Paid") + " ($" + account.monthly_price + "/month)") : "—";
+    return "<div class='eyebrow' style='margin-top:19px'>SerpApi account usage</div>" +
+      (usage.stale || usage.error ? "<p class='section-note usage-stale'>" + escapeHtml(usage.error ? "Account information is unavailable: " + usage.error :
+        "Account information is stale.") + (account ? " Last read " + escapeHtml(date(account.checked_at)) + "." : "") + "</p>" : "") +
+      "<div class='usage'>" + row("Plan", plan) + row("Monthly allowance", account ? account.searches_per_month : "—") +
+      row("Searches used", account ? account.used : "—") + row("Searches remaining", account ? account.remaining : "—") +
+      row("Next renewal", account?.renewal || "—") + row("Read", account ? date(account.checked_at) : "—") +
+      row("Effective status", STATES[own.state] || own.state) + "</div>" +
+      (own.reason ? "<p class='section-note usage-reason'>" + escapeHtml(own.reason) + (usage.resumes && own.state !== "manually_disabled" ?
+        ". Searches can resume when SerpApi reports a new allowance (renewal " + escapeHtml(usage.resumes) + ")." : ".") + "</p>" : "") +
+      "<label class='inline'><input type='checkbox' name='usage:auto_pause' " + (policy.auto_pause !== false ? "checked" : "") + ">Automatic pause</label>" +
+      "<label>Pause at (searches per billing cycle)<input name='usage:pause_at' type='number' min='1' max='10000' required value='" +
+      escapeHtml(policy.pause_at ?? 200) + "'></label>" +
+      "<p class='section-note'>Shared by every SerpApi producer. The free-tier safety stop is always on: searches stop while " +
+      escapeHtml(policy.free_tier_reserve ?? 5) + " or fewer free searches remain, and never run on a paid plan.</p>";
+  }
+  usagePolicyFrom(form) {
+    const box = form.elements.namedItem("usage:auto_pause");
+    const field = form.elements.namedItem("usage:pause_at");
+    if (!box || !field) return null;
+    const pauseAt = Number(field.value);
+    if (!Number.isInteger(pauseAt) || pauseAt < 1 || pauseAt > 10000) throw new Error("Pause at must be a whole number of searches from 1 to 10000.");
+    const current = this._snapshot?.usage?.serpapi?.policy || {};
+    if (box.checked === (current.auto_pause !== false) && pauseAt === current.pause_at) return null;
+    return { expected_revision: this._snapshot?.status?.settings?.revision, serpapi_auto_pause: box.checked, serpapi_pause_at: pauseAt };
+  }
+  async saveSource(form) {
     const data = new FormData(form);
     const id = String(data.get("source_id") || "");
     const name = String(data.get("name") || "").trim();
@@ -195,6 +234,11 @@ class AreaEventsManager extends HTMLElement {
     if (!name || !Number.isInteger(interval) || interval < 1) { this._error = "Enter a name and a positive interval."; return void this.render(); }
     try {
       const options = this.optionsFrom(form, type);
+      const policy = this._creating ? null : this.usagePolicyFrom(form);
+      if (policy) {   // the account-wide policy first, through the existing settings command; the producer's own settings follow
+        this._saving = true;
+        try { await this.call("settings", policy); } finally { this._saving = false; }
+      }
       if (this._creating) {
         return void this.mutate("source_command", { action: "create", source_id: id, producer_type: type, name, enabled: false,
           interval_minutes: interval, options });
@@ -260,8 +304,11 @@ class AreaEventsManager extends HTMLElement {
     const list = sources.map((source) => {
       const state = states.get(source.id);
       const installed = this.sourceTypes().some((item) => item.id === source.type);
+      const usage = this._snapshot?.usage?.serpapi?.sources?.[source.id];   // a SerpApi producer that its account keeps from searching says why
+      const held = { paused_threshold: "Paused · usage threshold", blocked_free_tier: "Blocked · free-tier limit", usage_unavailable: "Usage unavailable",
+        waiting_for_renewal: "Waiting for renewal" }[usage?.state];
       const status = !installed ? (source.enabled ? "Enabled · Retired adapter" : "Disabled · Retired adapter")
-        : !source.enabled ? "Disabled" : state?.eligible ? "Ready" : "Idle";
+        : !source.enabled ? "Disabled" : held ? held : state?.eligible ? "Ready" : "Idle";
       return "<button class='source-row " + (source.id === this._selectedSource && !this._creating ? "selected" : "") +
         "' data-action='source' data-value='" + escapeHtml(source.id) + "'><span><span class='source-name'>" +
         escapeHtml(source.name) + "</span><span class='small'>" + escapeHtml(source.type) + "</span></span>" +
@@ -300,6 +347,7 @@ class AreaEventsManager extends HTMLElement {
       escapeHtml(source?.interval_minutes || 60) + "'></label>" +
       "<div class='eyebrow' style='margin-top:19px'>Producer configuration</div>" +
       this.fieldMarkup(descriptor?.fields || [], source?.options || {}) +
+      (!creating && type === "serpapi_google_events" ? this.usageMarkup(source) : "") +
       "<div class='actions'><button class='button primary' type='submit' " +
       (!canControl || this._saving ? "disabled" : "") + ">" + (creating ? "Create disabled producer" : "Save changes") + "</button>" +
       (!creating ? "<button class='button " + (source.enabled ? "danger" : "") + "' type='button' data-action='toggle' " +

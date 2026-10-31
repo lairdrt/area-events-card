@@ -316,6 +316,9 @@ class SettingsRecord:
     paused: bool
     revision: int
     updated_at: int
+    # the account-wide SerpApi usage policy (every SerpApi producer shares one key and one allowance); the free-tier hard stop is not a setting
+    serpapi_auto_pause: bool = True
+    serpapi_pause_at: int = 200
 
 
 # --- the Processing contract's records (discovery.processing.v1) and the clean event processing produces ------------------

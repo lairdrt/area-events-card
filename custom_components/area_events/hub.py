@@ -404,8 +404,12 @@ class DiscoveryHub:
             trashcan = await self._read.trashcan()
         except DiscoveryRequestError:   # a service without a trashcan: the section says so
             trashcan = None
+        try:
+            usage = await self._read.usage()
+        except DiscoveryRequestError:   # a service that does not report paid-API usage
+            usage = None
         return {"schema": "area_events.management.v1", "sources": sources, "areas": areas,
-                "status": status, "producer_types": producer_types, "can_control": self.can_control, "trashcan": trashcan}
+                "status": status, "producer_types": producer_types, "can_control": self.can_control, "trashcan": trashcan, "usage": usage}
 
     async def delete_event(self, event_key, reason):
         """Delete an event into the service's trashcan. Only once the service confirms is it taken off every card's view (the change feed would do the same at the
@@ -425,8 +429,9 @@ class DiscoveryHub:
     async def set_source_enabled(self, source_key, expected_revision, enabled):
         return await self._changed(self._controller().set_source_enabled(source_key, expected_revision, enabled))
 
-    async def set_settings(self, expected_revision, mode=None, intensity=None):
-        return await self._changed(self._controller().set_settings(expected_revision, mode=mode, intensity=intensity))
+    async def set_settings(self, expected_revision, mode=None, intensity=None, serpapi_auto_pause=None, serpapi_pause_at=None):
+        return await self._changed(self._controller().set_settings(expected_revision, mode=mode, intensity=intensity,
+                                                                   serpapi_auto_pause=serpapi_auto_pause, serpapi_pause_at=serpapi_pause_at))
 
     async def pause(self):
         return await self._changed(self._controller().pause())

@@ -55,9 +55,10 @@ class RecordingFetcher:
     def requests(self):
         return len(self.fetches)
 
-    def fetch(self, url, check_robots=True, binary=None, timeout=None, secret_query=None):
+    def fetch(self, url, check_robots=True, binary=None, timeout=None, secret_query=None, drop_fields=()):
         """`secret_query` (credential parameters, see safe.SecretQuery) goes to the client beside `url` and is never joined to it here:
-        the page is recorded under `url`, an error only in scrubbed form, and a response that carries a credential is not recorded."""
+        the page is recorded under `url`, an error only in scrubbed form, and a response that carries a credential is not recorded.
+        `drop_fields` (JSON members the client takes out of the response before anything sees it, see SafeFetcher.fetch) is passed on."""
         if len(self.fetches) >= self.max_requests:
             raise BudgetExceeded(f"the request budget of this job ({self.max_requests}) is spent")
         if self.max_seconds is not None and self.monotonic() - self.started > self.max_seconds:
@@ -65,6 +66,8 @@ class RecordingFetcher:
         secret = None
         try:
             options = {"binary": binary} if binary else {}
+            if drop_fields:
+                options["drop_fields"] = drop_fields
             if secret_query is not None:
                 secret = SecretQuery(url, secret_query)
                 options["secret_query"] = secret_query
@@ -93,6 +96,6 @@ class RecordingFetcher:
         self.image_requests += 1
         return self.client.fetch(url, binary=IMAGE_TYPES).body
 
-    def get(self, url, check_robots=True, secret_query=None):
+    def get(self, url, check_robots=True, secret_query=None, drop_fields=()):
         """Return the fetched page text through the standard producer interface."""
-        return self.fetch(url, check_robots, secret_query=secret_query).text
+        return self.fetch(url, check_robots, secret_query=secret_query, drop_fields=drop_fields).text

@@ -34,6 +34,7 @@ from .validation.processing import ProcessingService
 from .discovery.producers import city_of_san_diego
 from .discovery.producers.city_of_san_diego import CityOfSanDiegoProducer
 from .discovery.producers.localist import LocalistProducer
+from .discovery.producers.serpapi_google_events import SerpApiAccount, SerpApiGoogleEventsProducer
 from .discovery.producers.sources_producer import SourcesProducer
 from .image_extractor.goose3_adapter import Goose3ImageExtractor
 from .discovery.scheduler import AreaPacing, DiscoveryScheduler, SchedulerConfig
@@ -88,6 +89,7 @@ class DiscoveryApp:
     enrichment: MediaEnrichmentService
     media_files: object
     media_work: object
+    serpapi: object = None    # the one SerpApi account (key held in memory only) every SerpApi source shares
 
     def register_known_sources(self):
         """Register every built-in source (idempotent). A source that no enabled area uses is registered but idle."""
@@ -103,8 +105,9 @@ class DiscoveryApp:
 def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None, worker_id="worker-1", request_interval=2.0, store_options=None,
           host_config=HostConfig(), scheduler_config=SchedulerConfig(), service_gate=True,
           extraction_config=ExtractionConfig(), processing_config=ProcessingConfig(), enrichment_config=EnrichmentConfig(), media_dir=None, nominatim_interval=15.0,
-          deduplication=DEFAULT_DEDUPLICATION):
-    """The connected Discovery Service objects for one database. `fetch_client` replaces the network client (tests); otherwise a
+          deduplication=DEFAULT_DEDUPLICATION, serpapi_api_key=None):
+    """The connected Discovery Service objects for one database. `serpapi_api_key` is the SerpApi key (default: the SERPAPI_API_KEY
+    environment variable of the host process); it is held in memory by the one SerpApiAccount and never stored. `fetch_client` replaces the network client (tests); otherwise a
     SafeFetcher is made with the given (or a new) HostPolicy, which every fetcher of this service shares. With the default `config` the
     service crawls only sources that an enabled area uses and honours the operator's pause; pass a DiscoveryConfig (require_area False)
     and service_gate=False for the earlier, area-less behaviour. `deduplication` is the name of a strategy in DEDUPLICATORS, or an object
@@ -117,8 +120,12 @@ def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None,
     pacing = AreaPacing(scheduler_config)
     scheduler = DiscoveryScheduler(persistence.scheduling, pacing)
     config = config or DiscoveryConfig(require_area=service_gate)
+    # one account for every SerpApi source: its usage policy is read from the shared settings each time a search is considered
+    serpapi = SerpApiAccount(client, serpapi_api_key if serpapi_api_key is not None else os.environ.get("SERPAPI_API_KEY"),
+                             lambda: control.get_status().settings, clock)
     adapters = {"sandiego_gov": CityOfSanDiegoProducer(), "localist": LocalistProducer(),
-                "sources_producer": SourcesProducer(image_extractor=default_image_extractor())}
+                "sources_producer": SourcesProducer(image_extractor=default_image_extractor()),
+                "serpapi_google_events": SerpApiGoogleEventsProducer(serpapi, clock)}
     service = DiscoveryService(persistence.crawl, client, adapters, clock, config, worker_id,
                                pacing=pacing if service_gate else None, gate=scheduler if service_gate else None)
     host = DiscoveryHost(service, scheduler, clock, host_config)
@@ -137,13 +144,14 @@ def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None,
     enrichment = MediaEnrichmentService(persistence.media_work, resolver, SourcePhotos(client, persistence.media_cache, persistence.media_work, clock, enrichment_config), clock,
                                         enrichment_config)
     return DiscoveryApp(persistence, policy, service, persistence.reader, control, scheduler, host, processing, events, extraction, enrichment, persistence.media_files,
-                        persistence.media_work)
+                        persistence.media_work, serpapi)
 
 
 def build_api(app, tokens, clock=time.time, host="127.0.0.1", port=8780, allow_remote=False, tls=None, allow_plain=False):
     """The authenticated HTTP API over an app's control and reader contracts (not started)."""
+    usage = (lambda: {"schema": "discovery.usage.v1", "serpapi": app.serpapi.report(app.control.list_sources())}) if app.serpapi is not None else None
     return DiscoveryApiServer(DiscoveryApi(app.control, app.reader, tokens, clock, on_stop=app.host.request_stop, processing=app.processing, events=app.events, media=app.media_files,
-                                           trashcan=app.persistence.trashcan),
+                                           trashcan=app.persistence.trashcan, usage=usage),
                               host, port, allow_remote, tls, allow_plain)
 
 
