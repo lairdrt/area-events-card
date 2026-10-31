@@ -20,6 +20,7 @@ repeats the key is refused instead of returned.
 """
 import http.client
 import ipaddress
+import re
 import socket
 import ssl
 import threading
@@ -72,12 +73,17 @@ class SecretQuery:
             raise BlockedError(f"the address already has the query parameter {clash[0]!r} that a credential would set")
         self.query = urlencode(pairs)
         # every spelling of a value that could come back: as given, and URL-encoded either way
-        self._forms = sorted({form for _, value in pairs for form in (value, quote_plus(value), quote(value, safe=""))}, key=len, reverse=True)
+        forms = sorted({form for _, value in pairs for form in (value, quote_plus(value), quote(value, safe=""))}, key=len, reverse=True)
+        # one case-insensitive pattern, longest spellings first, used by both scrub and echoed so that they always agree
+        self._pattern = re.compile("|".join(re.escape(form) for form in forms), re.IGNORECASE)
 
     def scrub(self, text):
-        """`text` with every spelling of every value replaced."""
-        for form in self._forms:
-            text = text.replace(form, "[credential]")
+        """`text` with every spelling of every value replaced, ignoring case as `echoed` does. The placeholder is one that spells no
+        value; if every candidate does, values are removed outright, again until none is left (each pass shortens the text)."""
+        placeholder = next((p for p in ("[credential]", "[redacted]", "***", "###") if not self.echoed(p)), "")
+        text = self._pattern.sub(placeholder, text)
+        while self.echoed(text):
+            text = self._pattern.sub("", text)
         return text
 
     def echoed(self, *data):
@@ -85,8 +91,8 @@ class SecretQuery:
         for item in data:
             if not item:
                 continue
-            haystack = (item.decode("utf-8", errors="replace") if isinstance(item, (bytes, bytearray)) else str(item)).lower()
-            if any(form.lower() in haystack for form in self._forms):
+            haystack = item.decode("utf-8", errors="replace") if isinstance(item, (bytes, bytearray)) else str(item)
+            if self._pattern.search(haystack):
                 return True
         return False
 

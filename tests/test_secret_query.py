@@ -320,6 +320,61 @@ class TheUsualLimitsStillApply(unittest.TestCase):
         self.assertEqual(set(limits), {MAX_BYTES})
 
 
+def recapitalized():
+    """Every spelling of KEY (as given, + encoded, % encoded) in upper case, lower case and swapped case: what a server or library may echo."""
+    return sorted({change(form) for form in spellings() for change in (str.upper, str.lower, str.swapcase)} - spellings())
+
+
+class RedactionIgnoresCase(unittest.TestCase):
+    """A credential written in another capitalization is still the credential: it is redacted wherever it is detected."""
+
+    def test_safe_fetcher_errors_redact_the_credential_in_any_capitalization_and_encoding(self):
+        for form in recapitalized():
+            with self.subTest(form=form):
+                def failing(target, form=form):
+                    raise FetchError(f"serpapi.com: upstream rejected api_key={form} (sent {target.upper()})")
+                with self.assertRaises(FetchError) as caught:
+                    fetcher(Transport({"/search": failing})).fetch(URL, secret_query=SECRET)
+                self.assertFalse(carries_secret(caught.exception), str(caught.exception))
+                self.assertIn("[credential]", str(caught.exception))
+
+    def test_recorded_failure_diagnostics_redact_the_credential_in_any_capitalization_and_encoding(self):
+        for form in recapitalized():
+            with self.subTest(form=form):
+                def failing(target, form=form):
+                    raise FetchError(f"serpapi.com: upstream rejected api_key={form}")
+                recording = RecordingFetcher(fetcher(Transport({"/search": failing})), 5)
+                with self.assertRaises(FetchError) as caught:
+                    recording.fetch(URL, secret_query=SECRET)
+                [page] = recording.fetches
+                self.assertFalse(carries_secret(page.error, caught.exception), page.error)
+                self.assertIn("[credential]", page.error)
+
+        class Shouting:   # a client of its own whose error quotes the key in capitals: RecordingFetcher redacts it too
+            def fetch(self, url, binary=None, secret_query=None):
+                raise FetchError("rejected key " + secret_query["api_key"].upper())
+        recording = RecordingFetcher(Shouting(), 5)
+        with self.assertRaises(FetchError) as caught:
+            recording.fetch(URL, secret_query=SECRET)
+        self.assertFalse(carries_secret(recording.fetches, caught.exception), recording.fetches[0].error)
+
+    def test_scrub_and_echoed_agree(self):
+        secret = SecretQuery(URL, SECRET)
+        for form in sorted(spellings()) + recapitalized():
+            with self.subTest(form=form):
+                text = f"before {form} after"
+                self.assertTrue(secret.echoed(text))
+                self.assertFalse(secret.echoed(secret.scrub(text)), secret.scrub(text))
+                self.assertEqual(secret.scrub(text), "before [credential] after")
+
+    def test_the_replacement_never_spells_the_credential(self):
+        for value in ("credential", "CREDENTIAL", "[", "e", "ed"):   # values the placeholder itself contains
+            with self.subTest(value=value):
+                secret = SecretQuery(URL, {"api_key": value})
+                scrubbed = secret.scrub(f"rejected {value.swapcase()} and {value}")
+                self.assertFalse(secret.echoed(scrubbed), scrubbed)
+
+
 class TheHelper(unittest.TestCase):
     def test_scrub_replaces_every_spelling(self):
         secret = SecretQuery(URL, SECRET)
