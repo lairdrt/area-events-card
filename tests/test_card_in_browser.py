@@ -27,13 +27,35 @@ await Promise.race([customElements.whenDefined("area-events-card"), wait(4000)])
 const card = document.createElement("area-events-card");
 document.body.append(card);
 card.setConfig({ area: "Test" });
-card.hass = { locale: { language: "en-US" }, themes: { darkMode: true }, callWS: async () => ({ value: null }),
+const hass = { locale: { language: "en-US" }, themes: { darkMode: true }, callWS: async () => ({ value: null }),
               connection: { subscribeMessage: async (callback) => { setTimeout(() => callback(view), 0); return () => {}; } } };
+card.hass = hass;
 await wait(1500);
 const tiles = [...card.shadowRoot.querySelectorAll(".event")].map((tile) => ({
   title: (tile.querySelector(".title") || {}).textContent, lines: [...tile.querySelectorAll(".meta")].map((m) => m.textContent.trim()),
   chip: ((tile.querySelector(".venue-chip") || {}).textContent || null), elements: [...tile.querySelectorAll("script, img[onerror]")].length }));
-document.getElementById("out").textContent = JSON.stringify({ viewer: Intl.DateTimeFormat().resolvedOptions().timeZone, tiles });
+// a phone-width card: the top row wraps each control together with its summary, nothing scrolls sideways, one panel opens at a time
+const narrow = document.createElement("area-events-card");
+narrow.style.cssText = "display: block; width: 320px";
+document.body.append(narrow);
+narrow.setConfig({ area: "Test", id: "narrow" });
+narrow.hass = hass;
+const r = narrow.shadowRoot;
+for (let i = 0; i < 40 && !r.querySelector(".filter-bar"); i++) await wait(100);
+const box = (el) => { const b = el.getBoundingClientRect(); return { left: Math.round(b.left), right: Math.round(b.right), top: Math.round(b.top), bottom: Math.round(b.bottom) }; };
+const layout = (bar = r.querySelector(".filter-bar")) => ({ card: box(narrow), bar: box(bar), overflow: bar.scrollWidth - bar.clientWidth, filtersOverflow: r.querySelector(".filters").scrollWidth - r.querySelector(".filters").clientWidth,
+  groups: [...bar.children].map((g) => ({ cls: g.className, button: g.children[0].textContent, summary: g.children[1].textContent, buttonBox: box(g.children[0]), summaryBox: box(g.children[1]),
+    summaryFont: getComputedStyle(g.children[1]).fontSize, summaryColor: getComputedStyle(g.children[1]).color })),
+  panels: [r.querySelectorAll(".date-chips .chip").length, r.querySelectorAll(".chips:not(.date-chips) .chip").length],
+  chipsOverflow: [...r.querySelectorAll(".chips")].map((c) => c.scrollWidth - c.clientWidth) });
+const closed = layout();
+r.querySelector(".date-toggle").click();
+const datesOpen = layout();
+r.querySelector(".filter-toggle").click();
+const filtersOpen = layout();
+r.querySelector(".filter-toggle").click();
+const bothClosed = layout();
+document.getElementById("out").textContent = JSON.stringify({ viewer: Intl.DateTimeFormat().resolvedOptions().timeZone, tiles, narrow: { closed, datesOpen, filtersOpen, bothClosed } });
 </script>"""
 
 
@@ -126,6 +148,30 @@ class CardInABrowser(unittest.TestCase):
         for tile in self.result["tiles"]:
             chip = tile["chip"]
             self.assertTrue(chip is None or (len(chip) <= 60 and "(approximate)" not in chip and not re.search(r"operates|every Saturday", chip)), chip)
+
+    def test_on_a_phone_width_card_each_control_wraps_with_its_summary_and_one_panel_opens_at_a_time(self):
+        narrow = self.result["narrow"]
+        closed = narrow["closed"]
+        self.assertLessEqual(closed["card"]["right"] - closed["card"]["left"], 320)
+        self.assertEqual([(g["cls"], g["button"], g["summary"]) for g in closed["groups"]],
+                         [("filter-group", "Dates", "Showing all dates"), ("filter-group", "Filters", "Showing all categories")])
+        for state in narrow.values():
+            self.assertLessEqual(state["overflow"], 0, "the top row never scrolls sideways")
+            self.assertLessEqual(state["filtersOverflow"], 0, "nor do the panels below it")
+            self.assertTrue(all(o <= 0 for o in state["chipsOverflow"]), "the chips wrap")
+            for group in state["groups"]:
+                self.assertLessEqual(group["summaryBox"]["right"], state["card"]["right"], group)
+                self.assertGreaterEqual(group["summaryBox"]["top"], group["buttonBox"]["top"] - 2, "a summary sits beside or under its own control")
+            dates, filters = state["groups"]
+            self.assertLess(dates["summaryBox"]["bottom"], filters["buttonBox"]["bottom"] + 1, "the date summary comes before Filters")
+            self.assertEqual(dates["summaryFont"], filters["summaryFont"])
+            self.assertEqual(dates["summaryColor"], filters["summaryColor"], "the same typography and theme colour as the category summary")
+        self.assertEqual(narrow["closed"]["panels"], [0, 0])
+        self.assertEqual(narrow["datesOpen"]["panels"][0], 3, "All, This Week, This Weekend")
+        self.assertEqual(narrow["datesOpen"]["panels"][1], 0)
+        self.assertEqual(narrow["filtersOpen"]["panels"][0], 0, "opening Filters closed Dates")
+        self.assertGreater(narrow["filtersOpen"]["panels"][1], 0)
+        self.assertEqual(narrow["bothClosed"]["panels"], [0, 0], "a click on the open Filters closes it")
 
     def test_source_text_is_text(self):
         hostile = self.tiles["Children's Museum <img src=x onerror=alert(1)>"]

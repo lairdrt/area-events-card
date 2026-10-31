@@ -79,7 +79,8 @@ const STYLES = `
 
   .filters { margin: 0 0 8px; }
   .filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 0.875rem; }
-  .filter-summary { color: var(--secondary-text-color); overflow-wrap: anywhere; }
+  .filter-group { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+  .filter-summary, .date-summary { color: var(--secondary-text-color); overflow-wrap: anywhere; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
   button {
     font: inherit; font-size: 0.875rem; cursor: pointer;
@@ -671,11 +672,11 @@ class AreaEventsCard extends HTMLElement {
     else this._refreshFilters();
   }
 
-  /** Choose a date preset; choosing the one already chosen clears it (one at a time; no choice is the usual upcoming view). */
+  /** Choose a date preset; choosing the one already chosen, or null (All), clears it (one at a time; no choice is the usual upcoming view). */
   _setDate(preset) {
     const current = this._prefs.date && this._prefs.date.preset;
     const { date, ...rest } = this._prefs;
-    this._setPrefs(current === preset ? rest : { ...rest, date: { preset } });
+    this._setPrefs(!preset || current === preset ? rest : { ...rest, date: { preset } });
   }
 
   // --- events from the integration ----------------------------------------------------
@@ -1357,26 +1358,39 @@ class AreaEventsCard extends HTMLElement {
 
     const bar = this._el("div", "filter-bar");
     const date = this._prefs.date && DATE_PRESETS.find((preset) => preset.id === this._prefs.date.preset);
-    const dates = this._button(`Dates${date ? " (1)" : ""}`, () => {
+    // one panel open at a time; closing a panel keeps its choices
+    const dates = this._button("Dates", () => {
       this._dateOpen = !this._dateOpen;
+      if (this._dateOpen) this._filterOpen = false;
       this._renderFilterUI();
     });
     dates.className = "date-toggle";
     dates.setAttribute("aria-expanded", String(this._dateOpen));
     const toggle = this._button(`Filters${selected.size ? ` (${selected.size})` : ""}`, () => {
       this._filterOpen = !this._filterOpen;
+      if (this._filterOpen) this._dateOpen = false;
       this._renderFilterUI();
     });
     toggle.className = "filter-toggle";
     toggle.setAttribute("aria-expanded", String(this._filterOpen));
     const names = categories.filter((c) => selected.has(c.id)).map((c) => c.name);
-    const summary = selected.size ? `Showing: ${names.join(", ")}` : "Showing all categories";
-    bar.append(dates, toggle, this._el("span", "filter-summary", date ? `${date.label} · ${summary}` : summary));
+    // each control keeps its own summary beside it, so a narrow card wraps a control together with what it shows
+    const group = (control, summary, className) => {
+      const pair = this._el("span", "filter-group");
+      pair.append(control, this._el("span", className, summary));
+      return pair;
+    };
+    bar.append(group(dates, date ? `Showing: ${date.label}` : "Showing all dates", "date-summary"),
+      group(toggle, selected.size ? `Showing: ${names.join(", ")}` : "Showing all categories", "filter-summary"));
     host.append(bar);
 
     if (this._dateOpen) {
-      // the same chips as the categories: one choice at a time, chosen again to clear; each counts what choosing it would show
+      // the same chips as the categories: All first, then one preset at a time, chosen again to clear; each preset counts what choosing it would show
       const row = this._el("div", "chips date-chips");
+      const allDates = this._button(`${date ? "" : "✓ "}All`, () => this._setDate(null), !date);
+      allDates.className = "chip chip-all";
+      allDates.setAttribute("data-date", "all");
+      row.append(allDates);
       for (const preset of DATE_PRESETS) {
         const on = Boolean(date && date.id === preset.id);
         const chip = this._button("", () => this._setDate(preset.id), on);

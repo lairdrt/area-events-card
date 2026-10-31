@@ -52,7 +52,7 @@ show_filters: true
 | `columns`, `show_images`, `show_filters` | Layout. |
 | `events`, `demo` | A fixed list of events for demonstrations ([examples/demo-card.yaml](examples/demo-card.yaml)); the card then asks no one. |
 
-The filter chips (Dates: This Week or This Weekend; Filters: All, categories, your own categories) are the viewer's choices, saved per card instance in the viewer's Home Assistant user data and browser. Changing one card never changes another card or the shared Discovery area.
+The filter chips (Dates: All, This Week or This Weekend; Filters: All, categories, your own categories; one panel open at a time, each with its own summary) are the viewer's choices, saved per card instance in the viewer's Home Assistant user data and browser. Changing one card never changes another card or the shared Discovery area.
 
 Every tile has a picture: the event's own photo, else a labelled illustration for its category that ships inside the card ([docs/images.md](docs/images.md)). Event fields the card shows: `title`, `start`, `end`, `venue`, `address`, `description`, `url` and the location status.
 

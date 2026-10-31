@@ -529,17 +529,21 @@ test("selecting categories filters client side; multiple selection; Other; All; 
   assert.equal(created.img, images); // no image elements were created
 });
 
-test("the top row is Dates, Filters and the summary; Show all is gone, All stays in Filters; the header timestamp has no icon", async () => {
+test("the top row is Dates and its summary, then Filters and its summary; Show all is gone, All stays in Filters; the header timestamp has no icon", async () => {
   const card = await make({});
   const root = card.shadowRoot;
   const bar = byClass(root, "filter-bar")[0];
-  assert.deepEqual(bar.children.map((c) => c.className), ["date-toggle", "filter-toggle", "filter-summary"]);
+  assert.deepEqual(bar.children.map((group) => [group.className, ...group.children.map((c) => c.className)]),
+    [["filter-group", "date-toggle", "date-summary"], ["filter-group", "filter-toggle", "filter-summary"]], "each control beside its own summary");
+  assert.deepEqual(bar.children.map((group) => text(group)), ["Dates | Showing all dates", "Filters | Showing all categories"]);
   assert.equal(byClass(root, "show-all").length, 0);
   assert.ok(!walk(root).some((el) => el.tag === "button" && /Show all/i.test(text(el))), "no Show all button anywhere");
   openFilters(root);
   assert.ok(byClass(root, "chip-all").length === 1, "the All chip inside Filters remains");
   click(chip(root, "Music"));
-  assert.equal(byClass(root, "filter-bar")[0].children[0].className, "date-toggle");
+  assert.equal(byClass(root, "filter-bar")[0].children[0].children[0].className, "date-toggle");
+  assert.equal(text(byClass(root, "filter-summary")[0]), "Showing: Music");
+  assert.equal(text(byClass(root, "date-summary")[0]), "Showing all dates", "the category choice leaves the date summary alone");
   const updated = byClass(root, "updated")[0];
   assert.ok(!updated.children.some((c) => c.tag === "ha-icon"));
   assert.match(text(updated), /^Updated /);
@@ -2004,7 +2008,7 @@ const dateChip = (root, id) => byClass(root, "chip").find((c) => c.attrs["data-d
 const THIS_WEEK = ["Month-long Exhibit", "Monday Lecture", "Wednesday Concert", "Saturday Market", "Sunday Hike", "Sunday Late Show"];
 const UPCOMING = ["Month-long Exhibit", "Wednesday Concert", "Saturday Market", "Sunday Hike", "Sunday Late Show", "Next Tuesday Talk"];
 
-test("Dates opens its own row of the same chips as Filters, with counts, check marks and aria-pressed; it opens and closes independently", async () => {
+test("Dates opens its own row of the same chips as Filters: All first and selected, then the presets with counts", async () => {
   clockAt(TUESDAY);
   const card = await make({}, { feed: weekFeed() });
   const root = card.shadowRoot;
@@ -2017,20 +2021,38 @@ test("Dates opens its own row of the same chips as Filters, with counts, check m
   const row = byClass(root, "date-chips")[0];
   assert.ok(row.className.split(" ").includes("chips"), "the same .chips container as the categories");
   assert.deepEqual(row.children.map((c) => [c.tag, c.className, c.attrs["aria-pressed"], text(c)]),
-    [["button", "chip", "false", "This Week | 6"], ["button", "chip", "false", "This Weekend | 4"]], "the category chips' markup: .chip, a .count, not pressed");
-  assert.deepEqual(row.children.map((c) => byClass(c, "count").length), [1, 1]);
-
+    [["button", "chip chip-all", "true", "✓ All"], ["button", "chip", "false", "This Week | 6"], ["button", "chip", "false", "This Weekend | 4"]],
+    "the category chips' markup: All first, pressed and checked like the category All; each preset a .chip with a .count");
   openFilters(root);
-  assert.equal(byClass(root, "date-chips").length, 1, "both rows can be open at once");
-  assert.ok(chip(root, "Music"), "the category chips are there too");
-  click(byClass(root, "date-toggle")[0]);
-  assert.equal(byClass(root, "date-chips").length, 0, "closing Dates leaves Filters open");
-  assert.ok(chip(root, "Music"));
-  assert.equal(byClass(root, "filter-toggle")[0].attrs["aria-expanded"], "true");
+  const categoryAll = byClass(root, "chip-all")[0];
+  assert.deepEqual([categoryAll.className, categoryAll.attrs["aria-pressed"], text(categoryAll)], ["chip chip-all", "true", "✓ All"], "the same as the category All chip");
+});
+
+test("one panel is open at a time; a click on the open one closes it; closing or switching keeps every choice", async () => {
+  clockAt(TUESDAY);
+  const card = await make({}, { feed: weekFeed() });
+  const root = card.shadowRoot;
+  const state = () => [byClass(root, "date-toggle")[0].attrs["aria-expanded"], byClass(root, "filter-toggle")[0].attrs["aria-expanded"],
+    byClass(root, "date-chips").length, Boolean(chip(root, "Music"))];
+  assert.deepEqual(state(), ["false", "false", 0, false]);
   openDates(root);
-  click(byClass(root, "filter-toggle")[0]);
-  assert.equal(byClass(root, "date-chips").length, 1, "closing Filters leaves Dates open");
-  assert.equal(chip(root, "Music"), undefined);
+  assert.deepEqual(state(), ["true", "false", 1, false], "Dates opens");
+  click(dateChip(root, "this-week"));
+  openFilters(root);
+  assert.deepEqual(state(), ["false", "true", 0, true], "Filters opens and Dates closes");
+  click(chip(root, "Music"));
+  openDates(root);
+  assert.deepEqual(state(), ["true", "false", 1, false], "Dates opens and Filters closes");
+  assert.equal(dateChip(root, "this-week").attrs["aria-pressed"], "true", "the date choice survived");
+  openDates(root);
+  assert.deepEqual(state(), ["false", "false", 0, false], "a click on the open Dates closes it");
+  openFilters(root);
+  assert.equal(chip(root, "Music").attrs["aria-pressed"], "true", "the category choice survived");
+  openFilters(root);
+  assert.deepEqual(state(), ["false", "false", 0, false], "a click on the open Filters closes it");
+  assert.deepEqual(visibleTitles(root), ["Wednesday Concert"], "both choices still apply with every panel closed");
+  assert.deepEqual([text(byClass(root, "date-summary")[0]), text(byClass(root, "filter-summary")[0])], ["Showing: This Week", "Showing: Music"]);
+  assert.deepEqual([stored(card).date, stored(card).selected], [{ preset: "this-week" }, ["music"]]);
 });
 
 test("one date choice at a time: This Weekend replaces This Week, choosing it again clears it and the usual upcoming view returns", async () => {
@@ -2043,17 +2065,40 @@ test("one date choice at a time: This Weekend replaces This Week, choosing it ag
   assert.deepEqual(visibleTitles(root), THIS_WEEK, "Monday's ended lecture is back; next week's talk and last week's fair are not");
   assert.equal(dateChip(root, "this-week").attrs["aria-pressed"], "true");
   assert.match(text(dateChip(root, "this-week")), /^✓ This Week/);
-  assert.match(text(byClass(root, "date-toggle")[0]), /Dates \(1\)/);
-  assert.match(text(byClass(root, "filter-summary")[0]), /This Week · Showing all categories/);
+  assert.deepEqual([dateChip(root, "all").attrs["aria-pressed"], text(dateChip(root, "all"))], ["false", "All"], "This Week deselects All");
+  assert.equal(text(byClass(root, "date-toggle")[0]), "Dates");
+  assert.equal(text(byClass(root, "date-summary")[0]), "Showing: This Week");
+  assert.equal(text(byClass(root, "filter-summary")[0]), "Showing all categories", "separate summaries, never joined");
 
   click(dateChip(root, "this-weekend"));
   assert.deepEqual(visibleTitles(root), ["Month-long Exhibit", "Saturday Market", "Sunday Hike", "Sunday Late Show"]);
   assert.deepEqual([dateChip(root, "this-week").attrs["aria-pressed"], dateChip(root, "this-weekend").attrs["aria-pressed"]], ["false", "true"]);
+  assert.equal(text(byClass(root, "date-summary")[0]), "Showing: This Weekend");
 
   click(dateChip(root, "this-weekend"));
   assert.deepEqual(visibleTitles(root), UPCOMING);
   assert.deepEqual([dateChip(root, "this-week").attrs["aria-pressed"], dateChip(root, "this-weekend").attrs["aria-pressed"]], ["false", "false"]);
-  assert.match(text(byClass(root, "date-toggle")[0]), /^Dates$/);
+  assert.deepEqual([dateChip(root, "all").attrs["aria-pressed"], text(dateChip(root, "all"))], ["true", "✓ All"]);
+  assert.equal(text(byClass(root, "date-summary")[0]), "Showing all dates");
+});
+
+test("the date All chip clears the preset and brings back the usual upcoming view; choosing it again changes nothing", async () => {
+  clockAt(TUESDAY);
+  const card = await make({}, { feed: weekFeed() });
+  const root = card.shadowRoot;
+  const upcoming = byClass(root, "event");
+  openDates(root);
+  click(dateChip(root, "this-weekend"));
+  assert.deepEqual(visibleTitles(root), ["Month-long Exhibit", "Saturday Market", "Sunday Hike", "Sunday Late Show"]);
+  click(dateChip(root, "all"));
+  assert.deepEqual(visibleTitles(root), UPCOMING, "events that have ended are hidden again");
+  assert.deepEqual(byClass(root, "event"), upcoming, "the same tiles as before any date was chosen");
+  assert.equal(stored(card).date, undefined);
+  assert.deepEqual([dateChip(root, "all").attrs["aria-pressed"], dateChip(root, "this-weekend").attrs["aria-pressed"]], ["true", "false"]);
+  assert.equal(text(byClass(root, "date-summary")[0]), "Showing all dates");
+  click(dateChip(root, "all"));
+  assert.deepEqual(visibleTitles(root), UPCOMING);
+  assert.equal(stored(card).date, undefined);
 });
 
 test("on Sunday, This Weekend still holds Saturday and This Week still holds Monday", async () => {
@@ -2071,25 +2116,31 @@ test("dates and categories combine with AND, and neither changes the other's sav
   clockAt(TUESDAY);
   const card = await make({}, { feed: weekFeed() });
   const root = card.shadowRoot;
-  openDates(root);
   openFilters(root);
   click(chip(root, "Markets"));
   assert.deepEqual(visibleTitles(root), ["Saturday Market"]);
+  openDates(root);
   click(dateChip(root, "this-weekend"));
   assert.deepEqual(visibleTitles(root), ["Saturday Market"]);
+  openFilters(root);
   click(chip(root, "Music"));
   assert.deepEqual(visibleTitles(root), ["Saturday Market"], "the weekend has no concert: Music adds nothing");
+  openDates(root);
   click(dateChip(root, "this-week"));
   assert.deepEqual(visibleTitles(root), ["Wednesday Concert", "Saturday Market"]);
+  openFilters(root);
   assert.match(text(chip(root, "Music")), /Music \| 1/, "category counts are of the events the date choice shows");
   assert.deepEqual(stored(card).selected.sort(), ["markets", "music"]);
   assert.deepEqual(stored(card).date, { preset: "this-week" });
   click(chip(root, "All"));
-  assert.deepEqual(stored(card).date, { preset: "this-week" }, "All clears categories only");
+  assert.deepEqual(stored(card).date, { preset: "this-week" }, "the category All clears categories only");
   assert.deepEqual(visibleTitles(root), THIS_WEEK);
-  click(dateChip(root, "this-week"));
+  click(chip(root, "Markets"));
+  openDates(root);
+  click(dateChip(root, "all"));
   assert.equal(stored(card).date, undefined);
-  assert.deepEqual(stored(card).selected, []);
+  assert.deepEqual(stored(card).selected, ["markets"], "the date All clears dates only");
+  assert.deepEqual(visibleTitles(root), ["Saturday Market"]);
 });
 
 test("the date window is applied before max_events, and each date chip counts what choosing it shows", async () => {
@@ -2098,7 +2149,7 @@ test("the date window is applied before max_events, and each date chip counts wh
   const root = card.shadowRoot;
   assert.deepEqual(visibleTitles(root), ["Month-long Exhibit", "Wednesday Concert"]);
   openDates(root);
-  assert.deepEqual(byClass(root, "date-chips")[0].children.map((c) => text(byClass(c, "count")[0])), ["2", "2"]);
+  assert.deepEqual(byClass(root, "date-chips")[0].children.map((c) => byClass(c, "count").map(text)), [[], ["2"], ["2"]], "All has no count, like the category All");
   click(dateChip(root, "this-week"));
   assert.deepEqual(visibleTitles(root), ["Month-long Exhibit", "Monday Lecture"], "the week's first two, not the first two upcoming then filtered");
   click(dateChip(root, "this-weekend"));
@@ -2153,9 +2204,9 @@ test("a date choice that matches nothing keeps the controls to change it and say
 test("the date choice is saved per user and card, restored on reopening, and older saved filters keep working", async () => {
   clockAt(TUESDAY);
   const first = await make({ title: "Week" }, { feed: weekFeed() });
-  openDates(first.shadowRoot);
   openFilters(first.shadowRoot);
   click(chip(first.shadowRoot, "Markets"));
+  openDates(first.shadowRoot);
   click(dateChip(first.shadowRoot, "this-week"));
   assert.deepEqual(stored(first), { v: 1, selected: ["markets"], custom: [], date: { preset: "this-week" } });
   await wait(400);
@@ -2164,8 +2215,10 @@ test("the date choice is saved per user and card, restored on reopening, and old
 
   const second = await make({ title: "Week" }, { feed: weekFeed() });
   assert.deepEqual(visibleTitles(second.shadowRoot), ["Saturday Market"]);
+  assert.deepEqual([text(byClass(second.shadowRoot, "date-summary")[0]), text(byClass(second.shadowRoot, "filter-summary")[0])], ["Showing: This Week", "Showing: Markets"],
+    "both summaries are restored with the panels closed");
   openDates(second.shadowRoot);
-  assert.equal(dateChip(second.shadowRoot, "this-week").attrs["aria-pressed"], "true");
+  assert.deepEqual([dateChip(second.shadowRoot, "all").attrs["aria-pressed"], dateChip(second.shadowRoot, "this-week").attrs["aria-pressed"]], ["false", "true"]);
 
   // saved before dates existed: the categories and custom categories survive, and no date is chosen
   const config = { area: "San Diego", title: "Old" };
