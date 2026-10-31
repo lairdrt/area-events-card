@@ -32,4 +32,5 @@ MANAGEMENT_PANEL_PATH = "area-events-manage"
 
 CARD_URL = "/area_events/area-events-card.js"
 PRESENTATION_URL = "/area_events/presentation"
+FILTERS_URL = "/area_events/filters"   # the card's filter modules (date windows)
 PHOTOS_KEY = f"{DOMAIN}_photos"  # hass.data: the validated category-photograph index, or None

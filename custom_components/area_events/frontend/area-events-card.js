@@ -11,7 +11,8 @@
  */
 
 import { PRESENTATIONS } from "./presentation/manifest.js";
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-546084dd";
+import { PRESETS as DATE_PRESETS, calendarDate, eventOverlapsWindow, normalizeSelection, resolveWindow } from "./filters/date-windows.js";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-069527c9";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
@@ -286,7 +287,8 @@ function categoriesFor(event, customCategories = []) {
   return matched;
 }
 
-/** Validate saved preferences; returns a clean object or null if unusable. `extraIds` are the YAML interests. */
+/** Validate saved preferences; returns a clean object or null if unusable. `extraIds` are the YAML interests. `date` (the date
+ *  selection, see filters/date-windows.js) is kept only when it names a known preset; preferences saved before it existed have none. */
 function normalizePrefs(raw, extraIds = []) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const custom = [];
@@ -299,7 +301,17 @@ function normalizePrefs(raw, extraIds = []) {
   }
   const known = new Set([...DEFAULT_CATEGORIES, ...custom].map((c) => c.id).concat(extraIds));
   const selected = (Array.isArray(raw.selected) ? raw.selected : []).filter((id) => typeof id === "string" && known.has(id));
-  return { v: 1, selected: [...new Set(selected)], custom };
+  const date = normalizeSelection(raw.date);
+  return { v: 1, selected: [...new Set(selected)], custom, ...(date ? { date } : {}) };
+}
+
+/** The key that keeps one event's tile across updates. */
+function tileKey(event) {
+  return event.id || `${event.title}|${event.start}`;
+}
+
+function sameSelection(a, b) {
+  return JSON.stringify(normalizeSelection(a)) === JSON.stringify(normalizeSelection(b));
 }
 
 /*
@@ -528,6 +540,7 @@ class AreaEventsCard extends HTMLElement {
     this._feedErrorCode = undefined;
     this._previewWaited = false;
     this._filterOpen = false;
+    this._dateOpen = false;
     this._editing = undefined;
     this._initPrefs();
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
@@ -622,9 +635,11 @@ class AreaEventsCard extends HTMLElement {
         const remote = value === null || value === undefined ? null : normalizePrefs(value, this._interestIds());
         this._remoteState = "ready";
         if (remote && !this._prefsDirty) {
+          const dateChanged = !sameSelection(this._prefs.date, remote.date);
           this._prefs = remote;
           writeLocal(key, remote);
-          this._refreshFilters();
+          if (dateChanged && this._els) this._applyData();   // another date selection shows other events
+          else this._refreshFilters();
         } else if (this._hadLocalPrefs || this._prefsDirty) {
           this._saveRemote(); // first use on this user: migrate the local choice
         }
@@ -642,6 +657,7 @@ class AreaEventsCard extends HTMLElement {
   }
 
   _setPrefs(next) {
+    const before = this._prefs && this._prefs.date;
     this._prefs = normalizePrefs(next, this._interestIds()) || EMPTY_PREFS();
     this._prefsDirty = true;
     writeLocal(this._prefsKey, this._prefs);
@@ -650,7 +666,16 @@ class AreaEventsCard extends HTMLElement {
       if (this._remoteState !== "loading") this._saveRemote();
     }, SAVE_DEBOUNCE_MS);
     this._computeMatches();
-    this._refreshFilters();
+    // a category choice only hides tiles; a date choice decides which events there are (before max_events), so the tiles are merged again
+    if (!sameSelection(before, this._prefs.date)) this._applyData();
+    else this._refreshFilters();
+  }
+
+  /** Choose a date preset; choosing the one already chosen clears it (one at a time; no choice is the usual upcoming view). */
+  _setDate(preset) {
+    const current = this._prefs.date && this._prefs.date.preset;
+    const { date, ...rest } = this._prefs;
+    this._setPrefs(current === preset ? rest : { ...rest, date: { preset } });
   }
 
   // --- events from the integration ----------------------------------------------------
@@ -710,7 +735,13 @@ class AreaEventsCard extends HTMLElement {
 
   _startAgeTimer() {
     clearInterval(this._ageTimer);
-    this._ageTimer = setInterval(() => this._updateHeader(), AGE_TICK_MS);
+    this._ageTimer = setInterval(() => this._tick(), AGE_TICK_MS);
+  }
+
+  /** Every minute: the header's ages, and, once the calendar day has changed, the events again (This Week moves on a Monday). */
+  _tick() {
+    if (this._els && this._appliedStamp !== undefined && this._calendarStamp() !== this._appliedStamp) this._applyData();
+    else this._updateHeader();
   }
 
   _onFeed(run, reply, error, code) {
@@ -745,12 +776,17 @@ class AreaEventsCard extends HTMLElement {
     return this._settings.area || "this card's area";
   }
 
-  _events() {
+  /** The events to show for a date selection (by default the saved one; null for none): the configured restrictions, then the date
+   *  window, sorting and max_events. Without a date selection, events that have ended are hidden, as always. */
+  _events(dateSelection = this._prefs.date) {
     const settings = this._settings;
     const source = this._usesInline() ? this._config.events : (this._feed && this._feed.events) || [];
     const now = Date.now();
-    let list = source.map((event) => this._normalizeEvent(event));
-    if (!this._usesInline()) {
+    let list = [...this._normalizedEvents(source)];
+    const windowIn = this._dateWindows(dateSelection, now);
+    if (windowIn) {
+      list = list.filter((event) => eventOverlapsWindow(event, windowIn(event.timezone)));
+    } else if (!this._usesInline()) {
       list = list.filter((event) => {
         const last = new Date(event.end || event.start).getTime();
         return Number.isNaN(last) || last >= now;
@@ -786,6 +822,14 @@ class AreaEventsCard extends HTMLElement {
     else if (settings.sort === "verified") list.sort((a, b) => Number(b.verified) - Number(a.verified) || time(a) - time(b));
     else list.sort((a, b) => time(a) - time(b));
     return settings.max ? list.slice(0, settings.max) : list;
+  }
+
+  /** The events in card form, worked out once per list received (the date chips' counts read the same list again). */
+  _normalizedEvents(source) {
+    if (this._normalized && this._normalized.source === source) return this._normalized.events;
+    const events = source.map((event) => this._normalizeEvent(event));
+    this._normalized = { source, events };
+    return events;
   }
 
   // Accepts both the card's own event fields and the discovery feed format.
@@ -828,6 +872,25 @@ class AreaEventsCard extends HTMLElement {
 
   _viewerZone() {
     return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  }
+
+  /** For a date selection, the window in a given time zone (an event's own zone, as its dates are shown; else the viewer's), worked out
+   *  once per zone; undefined when nothing is selected. */
+  _dateWindows(selection, now) {
+    if (!normalizeSelection(selection)) return undefined;
+    const windows = new Map();
+    return (zone) => {
+      const key = zone || this._viewerZone();
+      if (!windows.has(key)) windows.set(key, resolveWindow(selection, now, key));
+      return windows.get(key);
+    };
+  }
+
+  /** Today's date in each time zone the events are shown in: when it changes, relative date windows (This Week) move. */
+  _calendarStamp(now = Date.now()) {
+    const source = this._usesInline() ? this._config.events : (this._feed && this._feed.events) || [];
+    const zones = new Set([this._viewerZone(), ...this._normalizedEvents(source).map((event) => event.timezone).filter(Boolean)]);
+    return [...zones].sort().map((zone) => `${zone}=${Object.values(calendarDate(now, zone)).join("-")}`).join(" ");
   }
 
   /** A time as people read it. With `zone` (an event's own IANA time zone) the time is shown there, not in the viewer's zone, with the zone's short name when it differs. */
@@ -892,7 +955,7 @@ class AreaEventsCard extends HTMLElement {
       const failing = sources.filter((source) => source && source.ok === false).length;
       notes.push(`${failing || "Some"} of ${sources.length || "the"} sources could not be read; events they provided earlier are kept.`);
     } else if (count === 0 && !status.notice) {
-      notes.push("No upcoming events match.");
+      notes.push(this._prefs.date ? "No events match the selected dates." : "No upcoming events match.");
     }
     if (status.notice && !this._feedError) notes.push(status.notice);
     if (this._settings.producers && this._feed && this._feed.area && Array.isArray(this._feed.area.sources)) {
@@ -921,7 +984,8 @@ class AreaEventsCard extends HTMLElement {
   _render() {
     if (!this._config || !this.shadowRoot) return;
     const root = this.shadowRoot;
-    for (const tile of this._tiles || []) this._disposeTile(tile);
+    for (const tile of [...(this._tiles || []), ...(this._parked || new Map()).values()]) this._disposeTile(tile);
+    this._parked = new Map();
     root.replaceChildren();
 
     const style = document.createElement("style");
@@ -980,7 +1044,9 @@ class AreaEventsCard extends HTMLElement {
       return;
     }
     const events = this._events();
-    this._syncTiles(events);
+    this._appliedStamp = this._calendarStamp();
+    const source = this._usesInline() ? this._config.events : (this._feed && this._feed.events) || [];
+    this._syncTiles(events, new Set(this._normalizedEvents(source).map(tileKey)));
     this._updateNotice(events.length);
     this._updateProgress(events.length);
     const updated = this._generatedAt() ? ` · events updated ${this._formatDate(this._generatedAt())}` : "";
@@ -998,19 +1064,23 @@ class AreaEventsCard extends HTMLElement {
    * Reconciles the tiles with the events: a tile whose event is unchanged keeps its element (so images do not
    * reload or flash), changed events get a new tile, vanished ones are removed, and the order follows the events.
    */
-  _syncTiles(events) {
+  _syncTiles(events, listed = new Set()) {
     const extra = [...this._settings.interests, ...this._prefs.custom];
-    const previous = new Map((this._tiles || []).map((tile) => [tile.key, tile]));
+    const parked = this._parked || new Map();
+    const previous = new Map([...parked, ...(this._tiles || []).map((tile) => [tile.key, tile])]);
     const used = new Set();
     const tiles = events.map((event, index) => {
-      let key = event.id || `${event.title}|${event.start}`;
+      let key = tileKey(event);
       if (used.has(key)) key = `${key}#${index}`;
       used.add(key);
       const deletable = this._canDelete(event);
       const signature = JSON.stringify(event) + (deletable ? "#deletable" : "");
       const old = previous.get(key);
       const same = old && old.signature === signature;
-      if (same && !this._retryable(old)) return old;
+      if (same && !this._retryable(old)) {
+        if (parked.has(key)) old.matches = categoriesFor(old.event, extra);   // custom categories may have changed while it was set aside
+        return old;
+      }
       if (old && (!same || this._retryable(old))) this._disposeTile(old);
       const context = {
         el: (tag, className, text) => this._el(tag, className, text),
@@ -1035,7 +1105,13 @@ class AreaEventsCard extends HTMLElement {
       return { event, key, signature, el, renderer, matches: categoriesFor(event, extra), retries: same ? (old.retries || 0) + 1 : 0 };
     });
     this._tiles = tiles;
-    for (const old of previous.values()) if (!used.has(old.key)) this._disposeTile(old);
+    // A tile a date choice set aside is kept, detached, while its event is still in the feed: choosing again neither rebuilds it nor reloads its pictures.
+    this._parked = new Map();
+    for (const old of previous.values()) {
+      if (used.has(old.key) || old.disposed) continue;
+      if (listed.has(old.key)) this._parked.set(old.key, old);
+      else this._disposeTile(old);
+    }
 
     const body = this._els.body;
     if (tiles.length === 0) {
@@ -1252,7 +1328,8 @@ class AreaEventsCard extends HTMLElement {
 
   _refreshFilters() {
     if (!this._els) return;
-    if (!this._tiles || this._tiles.length === 0 || !this._settings.showFilters) {
+    // a date selection that matches nothing keeps its controls, so it can be changed or cleared
+    if (!this._tiles || (this._tiles.length === 0 && !this._prefs.date) || !this._settings.showFilters) {
       if (this._els.filters) this._els.filters.replaceChildren();
       this._updateHeader();
       return;
@@ -1279,6 +1356,13 @@ class AreaEventsCard extends HTMLElement {
     for (const tile of this._tiles) for (const id of tile.matches) counts.set(id, (counts.get(id) || 0) + 1);
 
     const bar = this._el("div", "filter-bar");
+    const date = this._prefs.date && DATE_PRESETS.find((preset) => preset.id === this._prefs.date.preset);
+    const dates = this._button(`Dates${date ? " (1)" : ""}`, () => {
+      this._dateOpen = !this._dateOpen;
+      this._renderFilterUI();
+    });
+    dates.className = "date-toggle";
+    dates.setAttribute("aria-expanded", String(this._dateOpen));
     const toggle = this._button(`Filters${selected.size ? ` (${selected.size})` : ""}`, () => {
       this._filterOpen = !this._filterOpen;
       this._renderFilterUI();
@@ -1286,10 +1370,23 @@ class AreaEventsCard extends HTMLElement {
     toggle.className = "filter-toggle";
     toggle.setAttribute("aria-expanded", String(this._filterOpen));
     const names = categories.filter((c) => selected.has(c.id)).map((c) => c.name);
-    const all = this._button("Show all", () => this._setPrefs({ ...this._prefs, selected: [] }), selected.size === 0);
-    all.className = "show-all";
-    bar.append(all, toggle, this._el("span", "filter-summary", selected.size ? `Showing: ${names.join(", ")}` : "Showing all categories"));
+    const summary = selected.size ? `Showing: ${names.join(", ")}` : "Showing all categories";
+    bar.append(dates, toggle, this._el("span", "filter-summary", date ? `${date.label} · ${summary}` : summary));
     host.append(bar);
+
+    if (this._dateOpen) {
+      // the same chips as the categories: one choice at a time, chosen again to clear; each counts what choosing it would show
+      const row = this._el("div", "chips date-chips");
+      for (const preset of DATE_PRESETS) {
+        const on = Boolean(date && date.id === preset.id);
+        const chip = this._button("", () => this._setDate(preset.id), on);
+        chip.className = "chip";
+        chip.setAttribute("data-date", preset.id);
+        chip.append(document.createTextNode(`${on ? "✓ " : ""}${preset.label}`), this._el("span", "count", String(this._events({ preset: preset.id }).length)));
+        row.append(chip);
+      }
+      host.append(row);
+    }
     if (!this._filterOpen) return;
 
     const chips = this._el("div", "chips");

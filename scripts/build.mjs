@@ -1,4 +1,4 @@
-// Minimal build: stamps the host card with its build identifier and copies registered presentation modules to
+// Minimal build: stamps the host card with its build identifier and copies the module folders it imports (presentation, filters) to
 //   custom_components/area_events/frontend/   (what the integration serves; committed, so installs need no build)
 //   dist/                                     (generated, not stored in Git)
 // The identifier is "AREA-EVENTS <integration version>-<hash of the source>", shown in the card footer and
@@ -33,10 +33,15 @@ if (!source.includes("__AREA_EVENTS_CARD_BUILD__")) {
   throw new Error("src/frontend/area-events-card.js is missing the __AREA_EVENTS_CARD_BUILD__ placeholder");
 }
 const { version } = JSON.parse(readFileSync(join(root, "custom_components", "area_events", "manifest.json"), "utf8"));
-const presentationDir = join(sourceDir, "presentation");
-const presentationFiles = readdirSync(presentationDir).filter((name) => name.endsWith(".js")).sort();
-if (!presentationFiles.length) throw new Error("src/frontend/presentation has no renderer modules");
-const moduleSource = presentationFiles.map((name) => `${name}\n${readCanonical(join(presentationDir, name))}`).join("\n");
+// The folders of modules the card imports (renderers, filters); each is served by the integration beside the card.
+const MODULE_FOLDERS = ["presentation", "filters"];
+const modules = MODULE_FOLDERS.map((folder) => {
+  const files = readdirSync(join(sourceDir, folder)).filter((name) => name.endsWith(".js")).sort();
+  if (!files.length) throw new Error(`src/frontend/${folder} has no modules`);
+  return { folder, files };
+});
+const moduleSource = modules.flatMap(({ folder, files }) =>
+  files.map((name) => `${folder === "presentation" ? "" : `${folder}/`}${name}\n${readCanonical(join(sourceDir, folder, name))}`)).join("\n");
 const identifier = `AREA-EVENTS ${version}-${createHash("sha1").update(source).update(moduleSource).digest("hex").slice(0, 8)}`;
 const built = source.replaceAll("__AREA_EVENTS_CARD_BUILD__", identifier);
 
@@ -45,18 +50,18 @@ const built = source.replaceAll("__AREA_EVENTS_CARD_BUILD__", identifier);
 const tracked = join(root, "custom_components", "area_events", "frontend");
 mkdirSync(tracked, { recursive: true });
 writeTracked(join(tracked, "area-events-card.js"), built);
-mkdirSync(join(tracked, "presentation"), { recursive: true });
-for (const name of presentationFiles) {
-  writeTracked(join(tracked, "presentation", name), readCanonical(join(presentationDir, name)));
+for (const { folder, files } of modules) {
+  mkdirSync(join(tracked, folder), { recursive: true });
+  for (const name of files) writeTracked(join(tracked, folder, name), readCanonical(join(sourceDir, folder, name)));
 }
 
 // dist is untracked and can always use canonical LF bytes.
 const dist = join(root, "dist");
 mkdirSync(dist, { recursive: true });
 writeFileSync(join(dist, "area-events-card.js"), built);
-mkdirSync(join(dist, "presentation"), { recursive: true });
-for (const name of presentationFiles) {
-  writeFileSync(join(dist, "presentation", name), readCanonical(join(presentationDir, name)));
+for (const { folder, files } of modules) {
+  mkdirSync(join(dist, folder), { recursive: true });
+  for (const name of files) writeFileSync(join(dist, folder, name), readCanonical(join(sourceDir, folder, name)));
 }
 console.log(`Built ${join(tracked, "area-events-card.js")} (${identifier})`);
 console.log(`Built ${join(dist, "area-events-card.js")} (${identifier})`);

@@ -79,6 +79,7 @@ class EventQuery:
     starts_to: Optional[int] = None
     after: Optional[str] = None
     limit: int = 50
+    ends_from: Optional[int] = None     # events still going on at or after this time: ending then or later (one without an end, starting then or later)
 
 
 @dataclass(frozen=True)

@@ -87,6 +87,9 @@ class PresentationModularityInBrowser(unittest.TestCase):
         shutil.copy2(ROOT / "src" / "frontend" / "area-events-card.js", self.root / "src" / "frontend" / "area-events-card.js")
         for source in (ROOT / "src" / "frontend" / "presentation").glob("*.js"):
             shutil.copy2(source, self.root / "src" / "frontend" / "presentation" / source.name)
+        (self.root / "src" / "frontend" / "filters").mkdir()
+        for source in (ROOT / "src" / "frontend" / "filters").glob("*.js"):
+            shutil.copy2(source, self.root / "src" / "frontend" / "filters" / source.name)
         shutil.copy2(ROOT / "scripts" / "build.mjs", self.root / "scripts" / "build.mjs")
         shutil.copy2(ROOT / "custom_components" / "area_events" / "manifest.json",
                      self.root / "custom_components" / "area_events" / "manifest.json")

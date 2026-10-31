@@ -147,9 +147,10 @@ class DiscoveryControlClient:
     async def changes(self, after=0, limit=200):
         return await self._request("GET", f"/v1/changes?after={int(after)}&limit={int(limit)}")
 
-    async def events(self, area=None, source=None, starts_from=None, starts_to=None, after=None, limit=200):
-        """One page of normalized events (`discovery.events.v1`); `after` is the previous page's `next_cursor`."""
-        query = {"area": area, "source": source, "from": starts_from, "to": starts_to, "after": after, "limit": int(limit)}
+    async def events(self, area=None, source=None, starts_from=None, starts_to=None, after=None, limit=200, ends_from=None):
+        """One page of normalized events (`discovery.events.v1`); `after` is the previous page's `next_cursor`. `ends_from` keeps the events still
+        going on at that time (ending then or later), however early they began."""
+        query = {"area": area, "source": source, "from": starts_from, "to": starts_to, "ends_from": ends_from, "after": after, "limit": int(limit)}
         return await self._request("GET", "/v1/events?" + urlencode({k: v for k, v in query.items() if v is not None}))
 
     async def event(self, event_key):

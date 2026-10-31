@@ -17,7 +17,7 @@ from homeassistant.helpers.typing import ConfigType
 from . import websocket_api
 from .const import (
     CARD_URL, CONF_CA_FILE, CONF_CONTROL_TOKEN, CONF_READ_TOKEN, CONF_SCAN_INTERVAL, CONF_URL,
-    DEFAULT_SCAN_INTERVAL, DOMAIN, PHOTOS_KEY, PRESENTATION_URL, MANAGEMENT_URL, MANAGEMENT_PANEL_PATH,
+    DEFAULT_SCAN_INTERVAL, DOMAIN, FILTERS_URL, PHOTOS_KEY, PRESENTATION_URL, MANAGEMENT_URL, MANAGEMENT_PANEL_PATH,
 )
 from .coordinator import AreaEventsConfigEntry, DiscoveryCoordinator, RuntimeData
 from .discovery_client import DiscoveryAuthError, DiscoveryConnectionError, DiscoveryControlClient
@@ -28,6 +28,7 @@ from .photos import PHOTOS_URL, load_index
 CARD_FILE = Path(__file__).parent / "frontend" / "area-events-card.js"
 MANAGEMENT_FILE = Path(__file__).parent / "frontend" / "manager.js"
 PRESENTATION_FOLDER = Path(__file__).parent / "frontend" / "presentation"
+FILTERS_FOLDER = Path(__file__).parent / "frontend" / "filters"
 PHOTOS_FOLDER = Path(__file__).parent / "frontend" / "photos"  # optional, private, not in Git (see photos.py)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 _LOGGER = logging.getLogger(__name__)
@@ -55,6 +56,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         StaticPathConfig(CARD_URL, str(CARD_FILE), cache_headers=False),
         StaticPathConfig(MANAGEMENT_URL, str(MANAGEMENT_FILE), cache_headers=False),
         StaticPathConfig(PRESENTATION_URL, str(PRESENTATION_FOLDER), cache_headers=False),
+        StaticPathConfig(FILTERS_URL, str(FILTERS_FOLDER), cache_headers=False),
     ])
     # The card loads on every dashboard without a Lovelace resource; the query changes with the file so browsers refetch it.
     version = await hass.async_add_executor_job(lambda: CARD_FILE.stat().st_mtime_ns)

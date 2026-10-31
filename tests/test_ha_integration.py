@@ -347,6 +347,74 @@ class SourceNames(Service):
         self.assertNotIn("sources", quiet_calls, "the names are not read again once current")
 
 
+class DateWindowCoverage(Service):
+    """The shared view of an area holds what the card's date choices need: this week's past days and events that began before them."""
+
+    def iso(self, moment):
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(moment, tz=timezone.utc).isoformat()
+
+    def test_this_weeks_ended_events_and_long_running_ones_reach_the_card_and_older_ones_do_not(self):
+        from tests.records import document
+        now = int(self.clock())
+        floor = hub_module.window_floor(now)
+        timed = {
+            "Long Exhibit": (now - 30 * 86400, now + 5 * 86400),        # began a month ago, still on: the old start-time window lost it
+            "Earlier This Week": (floor + 3600, floor + 7200),          # this week, already over
+            "Before The Week": (floor - 7200, floor - 3600),            # over before any date window begins
+            "Old Fair": (now - 20 * 86400, now - 19 * 86400),
+        }
+        for i, (title, (start, end)) in enumerate(timed.items()):
+            self.add_candidate(self.built, "sandiego_gov", f"sandiego_gov:timed{i}", document(title, starts_at=self.iso(start), ends_at=self.iso(end)))
+        self.drain(self.built)
+        before = {(e.event_key, e.revision) for e in self.all_events(self.built)}
+
+        async def scenario():
+            hub = self.hub()
+            card = Inbox()
+            await hub.subscribe("San Diego", card)
+            return card
+
+        card = run(scenario())
+        titles = set(card.titles())
+        self.assertLessEqual({"Long Exhibit", "Earlier This Week"}, titles)
+        self.assertFalse({"Before The Week", "Old Fair"} & titles)
+        self.assertLessEqual({f"Event {i}" for i in range(4)}, titles, "the upcoming events are all still there")
+        self.assertIn("events", self.read.calls)
+        self.assertEqual({(e.event_key, e.revision) for e in self.all_events(self.built)}, before, "reading changes no event")
+
+    def test_the_floor_is_the_earliest_monday_midnight_of_the_current_week_in_any_time_zone(self):
+        from datetime import datetime, timedelta, timezone
+        from zoneinfo import ZoneInfo
+        tuesday = int(datetime(2026, 11, 10, 20, tzinfo=timezone.utc).timestamp())
+        self.assertEqual(hub_module.window_floor(tuesday), int(datetime(2026, 11, 8, 10, tzinfo=timezone.utc).timestamp()), "Monday 00:00 at UTC+14")
+        zones = [ZoneInfo(z) for z in ("Pacific/Kiritimati", "Pacific/Auckland", "Asia/Tokyo", "Europe/London", "America/New_York", "America/Los_Angeles",
+                                        "Pacific/Honolulu", "Pacific/Pago_Pago", "America/Santiago")]
+        start = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp())
+        for moment in range(start, start + 366 * 86400, 7 * 3600 + 13 * 60):
+            floor = hub_module.window_floor(moment)
+            self.assertGreater(floor, moment - 9 * 86400, "bounded: a little over a week back")
+            for zone in zones:
+                local = datetime.fromtimestamp(moment, tz=zone).date()
+                monday = local - timedelta(days=local.weekday())
+                self.assertLessEqual(floor, int(datetime(monday.year, monday.month, monday.day, tzinfo=zone).timestamp()), (moment, zone))
+
+    def test_a_service_that_cannot_select_by_end_time_is_read_as_before(self):
+        asked = []
+
+        class OlderService:
+            async def events(self, **query):
+                asked.append(query)
+                if "ends_from" in query:
+                    raise client_module.DiscoveryRequestError(400, "invalid", "unknown parameters: ends_from")
+                return {"events": [], "next_cursor": None, "latest_seq": 7}
+
+        hub = hub_module.DiscoveryHub(OlderService(), clock=lambda: 1_800_000_000)
+        feed = run(hub._load({"area_key": "sd"}))
+        self.assertEqual([sorted(q) for q in asked], [["after", "area", "ends_from", "limit"], ["after", "area", "limit", "starts_from"]])
+        self.assertEqual((asked[1]["starts_from"], feed.latest_seq, feed.truncated), (1_800_000_000 - hub_module.LOOKBACK_SECONDS, 7, False))
+
+
 class SharedUpdates(Service):
     def test_twenty_cards_cost_the_service_two_snapshots_and_one_status_check(self):
         async def scenario():
@@ -1323,6 +1391,9 @@ class WebSocket(Service):
         self.assertEqual(paths[1][0][0], "/area_events/manager.js")
         self.assertEqual(paths[2][0][0], "/area_events/presentation")
         self.assertTrue(os.path.isfile(os.path.join(ROOT, "frontend", "presentation", "registry.js")))
+        self.assertEqual((paths[3][0][0], os.path.normpath(paths[3][0][1])), ("/area_events/filters", os.path.normpath(os.path.join(ROOT, "frontend", "filters"))),
+                         "the card's date-window module is served beside it")
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, "frontend", "filters", "date-windows.js")))
         served = open(os.path.join(ROOT, "frontend", "area-events-card.js"), encoding="utf-8").read()
         self.assertIn("area_events/subscribe", served)
         self.assertNotIn("area_events/events", served)

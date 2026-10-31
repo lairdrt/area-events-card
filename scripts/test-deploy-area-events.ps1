@@ -335,6 +335,25 @@ import { newRenderer } from "./new-renderer.js";
     if ($assets.Count -ne 5 -or $assets -notcontains (Join-Path $root 'manager.js') -or $assets -notcontains (Join-Path $presentation 'new-renderer.js')) { throw "new renderer not represented in required assets: $($assets.Count)" }
   } finally { Remove-Item -LiteralPath $root -Recurse -Force }
 }
+Check 'modules the card imports are required assets' {
+  $root=Join-Path ([IO.Path]::GetTempPath()) ('ae-card-imports-'+[guid]::NewGuid().ToString('N'))
+  $presentation=Join-Path $root 'presentation'; $filters=Join-Path $root 'filters'
+  New-Item -ItemType Directory -Path $presentation,$filters | Out-Null
+  try {
+    Set-Content (Join-Path $root 'manager.js') 'manager'
+    Set-Content (Join-Path $presentation 'generic.js') 'module'
+    Set-Content (Join-Path $presentation 'manifest.js') 'import { genericRenderer } from "./generic.js";'
+    Set-Content (Join-Path $root 'area-events-card.js') @'
+import { PRESENTATIONS } from "./presentation/manifest.js";
+import { resolveWindow } from "./filters/date-windows.js";
+'@
+    $threw=$false; try { Get-AreaEventsRequiredFrontendAssets $root | Out-Null } catch { $threw=$true }
+    if (-not $threw) { throw 'a missing card module was not reported' }
+    Set-Content (Join-Path $filters 'date-windows.js') 'module'
+    $assets=@(Get-AreaEventsRequiredFrontendAssets $root)
+    if ($assets.Count -ne 5 -or $assets -notcontains (Join-Path $filters 'date-windows.js')) { throw "card module not represented in required assets: $($assets.Count)" }
+  } finally { Remove-Item -LiteralPath $root -Recurse -Force }
+}
 Check 'valid empty event feeds pass and malformed feeds fail' {
   Assert-AreaEventsFeedResponse -Response ([pscustomobject]@{events=@()}) -Area 'Empty' | Out-Null
   $threw=$false; try { Assert-AreaEventsFeedResponse -Response ([pscustomobject]@{events=$null}) -Area 'Bad' | Out-Null } catch { $threw=$true }

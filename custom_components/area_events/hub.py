@@ -22,7 +22,7 @@ import itertools
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .discovery_client import DiscoveryAuthError, DiscoveryConnectionError, DiscoveryRequestError
 from .feed import UNVERIFIED_LOCATIONS, source_name, to_feed_events, with_source_names
@@ -32,8 +32,18 @@ CHANGE_PAGE = 200
 MAX_CHANGE_PAGES = 5
 EVENT_PAGE = 200
 MAX_EVENT_PAGES = 5            # a followed area holds at most this many events (1000); more is reported as truncated
-LOOKBACK_SECONDS = 6 * 3600    # events that started a few hours ago may still be going on; the card hides the ones that ended
+LOOKBACK_SECONDS = 6 * 3600    # only for a service that cannot select by end time (see window_floor)
 RELEVANT_KINDS = ("area.configuration_changed",)
+
+
+def window_floor(now):
+    """The earliest moment any of the card's date windows can begin, wherever its events are: Monday 00:00 of the current calendar week (This Week;
+    This Weekend lies within it). Time zones run from UTC-12 to UTC+14, so the westernmost one's date decides which week it is, and the easternmost
+    one's Monday begins first. Each area's view holds every event still going on at that moment or later, so a card can show this week's past days
+    and an event that began long before, and still hides what has ended when no date is chosen."""
+    westernmost = datetime.fromtimestamp(now - 12 * 3600, tz=timezone.utc).date()
+    monday = westernmost - timedelta(days=westernmost.weekday())
+    return int(datetime(monday.year, monday.month, monday.day, tzinfo=timezone.utc).timestamp()) - 14 * 3600
 
 
 class UnknownArea(LookupError):
@@ -241,9 +251,15 @@ class DiscoveryHub:
 
     async def _load(self, area):
         feed = _Feed(area["area_key"])
-        cursor, floor = None, int(self._clock()) - LOOKBACK_SECONDS
+        cursor, window = None, {"ends_from": window_floor(self._clock())}
         for page_number in range(MAX_EVENT_PAGES):
-            page = await self._read.events(area=area["area_key"], starts_from=floor, after=cursor, limit=EVENT_PAGE)
+            try:
+                page = await self._read.events(area=area["area_key"], after=cursor, limit=EVENT_PAGE, **window)
+            except DiscoveryRequestError as error:
+                if page_number or error.status != 400 or "ends_from" not in window:
+                    raise
+                window = {"starts_from": int(self._clock()) - LOOKBACK_SECONDS}   # a service older than `ends_from`: the start-time window it has always understood
+                page = await self._read.events(area=area["area_key"], after=cursor, limit=EVENT_PAGE, **window)
             if page_number == 0:
                 feed.latest_seq = int(page.get("latest_seq") or 0)   # the position of the first read: later changes are seen again
             feed.events.extend(to_feed_events(page))

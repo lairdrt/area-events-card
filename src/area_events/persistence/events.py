@@ -151,6 +151,9 @@ class EventRepository:
         if query.starts_to is not None:
             clauses.append("e.starts_at < ?")
             params.append(query.starts_to)
+        if query.ends_from is not None:   # with `starts_to`, the events overlapping [ends_from, starts_to), however early they began
+            clauses.append("COALESCE(e.ends_at, e.starts_at) >= ?")
+            params.append(query.ends_from)
         if after:
             clauses.append("(e.starts_at, e.event_id) > (?, ?)")
             params.extend(after)
@@ -228,7 +231,8 @@ class SqliteEventQueries:
                 raise NotFound("no such area")
             if query.source_key and self._sources.by_key(connection, query.source_key) is None:
                 raise NotFound("no such source")
-            rows, more = self._events.query(connection, EventQuery(query.area_key, query.source_key, query.starts_from, query.starts_to, None, query.limit), after)
+            rows, more = self._events.query(connection, EventQuery(query.area_key, query.source_key, query.starts_from, query.starts_to, None, query.limit,
+                                                                   ends_from=query.ends_from), after)
             events = tuple(self._events.record(connection, row) for row in rows)
             latest = self._changes.latest(connection)
         return EventPage(EVENTS_SCHEMA, events, f"{rows[-1]['starts_at']}.{rows[-1]['event_id']}" if more and rows else None, latest)

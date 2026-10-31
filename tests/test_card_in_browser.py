@@ -66,8 +66,9 @@ class CardInABrowser(unittest.TestCase):
                         path, content_type = html, "text/html; charset=utf-8"
                     elif self.path == "/area_events/area-events-card.js":
                         path, content_type = CARD, "text/javascript; charset=utf-8"
-                    elif self.path.startswith("/area_events/presentation/") and self.path.rsplit("/", 1)[-1].endswith(".js"):
-                        path, content_type = os.path.join(FRONTEND, "presentation", os.path.basename(self.path)), "text/javascript; charset=utf-8"
+                    elif self.path.startswith(("/area_events/presentation/", "/area_events/filters/")) and self.path.rsplit("/", 1)[-1].endswith(".js"):
+                        folder = self.path.split("/")[2]   # the folders the integration serves beside the card
+                        path, content_type = os.path.join(FRONTEND, folder, os.path.basename(self.path)), "text/javascript; charset=utf-8"
                     else:
                         self.send_error(404)
                         return

@@ -70,6 +70,13 @@ function Get-AreaEventsRequiredFrontendAssets {
     if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Manifest asset is missing: $relative" }
     if (-not $assets.Contains($asset)) { $assets.Add($asset) }
   }
+  # Modules the card itself imports (the filters beside the presentation manifest) must be deployed and served too.
+  $cardText = Get-Content -Raw -LiteralPath (Join-Path $root 'area-events-card.js')
+  foreach ($match in [regex]::Matches([string]$cardText, '(?m)^\s*import\s+.+?\s+from\s+["''](\./[^"'']+\.js)["'']\s*;?')) {
+    $asset = Join-Path $root $match.Groups[1].Value.Substring(2).Replace('/', '\')
+    if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Card module is missing: $($match.Groups[1].Value)" }
+    if (-not $assets.Contains($asset)) { $assets.Add($asset) }
+  }
   foreach ($asset in $assets) { if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Required frontend asset is missing: $asset" } }
   return $assets.ToArray()
 }

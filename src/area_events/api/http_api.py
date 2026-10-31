@@ -12,7 +12,8 @@
     POST  /v1/discovery/pause|resume     control   idempotent
     GET   /v1/changes?after=N&limit=K    read      the durable change feed (hints are not needed; this is authoritative)
     POST  /v1/service/stop               control   graceful shutdown of the serving process
-    GET   /v1/events?area=&source=&from=&to=&after=&limit=   read   normalized events (bounded pages; `after` is the previous page's cursor)
+    GET   /v1/events?area=&source=&from=&to=&ends_from=&after=&limit=   read   normalized events (bounded pages; `after` is the previous page's cursor;
+                                                                    `ends_from` keeps those still going on then, so with `to` it asks for the events overlapping a window)
     GET   /v1/events/{key}               read      one event with its revision history and field evidence
     POST  /v1/events/{key}/trash         control   delete the event into the trashcan with a reason (`discovery.trashcan.v1`); repeating it changes nothing
     GET   /v1/trashcan?limit=K           read      the deleted events, their reasons and how often rediscovery was suppressed (`discovery.trashcan.v1`)
@@ -342,7 +343,7 @@ class DiscoveryApi:
         if method != "GET":
             raise ApiError(405, "method_not_allowed", "method not allowed")
         if path == "/v1/events":
-            unknown = sorted(set(query) - {"area", "source", "from", "to", "after", "limit"})
+            unknown = sorted(set(query) - {"area", "source", "from", "to", "ends_from", "after", "limit"})
             if unknown:
                 raise ValidationFailed(f"unknown parameters: {', '.join(unknown)[:100]}")
 
@@ -353,7 +354,7 @@ class DiscoveryApi:
             except ValueError as error:
                 raise ValidationFailed("limit must be an integer") from error
             return 200, to_jsonable(self._events.query(EventQuery(one("area"), one("source"), self._time(one("from"), "from"), self._time(one("to"), "to"),
-                                                                  one("after"), max(1, limit))))
+                                                                  one("after"), max(1, limit), self._time(one("ends_from"), "ends_from"))))
         return 200, to_jsonable(self._events.get(path[len("/v1/events/"):]))
 
     @staticmethod

@@ -17,10 +17,15 @@ test("frontend build leaves committed HA assets untouched under LF and CRLF chec
   try {
     const presentation = readdirSync(join(root, "src/frontend/presentation"))
       .filter((name) => name.endsWith(".js"));
+    const filters = readdirSync(join(root, "src/frontend/filters"))
+      .filter((name) => name.endsWith(".js"));
+    assert.ok(filters.includes("date-windows.js"), "the date-window module is part of the build");
     const sources = ["src/frontend/area-events-card.js",
-      ...presentation.map((name) => "src/frontend/presentation/" + name)];
+      ...presentation.map((name) => "src/frontend/presentation/" + name),
+      ...filters.map((name) => "src/frontend/filters/" + name)];
     const tracked = ["custom_components/area_events/frontend/area-events-card.js",
-      ...presentation.map((name) => "custom_components/area_events/frontend/presentation/" + name)];
+      ...presentation.map((name) => "custom_components/area_events/frontend/presentation/" + name),
+      ...filters.map((name) => "custom_components/area_events/frontend/filters/" + name)];
     mkdirSync(join(temporary, "scripts"), { recursive: true });
     mkdirSync(join(temporary, "custom_components/area_events"), { recursive: true });
     cpSync(join(root, "scripts/build.mjs"), join(temporary, "scripts/build.mjs"));
@@ -56,6 +61,10 @@ test("frontend build leaves committed HA assets untouched under LF and CRLF chec
       for (const name of presentation) {
         assert.equal(readFileSync(join(temporary, "dist/presentation", name), "utf8"),
           original("src/frontend/presentation/" + name));
+      }
+      for (const name of filters) {
+        assert.equal(readFileSync(join(temporary, "dist/filters", name), "utf8"),
+          original("src/frontend/filters/" + name));
       }
 
       // A legitimately changed source must regenerate the tracked bundle while

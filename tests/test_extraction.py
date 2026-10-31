@@ -558,9 +558,28 @@ class EventApi(Fixture):
         self.assertEqual(self.call("GET", f"/v1/events?to={iso}&area={self.austin.area_key}")[1]["events"][0]["title"], "Austin Fest 0")
         self.assertEqual(self.call("GET", "/v1/events?source=sandiego_gov")[1]["events"][0]["sources"], ["sandiego_gov"])
 
+    def test_events_overlapping_a_window_are_selected_by_their_end_however_early_they_began(self):
+        everything = self.call("GET", f"/v1/events?area={self.austin.area_key}")[1]["events"]
+        second = everything[1]
+        self.assertGreater(second["ends_at"], second["starts_at"] + 1)
+        during = second["starts_at"] + 1   # the second event has begun and is still going on
+        by_start = self.call("GET", f"/v1/events?area={self.austin.area_key}&from={during}")[1]["events"]
+        self.assertNotIn(second["event_key"], [e["event_key"] for e in by_start], "a start-time window loses an event that is under way")
+        status, page = self.call("GET", f"/v1/events?area={self.austin.area_key}&ends_from={during}")
+        self.assertEqual((status, [e["event_key"] for e in page["events"]]), (200, [e["event_key"] for e in everything[1:]]), "the one under way and the later ones")
+        until = everything[2]["starts_at"]
+        window = self.call("GET", f"/v1/events?area={self.austin.area_key}&ends_from={during}&to={until}")[1]["events"]
+        self.assertEqual([e["event_key"] for e in window], [second["event_key"]], "with `to`: the events overlapping [ends_from, to)")
+        iso = time.strftime("%Y-%m-%dT%H:%M:%S%%2B00:00", time.gmtime(during))
+        self.assertEqual(self.call("GET", f"/v1/events?area={self.austin.area_key}&ends_from={iso}")[1]["events"], page["events"], "an ISO time with an offset is accepted too")
+        first = self.call("GET", f"/v1/events?area={self.austin.area_key}&ends_from={during}&limit=1")[1]
+        rest = self.call("GET", f"/v1/events?area={self.austin.area_key}&ends_from={during}&after={first['next_cursor']}")[1]
+        self.assertEqual([e["event_key"] for e in first["events"] + rest["events"]], [e["event_key"] for e in everything[1:]], "paged as before")
+
     def test_bad_event_requests_get_explicit_errors(self):
         for path, expected in (("/v1/events?area=nosucharea1", 404), ("/v1/events?after=abc", 400), ("/v1/events?limit=x", 400), ("/v1/events?sql=1", 400),
-                               ("/v1/events?from=yesterday", 400), ("/v1/events?from=2030-01-01T00:00:00", 400), ("/v1/events/ev-nothing", 404)):
+                               ("/v1/events?from=yesterday", 400), ("/v1/events?from=2030-01-01T00:00:00", 400), ("/v1/events?ends_from=soon", 400),
+                               ("/v1/events?ends_from=2030-01-01T00:00:00", 400), ("/v1/events/ev-nothing", 404)):
             self.assertEqual(self.call("GET", path)[0], expected, path)
         self.assertEqual(self.call("POST", "/v1/events", body={})[0], 405)
         self.assertEqual(self.call("GET", "/v1/events", token=None)[0], 401)

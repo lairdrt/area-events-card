@@ -504,7 +504,7 @@ test("default is Show All and unmatched events are never hidden", async () => {
   assert.match(text(byClass(root, "filter-summary")[0]), /Showing all categories/);
 });
 
-test("selecting categories filters client side; multiple selection; Other; Show All; no new images or tiles", async () => {
+test("selecting categories filters client side; multiple selection; Other; All; no new images or tiles", async () => {
   const card = await make({});
   const root = card.shadowRoot;
   const tiles = byClass(root, "event");
@@ -522,9 +522,6 @@ test("selecting categories filters client side; multiple selection; Other; Show 
   assert.deepEqual(visibleTitles(root), ["Mystery Gathering"]);
 
   click(chip(root, "Music"));
-  click(byClass(root, "show-all")[0]);
-  assert.equal(visibleTitles(root).length, 3);
-  click(chip(root, "Music"));
   click(chip(root, "All"));
   assert.equal(visibleTitles(root).length, 3);
 
@@ -532,16 +529,17 @@ test("selecting categories filters client side; multiple selection; Other; Show 
   assert.equal(created.img, images); // no image elements were created
 });
 
-test("Show all comes first, before Filters; the header timestamp has no icon", async () => {
+test("the top row is Dates, Filters and the summary; Show all is gone, All stays in Filters; the header timestamp has no icon", async () => {
   const card = await make({});
   const root = card.shadowRoot;
   const bar = byClass(root, "filter-bar")[0];
-  assert.deepEqual(bar.children.slice(0, 2).map((c) => c.className), ["show-all", "filter-toggle"]);
-  assert.equal(byClass(root, "show-all")[0].attrs["aria-pressed"], "true");
+  assert.deepEqual(bar.children.map((c) => c.className), ["date-toggle", "filter-toggle", "filter-summary"]);
+  assert.equal(byClass(root, "show-all").length, 0);
+  assert.ok(!walk(root).some((el) => el.tag === "button" && /Show all/i.test(text(el))), "no Show all button anywhere");
   openFilters(root);
+  assert.ok(byClass(root, "chip-all").length === 1, "the All chip inside Filters remains");
   click(chip(root, "Music"));
-  assert.equal(byClass(root, "show-all")[0].attrs["aria-pressed"], "false");
-  assert.equal(byClass(root, "filter-bar")[0].children[0].className, "show-all");
+  assert.equal(byClass(root, "filter-bar")[0].children[0].className, "date-toggle");
   const updated = byClass(root, "updated")[0];
   assert.ok(!updated.children.some((c) => c.tag === "ha-icon"));
   assert.match(text(updated), /^Updated /);
@@ -1099,7 +1097,8 @@ test("the card the integration serves is the current source, stamped", async () 
   const readCanonical = (url) => canonical(readFileSync(url, "utf8"));
   const source = readCanonical(new URL("../src/frontend/area-events-card.js", import.meta.url));
   const modules = ["community.js", "contract.js", "generic.js", "manifest.js", "nasa-mission.js", "registry.js"]
-    .map((name) => `${name}\n${readCanonical(new URL(`../src/frontend/presentation/${name}`, import.meta.url))}`).join("\n");
+    .map((name) => `${name}\n${readCanonical(new URL(`../src/frontend/presentation/${name}`, import.meta.url))}`)
+    .concat([`filters/date-windows.js\n${readCanonical(new URL("../src/frontend/filters/date-windows.js", import.meta.url))}`]).join("\n");
   const { version } = JSON.parse(readFileSync(new URL("../custom_components/area_events/manifest.json", import.meta.url), "utf8"));
   const identifier = `AREA-EVENTS ${version}-${createHash("sha1").update(source).update(modules).digest("hex").slice(0, 8)}`;
   const served = readCanonical(new URL("../custom_components/area_events/frontend/area-events-card.js", import.meta.url));
@@ -1108,6 +1107,8 @@ test("the card the integration serves is the current source, stamped", async () 
     assert.equal(readCanonical(new URL(`../custom_components/area_events/frontend/presentation/${name}`, import.meta.url)),
       readCanonical(new URL(`../src/frontend/presentation/${name}`, import.meta.url)), `${name} is packaged from source`);
   }
+  assert.equal(readCanonical(new URL("../custom_components/area_events/frontend/filters/date-windows.js", import.meta.url)),
+    readCanonical(new URL("../src/frontend/filters/date-windows.js", import.meta.url)), "the date-window module is packaged from source");
 });
 
 // --- visual editor availability ------------------------------------------------------------------
@@ -1181,10 +1182,12 @@ async function withFreshModule(registry, run) {
   }
 }
 
-test("the card module imports only its presentation manifest and records its load", async () => {
+test("the card module imports only its presentation manifest and its date-window module, and records its load", async () => {
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../src/frontend/area-events-card.js", import.meta.url), "utf8");
-  assert.deepEqual([...source.matchAll(/^import .* from ["'](.*)["'];$/gm)].map((match) => match[1]), ["./presentation/manifest.js"]);
+  assert.deepEqual([...source.matchAll(/^import .* from ["'](.*)["'];\r?$/gm)].map((match) => match[1]), ["./presentation/manifest.js", "./filters/date-windows.js"]);
+  const dates = readFileSync(new URL("../src/frontend/filters/date-windows.js", import.meta.url), "utf8");
+  assert.doesNotMatch(dates, /^import /m, "the date-window module stands alone");
   assert.doesNotMatch(source, /import\s*\(|^\s*await\s/m, "no dynamic import or top-level await");
   assert.equal((source.match(/customElements\.define\(/g) || []).length, 0, "no direct define on the registry captured at load; registration goes through defineCard()");
 });
@@ -1903,4 +1906,303 @@ test("a failed deletion is shown in the dialog and the tile stays", async () => 
   assert.match(text(error), /not deleted: The Discovery Service is not reachable/);
   assert.ok(dialogOf(card), "the dialog stays open to try again or cancel");
   assert.ok(tileTitled(root, "Mystery Gathering"));
+});
+
+// --- date filters ---------------------------------------------------------------------------------
+
+const dates = await import("../src/frontend/filters/date-windows.js");
+const PT = "America/Los_Angeles";
+const windowOf = (preset, now, zone = PT) => {
+  const w = dates.resolveWindow({ preset }, Date.parse(now), zone);
+  return [new Date(w.startInclusive).toISOString(), new Date(w.endExclusive).toISOString()];
+};
+
+test("This Week is Monday 00:00 to the next Monday 00:00 in the zone, past days included", () => {
+  const week = ["2026-11-09T08:00:00.000Z", "2026-11-16T08:00:00.000Z"];   // Mon Nov 9 to Mon Nov 16, Pacific
+  assert.deepEqual(windowOf("this-week", "2026-11-10T20:00:00Z"), week, "a Tuesday includes the Monday before it");
+  assert.deepEqual(windowOf("this-week", "2026-11-09T08:00:00Z"), week, "Monday 00:00 itself begins the week");
+  assert.deepEqual(windowOf("this-week", "2026-11-16T07:59:59Z"), week, "Sunday 23:59:59 is still the same week");
+  assert.deepEqual(windowOf("this-week", "2026-11-16T08:00:00Z"), ["2026-11-16T08:00:00.000Z", "2026-11-23T08:00:00.000Z"], "the next Monday starts the next week");
+  assert.deepEqual(windowOf("this-week", "2026-11-16T07:00:00Z", "Europe/London"), ["2026-11-16T00:00:00.000Z", "2026-11-23T00:00:00.000Z"],
+    "the calendar of the event's own zone decides: Sunday evening in California is already Monday in London");
+});
+
+test("This Weekend is Saturday 00:00 to Monday 00:00: the coming one on a weekday, the current one on Saturday and Sunday", () => {
+  const weekend = ["2026-11-14T08:00:00.000Z", "2026-11-16T08:00:00.000Z"];
+  assert.deepEqual(windowOf("this-weekend", "2026-11-10T20:00:00Z"), weekend, "Tuesday: the coming Saturday and Sunday");
+  assert.deepEqual(windowOf("this-weekend", "2026-11-09T08:00:00Z"), weekend, "Monday 00:00: the coming weekend");
+  assert.deepEqual(windowOf("this-weekend", "2026-11-14T03:00:00Z"), weekend, "Friday 19:00 Pacific: tomorrow's weekend");
+  assert.deepEqual(windowOf("this-weekend", "2026-11-14T18:00:00Z"), weekend, "Saturday: this Saturday and Sunday");
+  assert.deepEqual(windowOf("this-weekend", "2026-11-15T20:00:00Z"), weekend, "Sunday: yesterday's Saturday is still included");
+  assert.deepEqual(windowOf("this-weekend", "2026-11-16T08:00:00Z"), ["2026-11-21T08:00:00.000Z", "2026-11-23T08:00:00.000Z"], "Monday moves on to the next weekend");
+});
+
+test("date windows cross month and year ends and follow daylight-saving changes", () => {
+  assert.deepEqual(windowOf("this-week", "2026-12-30T20:00:00Z"), ["2026-12-28T08:00:00.000Z", "2027-01-04T08:00:00.000Z"]);
+  assert.deepEqual(windowOf("this-weekend", "2026-12-30T20:00:00Z"), ["2027-01-02T08:00:00.000Z", "2027-01-04T08:00:00.000Z"]);
+  assert.deepEqual(windowOf("this-week", "2026-09-30T19:00:00Z"), ["2026-09-28T07:00:00.000Z", "2026-10-05T07:00:00.000Z"], "September into October");
+  // November 1, 2026: clocks go back. The week and the weekend that contain it are an hour longer, and still begin and end at midnight.
+  assert.deepEqual(windowOf("this-week", "2026-10-27T19:00:00Z"), ["2026-10-26T07:00:00.000Z", "2026-11-02T08:00:00.000Z"]);
+  assert.deepEqual(windowOf("this-weekend", "2026-10-27T19:00:00Z"), ["2026-10-31T07:00:00.000Z", "2026-11-02T08:00:00.000Z"]);
+  // March 14, 2027: clocks go forward; that weekend is 47 hours long.
+  const spring = dates.resolveWindow({ preset: "this-weekend" }, Date.parse("2027-03-10T19:00:00Z"), PT);
+  assert.deepEqual([new Date(spring.startInclusive).toISOString(), new Date(spring.endExclusive).toISOString()], ["2027-03-13T08:00:00.000Z", "2027-03-15T07:00:00.000Z"]);
+  assert.equal((spring.endExclusive - spring.startInclusive) / 3600000, 47);
+  // Where the clocks skip midnight itself, the day begins when they skip to 01:00.
+  assert.equal(new Date(dates.startOfDay({ year: 2026, month: 9, day: 6 }, "America/Santiago")).toISOString(), "2026-09-06T04:00:00.000Z");
+  assert.equal(new Date(dates.startOfDay({ year: 2027, month: 3, day: 14 }, "America/Havana")).toISOString(), "2027-03-14T05:00:00.000Z");
+});
+
+test("an event is in a window when its interval overlaps it; one without an end is a moment; nothing is expanded into days", () => {
+  const w = { startInclusive: Date.parse("2026-11-14T08:00:00Z"), endExclusive: Date.parse("2026-11-16T08:00:00Z") };
+  const inside = (start, end) => dates.eventOverlapsWindow({ start, end }, w);
+  assert.equal(inside("2026-11-14T08:00:00Z"), true, "no end: starting at the window's first instant is inside");
+  assert.equal(inside("2026-11-16T08:00:00Z"), false, "no end: starting at the window's end is outside");
+  assert.equal(inside("2026-11-13T20:00:00Z"), false, "no end: a moment before the window is outside");
+  assert.equal(inside("2026-11-13T20:00:00Z", "2026-11-14T09:00:00Z"), true, "begins before, ends inside");
+  assert.equal(inside("2026-11-15T20:00:00Z", "2026-11-16T10:00:00Z"), true, "begins inside, ends after");
+  assert.equal(inside("2026-11-04T18:00:00Z", "2026-12-01T00:00:00Z"), true, "a month-long interval covers the whole window");
+  assert.equal(inside("2026-11-13T20:00:00Z", "2026-11-14T08:00:00Z"), false, "ending exactly as the window begins does not overlap it");
+  assert.equal(inside("2026-11-16T08:00:00Z", "2026-11-16T10:00:00Z"), false, "beginning exactly as the window ends does not overlap it");
+  assert.equal(inside("2026-11-14T10:00:00Z", "2026-11-14T09:00:00Z"), true, "an end before the start is ignored: the start alone decides");
+  assert.equal(inside("not a date", "2026-11-14T09:00:00Z"), false);
+  assert.equal(dates.eventOverlapsWindow({ start: "2026-11-14T10:00:00Z" }, null), false);
+  assert.equal(dates.resolveWindow(null, Date.now(), PT), null, "no selection, no window");
+  assert.equal(dates.resolveWindow({ preset: "this-month" }, Date.now(), PT), null, "an unknown preset is no selection");
+  assert.deepEqual([dates.normalizeSelection({ preset: "this-week", extra: 1 }), dates.normalizeSelection("this-week"), dates.normalizeSelection([])],
+    [{ preset: "this-week" }, null, null]);
+  assert.deepEqual(dates.PRESETS.map((p) => [p.id, p.label]), [["this-week", "This Week"], ["this-weekend", "This Weekend"]]);
+});
+
+// The week of Monday November 9, 2026, in San Diego: what the hub now delivers (this week's past days, and an exhibit that began weeks ago).
+const pacific = (local, hours) => {
+  const start = new Date(`${local}-08:00`);
+  return { start: start.toISOString(), ...(hours ? { end: new Date(start.getTime() + hours * 3600000).toISOString() } : {}) };
+};
+const weekEvent = (title, local, hours, extra) => ({ id: title, title, ...pacific(local, hours), timezone: PT, url: "https://example.org/e", source: { name: "Calendar" },
+  verified: false, verification: { status: "unverified", evidence: [] }, ...extra });
+const weekFeed = () => makeFeed({
+  events: [
+    weekEvent("Last Week Fair", "2026-11-07T10:00", 6),
+    weekEvent("Month-long Exhibit", "2026-10-20T10:00", 41 * 24 + 6),
+    weekEvent("Monday Lecture", "2026-11-09T18:00", 2),
+    weekEvent("Wednesday Concert", "2026-11-11T19:00", 2),
+    weekEvent("Saturday Market", "2026-11-14T09:00", 4),
+    weekEvent("Sunday Hike", "2026-11-15T08:00"),
+    weekEvent("Sunday Late Show", "2026-11-15T23:30", 1.5),
+    weekEvent("Next Tuesday Talk", "2026-11-17T18:00", 1),
+  ],
+});
+const TUESDAY = Date.parse("2026-11-10T12:00:00-08:00");
+const SUNDAY = Date.parse("2026-11-15T12:00:00-08:00");
+const realNow = Date.now;
+const clockAt = (ms) => { Date.now = () => ms; };
+test.afterEach(() => { Date.now = realNow; });
+
+const openDates = (root) => click(byClass(root, "date-toggle")[0]);
+const dateChip = (root, id) => byClass(root, "chip").find((c) => c.attrs["data-date"] === id);
+const THIS_WEEK = ["Month-long Exhibit", "Monday Lecture", "Wednesday Concert", "Saturday Market", "Sunday Hike", "Sunday Late Show"];
+const UPCOMING = ["Month-long Exhibit", "Wednesday Concert", "Saturday Market", "Sunday Hike", "Sunday Late Show", "Next Tuesday Talk"];
+
+test("Dates opens its own row of the same chips as Filters, with counts, check marks and aria-pressed; it opens and closes independently", async () => {
+  clockAt(TUESDAY);
+  const card = await make({}, { feed: weekFeed() });
+  const root = card.shadowRoot;
+  const toggle = byClass(root, "date-toggle")[0];
+  assert.equal(toggle.tag, "button");
+  assert.equal(toggle.attrs["aria-expanded"], "false");
+  assert.equal(byClass(root, "date-chips").length, 0, "closed by default");
+  openDates(root);
+  assert.equal(byClass(root, "date-toggle")[0].attrs["aria-expanded"], "true");
+  const row = byClass(root, "date-chips")[0];
+  assert.ok(row.className.split(" ").includes("chips"), "the same .chips container as the categories");
+  assert.deepEqual(row.children.map((c) => [c.tag, c.className, c.attrs["aria-pressed"], text(c)]),
+    [["button", "chip", "false", "This Week | 6"], ["button", "chip", "false", "This Weekend | 4"]], "the category chips' markup: .chip, a .count, not pressed");
+  assert.deepEqual(row.children.map((c) => byClass(c, "count").length), [1, 1]);
+
+  openFilters(root);
+  assert.equal(byClass(root, "date-chips").length, 1, "both rows can be open at once");
+  assert.ok(chip(root, "Music"), "the category chips are there too");
+  click(byClass(root, "date-toggle")[0]);
+  assert.equal(byClass(root, "date-chips").length, 0, "closing Dates leaves Filters open");
+  assert.ok(chip(root, "Music"));
+  assert.equal(byClass(root, "filter-toggle")[0].attrs["aria-expanded"], "true");
+  openDates(root);
+  click(byClass(root, "filter-toggle")[0]);
+  assert.equal(byClass(root, "date-chips").length, 1, "closing Filters leaves Dates open");
+  assert.equal(chip(root, "Music"), undefined);
+});
+
+test("one date choice at a time: This Weekend replaces This Week, choosing it again clears it and the usual upcoming view returns", async () => {
+  clockAt(TUESDAY);
+  const card = await make({}, { feed: weekFeed() });
+  const root = card.shadowRoot;
+  assert.deepEqual(visibleTitles(root), UPCOMING, "no date chosen: events that have ended stay hidden, as before");
+  openDates(root);
+  click(dateChip(root, "this-week"));
+  assert.deepEqual(visibleTitles(root), THIS_WEEK, "Monday's ended lecture is back; next week's talk and last week's fair are not");
+  assert.equal(dateChip(root, "this-week").attrs["aria-pressed"], "true");
+  assert.match(text(dateChip(root, "this-week")), /^✓ This Week/);
+  assert.match(text(byClass(root, "date-toggle")[0]), /Dates \(1\)/);
+  assert.match(text(byClass(root, "filter-summary")[0]), /This Week · Showing all categories/);
+
+  click(dateChip(root, "this-weekend"));
+  assert.deepEqual(visibleTitles(root), ["Month-long Exhibit", "Saturday Market", "Sunday Hike", "Sunday Late Show"]);
+  assert.deepEqual([dateChip(root, "this-week").attrs["aria-pressed"], dateChip(root, "this-weekend").attrs["aria-pressed"]], ["false", "true"]);
+
+  click(dateChip(root, "this-weekend"));
+  assert.deepEqual(visibleTitles(root), UPCOMING);
+  assert.deepEqual([dateChip(root, "this-week").attrs["aria-pressed"], dateChip(root, "this-weekend").attrs["aria-pressed"]], ["false", "false"]);
+  assert.match(text(byClass(root, "date-toggle")[0]), /^Dates$/);
+});
+
+test("on Sunday, This Weekend still holds Saturday and This Week still holds Monday", async () => {
+  clockAt(SUNDAY);
+  const card = await make({}, { feed: weekFeed() });
+  const root = card.shadowRoot;
+  openDates(root);
+  click(dateChip(root, "this-weekend"));
+  assert.deepEqual(visibleTitles(root), ["Month-long Exhibit", "Saturday Market", "Sunday Hike", "Sunday Late Show"]);
+  click(dateChip(root, "this-week"));
+  assert.deepEqual(visibleTitles(root), THIS_WEEK);
+});
+
+test("dates and categories combine with AND, and neither changes the other's saved choice", async () => {
+  clockAt(TUESDAY);
+  const card = await make({}, { feed: weekFeed() });
+  const root = card.shadowRoot;
+  openDates(root);
+  openFilters(root);
+  click(chip(root, "Markets"));
+  assert.deepEqual(visibleTitles(root), ["Saturday Market"]);
+  click(dateChip(root, "this-weekend"));
+  assert.deepEqual(visibleTitles(root), ["Saturday Market"]);
+  click(chip(root, "Music"));
+  assert.deepEqual(visibleTitles(root), ["Saturday Market"], "the weekend has no concert: Music adds nothing");
+  click(dateChip(root, "this-week"));
+  assert.deepEqual(visibleTitles(root), ["Wednesday Concert", "Saturday Market"]);
+  assert.match(text(chip(root, "Music")), /Music \| 1/, "category counts are of the events the date choice shows");
+  assert.deepEqual(stored(card).selected.sort(), ["markets", "music"]);
+  assert.deepEqual(stored(card).date, { preset: "this-week" });
+  click(chip(root, "All"));
+  assert.deepEqual(stored(card).date, { preset: "this-week" }, "All clears categories only");
+  assert.deepEqual(visibleTitles(root), THIS_WEEK);
+  click(dateChip(root, "this-week"));
+  assert.equal(stored(card).date, undefined);
+  assert.deepEqual(stored(card).selected, []);
+});
+
+test("the date window is applied before max_events, and each date chip counts what choosing it shows", async () => {
+  clockAt(TUESDAY);
+  const card = await make({ max_events: 2 }, { feed: weekFeed() });
+  const root = card.shadowRoot;
+  assert.deepEqual(visibleTitles(root), ["Month-long Exhibit", "Wednesday Concert"]);
+  openDates(root);
+  assert.deepEqual(byClass(root, "date-chips")[0].children.map((c) => text(byClass(c, "count")[0])), ["2", "2"]);
+  click(dateChip(root, "this-week"));
+  assert.deepEqual(visibleTitles(root), ["Month-long Exhibit", "Monday Lecture"], "the week's first two, not the first two upcoming then filtered");
+  click(dateChip(root, "this-weekend"));
+  assert.deepEqual(visibleTitles(root), ["Month-long Exhibit", "Saturday Market"]);
+});
+
+test("a date choice keeps the existing sort and YAML restrictions", async () => {
+  clockAt(TUESDAY);
+  const card = await make({ sort: "title", exclude: ["hike"], categories: ["arts", "education", "markets"] }, { feed: weekFeed() });
+  const root = card.shadowRoot;
+  openDates(root);
+  click(dateChip(root, "this-week"));
+  assert.deepEqual(visibleTitles(root), ["Monday Lecture", "Month-long Exhibit", "Saturday Market"]);
+});
+
+test("choosing dates reuses the tiles of events that stay and makes no requests beyond saving the choice", async () => {
+  clockAt(TUESDAY);
+  const card = await make({}, { feed: weekFeed() });
+  const root = card.shadowRoot;
+  const before = new Map(byClass(root, "event").map((el) => [text(byClass(el, "title")[0]), el]));
+  const calls = card.hassStub.calls.length;
+  openDates(root);
+  click(dateChip(root, "this-week"));
+  click(dateChip(root, "this-weekend"));
+  click(dateChip(root, "this-weekend"));
+  for (const el of byClass(root, "event")) {
+    const title = text(byClass(el, "title")[0]);
+    if (before.has(title)) assert.equal(el, before.get(title), `${title}: the same tile`);
+  }
+  await wait(400);   // the saved-choice debounce
+  const made = card.hassStub.calls.slice(calls).map((m) => m.type);
+  assert.equal(card.hassStub.eventsCalls().length, 1, "no new subscription");
+  assert.deepEqual([...new Set(made)], ["frontend/set_user_data"], "only the per-user preference is written; nothing asks for events or a crawl");
+});
+
+test("a date choice that matches nothing keeps the controls to change it and says why", async () => {
+  clockAt(Date.parse("2026-12-15T12:00:00-08:00"));
+  const feed = weekFeed();
+  feed.events.push(weekEvent("January Gala", "2027-01-20T19:00", 3));
+  const card = await make({}, { feed });
+  const root = card.shadowRoot;
+  assert.deepEqual(visibleTitles(root), ["January Gala"]);
+  openDates(root);
+  click(dateChip(root, "this-weekend"));
+  assert.equal(byClass(root, "event").length, 0);
+  assert.ok(dateChip(root, "this-weekend"), "the chips stay");
+  assert.match(text(byClass(root, "notice")[0]), /No events match the selected dates/);
+  click(dateChip(root, "this-weekend"));
+  assert.deepEqual(visibleTitles(root), ["January Gala"], "clearing the choice brings back the upcoming view");
+});
+
+test("the date choice is saved per user and card, restored on reopening, and older saved filters keep working", async () => {
+  clockAt(TUESDAY);
+  const first = await make({ title: "Week" }, { feed: weekFeed() });
+  openDates(first.shadowRoot);
+  openFilters(first.shadowRoot);
+  click(chip(first.shadowRoot, "Markets"));
+  click(dateChip(first.shadowRoot, "this-week"));
+  assert.deepEqual(stored(first), { v: 1, selected: ["markets"], custom: [], date: { preset: "this-week" } });
+  await wait(400);
+  const saved = first.hassStub.calls.filter((m) => m.type === "frontend/set_user_data").at(-1);
+  assert.deepEqual(saved.value, { v: 1, selected: ["markets"], custom: [], date: { preset: "this-week" } }, "Home Assistant's per-user store holds it");
+
+  const second = await make({ title: "Week" }, { feed: weekFeed() });
+  assert.deepEqual(visibleTitles(second.shadowRoot), ["Saturday Market"]);
+  openDates(second.shadowRoot);
+  assert.equal(dateChip(second.shadowRoot, "this-week").attrs["aria-pressed"], "true");
+
+  // saved before dates existed: the categories and custom categories survive, and no date is chosen
+  const config = { area: "San Diego", title: "Old" };
+  const custom = [{ id: "c_abc123", name: "Lectures", keywords: ["lecture"] }];
+  window.localStorage.setItem(prefsKey(config), JSON.stringify({ v: 1, selected: ["c_abc123", "music"], custom }));
+  const old = await make({ title: "Old" }, { feed: weekFeed() });
+  assert.deepEqual(old._prefs, { v: 1, selected: ["c_abc123", "music"], custom });
+  assert.deepEqual(visibleTitles(old.shadowRoot), ["Wednesday Concert"], "the default upcoming view, with the saved categories");
+  assert.deepEqual(normalizePrefs({ v: 1, selected: [], custom: [], date: { preset: "next-year" } }), { v: 1, selected: [], custom: [] }, "an unknown date choice is dropped");
+});
+
+test("a date choice saved on another device arrives through Home Assistant and is applied", async () => {
+  clockAt(TUESDAY);
+  const hass = fakeHass({
+    feed: weekFeed(),
+    onWS: (message) => (message.type === "frontend/get_user_data" ? { value: { v: 1, selected: ["markets"], custom: [], date: { preset: "this-weekend" } } } : undefined),
+  });
+  const card = await make({ title: "Remote" }, { feed: weekFeed(), hass });
+  await wait();
+  assert.deepEqual(card._prefs.date, { preset: "this-weekend" });
+  assert.deepEqual(visibleTitles(card.shadowRoot), ["Saturday Market"]);
+});
+
+test("when the calendar day changes while the card is open, This Week moves on without a reload", async () => {
+  clockAt(Date.parse("2026-11-15T23:58:00-08:00"));
+  const card = await make({}, { feed: weekFeed() });
+  const root = card.shadowRoot;
+  openDates(root);
+  click(dateChip(root, "this-week"));
+  assert.deepEqual(visibleTitles(root), THIS_WEEK);
+  const exhibit = byClass(root, "event").find((el) => text(el).includes("Month-long Exhibit"));
+  clockAt(Date.parse("2026-11-15T23:59:00-08:00"));
+  card._tick();
+  assert.deepEqual(visibleTitles(root), THIS_WEEK, "the same day: nothing changes");
+  clockAt(Date.parse("2026-11-16T00:01:00-08:00"));
+  card._tick();
+  assert.deepEqual(visibleTitles(root), ["Month-long Exhibit", "Sunday Late Show", "Next Tuesday Talk"], "Monday: the new week (the late show runs past midnight)");
+  assert.equal(byClass(root, "event").find((el) => text(el).includes("Month-long Exhibit")), exhibit, "a tile that stays is kept");
+  assert.match(text(dateChip(root, "this-weekend")), /This Weekend \| 1/, "the counts move too");
 });
