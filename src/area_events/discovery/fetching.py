@@ -58,7 +58,8 @@ class RecordingFetcher:
     def fetch(self, url, check_robots=True, binary=None, timeout=None, secret_query=None, drop_fields=()):
         """`secret_query` (credential parameters, see safe.SecretQuery) goes to the client beside `url` and is never joined to it here:
         the page is recorded under `url`, an error only in scrubbed form, and a response that carries a credential is not recorded.
-        `drop_fields` (JSON members the client takes out of the response before anything sees it, see SafeFetcher.fetch) is passed on."""
+        `drop_fields` (JSON members the client takes out of the response before anything sees it, see SafeFetcher.fetch) is passed on.
+        `check_robots=False` is passed on only with `secret_query`; without credentials it is refused, so no public page is read past robots.txt."""
         if len(self.fetches) >= self.max_requests:
             raise BudgetExceeded(f"the request budget of this job ({self.max_requests}) is spent")
         if self.max_seconds is not None and self.monotonic() - self.started > self.max_seconds:
@@ -71,6 +72,11 @@ class RecordingFetcher:
             if secret_query is not None:
                 secret = SecretQuery(url, secret_query)
                 options["secret_query"] = secret_query
+            if not check_robots:
+                # robots.txt governs crawlers: it is waived only for an authenticated request to an API the provider documents for keyed use, never for a page
+                if secret_query is None:
+                    raise BlockedError(f"{urlsplit(url).hostname}: robots.txt is only waived for an authenticated API request")
+                options["check_robots"] = False
             response = self.client.fetch(url, **options)
         except FetchError as error:
             message = (secret.scrub(str(error)) if secret else str(error))[:300]

@@ -13,6 +13,10 @@ root and never stored), one monthly allowance and one usage policy.
 
 Both requests go through the shared SafeFetcher (the search through the job's RecordingFetcher), with the key as `secret_query` and the key's own field dropped from
 the answer (the Account API reports it); the key anywhere else in an answer is refused as an echo. Nothing here persists the key or puts it in an address.
+SerpApi's robots.txt (written for crawlers) disallows its own documented API endpoint, https://serpapi.com/search; that one authenticated request is made with
+check_robots=False. The Account API, which robots.txt allows, is read with robots.txt honoured, as is every other request.
+
+A search is permitted only when the account reports account_status "Active" (any case); a missing, empty or other status refuses it.
 
 Facts are taken only as the result states them. Google gives a day such as "Sat, Nov 7" without a year: the year is the one in which that day falls on the stated
 weekday, within a year of the search; with no weekday, or no single such year, the result is set aside. A result without a stated start time is set aside too.
@@ -116,9 +120,12 @@ def decide(usage, auto_pause, pause_at, pending=0, today=None):
     blocked_free_tier     a paid plan, or the free allowance is down to the hard stop (always applies)
     paused_threshold      automatic pause is on and the account has used `pause_at` searches this cycle
     waiting_for_renewal   paused or stopped, the renewal date has come, and the provider does not yet report a new allowance
-    usage_unavailable     the account is not active"""
-    if usage.account_status is not None and usage.account_status.strip().lower() != "active":
-        return "usage_unavailable", f"the SerpApi account status is '{usage.account_status}'"
+    usage_unavailable     the account does not report itself active"""
+    status = (usage.account_status or "").strip()
+    if not status:
+        return "usage_unavailable", "the SerpApi account reading does not state an account status, so it is not known to be active"
+    if status.lower() != "active":
+        return "usage_unavailable", f"the SerpApi account status is '{status[:40]}', not Active"
     if usage.monthly_price != 0:
         return "blocked_free_tier", f"the SerpApi account is on a paid plan (${usage.monthly_price:g} a month); Area Events searches only on a free plan"
     used = usage.used + pending
@@ -442,7 +449,9 @@ class SerpApiGoogleEventsProducer:
             try:
                 with self.account.permit():
                     notes["searches"] += 1
-                    text = fetcher.get(url, secret_query=self.account.secret(), drop_fields=(KEY_FIELD,))
+                    # SerpApi documents /search as its keyed API endpoint; its robots.txt, written for crawlers, disallows that path. Only this
+                    # authenticated request waives robots.txt; every other protection of the shared fetcher still applies.
+                    text = fetcher.get(url, check_robots=not url.startswith(SEARCH_URL + "?"), secret_query=self.account.secret(), drop_fields=(KEY_FIELD,))
             except UsageBlocked as blocked:
                 if page == 0:
                     raise

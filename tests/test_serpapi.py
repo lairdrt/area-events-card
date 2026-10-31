@@ -52,6 +52,9 @@ def page(results, more=False, extra=None):
     return body
 
 
+PUBLISHED_ROBOTS = "User-agent: *\nDisallow: /samples/\nDisallow: /searches/\nDisallow: /search?\nDisallow: /search.json\nDisallow: /search.html\n"   # serpapi.com, read 2026-10-31
+
+
 def resolver(host, port, type=None):
     return [(None, None, None, None, ("93.184.216.34", port))]
 
@@ -240,16 +243,38 @@ class TheKeyStaysOut(unittest.TestCase):
         self.assertFalse(carries_key(fetched.url, fetched.final_url, fetched.body.decode(), fetched.error))
         self.assertEqual(len(recording.fetches), 1, "the account check is not a recorded page")
 
-    def test_serpapi_robots_txt_as_published_refuses_the_search_before_it_is_sent(self):
-        published = "User-agent: *\nDisallow: /samples/\nDisallow: /searches/\nDisallow: /search?\nDisallow: /search.json\nDisallow: /search.html\n"   # read 2026-10-31
-        fake = FakeSerpApi(robots=published)
+    def test_the_authenticated_search_is_made_although_serpapi_robots_txt_disallows_its_api_endpoint(self):
+        fake = FakeSerpApi(robots=PUBLISHED_ROBOTS)
         _, client, account, producer = setup(fake)
-        with self.assertRaises(BlockedError) as caught:
-            crawl(producer, client)
+        answer, recording = crawl(producer, client)
+        self.assertEqual((fake.searches, fake.reads, len(answer.candidates)), (1, 1, 4))
+        self.assertEqual([(p.url, p.outcome) for p in recording.fetches], [(SerpApiGoogleEventsProducer.search_url(SD), "ok")])
+        self.assertIn("/robots.txt", fake.targets, "robots.txt was still read: the Account API request honours it")
+
+    def test_the_same_request_with_robots_txt_enforced_is_refused_before_it_is_sent(self):
+        fake = FakeSerpApi(robots=PUBLISHED_ROBOTS)
+        _, client, account, _ = setup(fake)
+        recording = RecordingFetcher(client, 5)
+        with self.assertRaises(BlockedError) as caught:   # the default: robots.txt honoured, even for an authenticated request
+            recording.get(SerpApiGoogleEventsProducer.search_url(SD), secret_query={"api_key": KEY}, drop_fields=("api_key",))
         self.assertIn("robots.txt", str(caught.exception))
-        self.assertEqual(fake.searches, 0, "the shared fetcher honours robots.txt for every request: nothing billable was sent")
-        self.assertEqual(fake.reads, 1, "the Account API (/account.json) is allowed")
-        self.assertFalse(any(t.startswith("/search") for t in fake.targets))
+        self.assertEqual(recording.fetches[0].outcome, "blocked")
+        with self.assertRaises(BlockedError):
+            client.get(SerpApiGoogleEventsProducer.search_url(SD), secret_query={"api_key": KEY})   # the SafeFetcher's default is unchanged too
+        self.assertEqual(fake.searches, 0)
+
+    def test_the_producer_waives_robots_txt_for_the_search_endpoint_only(self):
+        asked = []
+
+        class Recorder:
+            def get(self, url, check_robots=True, secret_query=None, drop_fields=()):
+                asked.append((url, check_robots, secret_query is not None))
+                return json.dumps(page(VALID))
+
+        _, client, account, producer = setup()
+        producer.crawl(Recorder(), (), dict(SD))
+        self.assertEqual(asked, [(SerpApiGoogleEventsProducer.search_url(SD), False, True)])
+        self.assertTrue(SerpApiGoogleEventsProducer.search_url(SD).startswith("https://serpapi.com/search?"))
 
     def test_without_a_key_nothing_is_asked(self):
         fake, client, account, producer = setup(key=None)
@@ -354,7 +379,8 @@ class FreeTierProtection(unittest.TestCase):
         self.assertEqual((fake.searches, account.report()["state"]), (1, "active"))
 
     def test_after_the_renewal_date_an_unrenewed_allowance_is_waiting_not_resumed(self):
-        usage = read_account({"plan_monthly_price": 0, "searches_per_month": 250, "plan_searches_left": 50, "this_month_usage": 200, "plan_renewal_date": "2026-10-30"}, NOW)
+        usage = read_account({"plan_monthly_price": 0, "searches_per_month": 250, "plan_searches_left": 50, "this_month_usage": 200, "plan_renewal_date": "2026-10-30",
+                               "account_status": "Active"}, NOW)
         self.assertEqual(decide(usage, True, 200, today=datetime(2026, 10, 31).date())[0], "waiting_for_renewal")
         self.assertEqual(decide(usage, True, 200, today=datetime(2026, 10, 29).date())[0], "paused_threshold")
         self.assertEqual(decide(usage, False, 200, today=datetime(2026, 10, 31).date())[0], "active", "nothing to wait for while searches are allowed")
@@ -370,6 +396,133 @@ class FreeTierProtection(unittest.TestCase):
         report = account.report()
         self.assertEqual((report["state"], report["stale"], report["account"]["used"]), ("usage_unavailable", True, 40))
         self.assertIn("could not be read", report["error"])
+
+
+class AccountStatusMustBeActive(unittest.TestCase):
+    def test_active_in_any_case_permits_a_search(self):
+        for status in ("Active", "ACTIVE", " active "):
+            with self.subTest(status=status):
+                fake = FakeSerpApi(status=status)
+                _, client, _, producer = setup(fake)
+                crawl(producer, client)
+                self.assertEqual(fake.searches, 1)
+
+    def test_a_missing_empty_unknown_or_inactive_status_refuses_without_a_search(self):
+        def without_status(params):
+            return 200, dict(JSON), json.dumps({"api_key": params["api_key"], "plan_monthly_price": 0, "searches_per_month": 250, "this_month_usage": 10,
+                                                "plan_searches_left": 240}).encode()
+        cases = {"absent": FakeSerpApi(account=without_status), "null": FakeSerpApi(status=None), "empty": FakeSerpApi(status=""),
+                 "blank": FakeSerpApi(status="   "), "not text": FakeSerpApi(status=5), "unknown": FakeSerpApi(status="Pending verification"),
+                 "inactive": FakeSerpApi(status="Inactive"), "suspended": FakeSerpApi(status="Suspended"), "near miss": FakeSerpApi(status="Active (trial ended)")}
+        for name, fake in cases.items():
+            with self.subTest(status=name):
+                _, client, account, producer = setup(fake)
+                with self.assertRaises(UsageBlocked) as caught:
+                    crawl(producer, client)
+                self.assertEqual((caught.exception.state, fake.searches), ("usage_unavailable", 0), "no credit used")
+                self.assertIn("account status", str(caught.exception))
+                self.assertFalse(carries_key(str(caught.exception)))
+                report = account.report()
+                self.assertEqual(report["state"], "usage_unavailable", "the console shows why")
+                self.assertIn("account status", report["reason"])
+                self.assertFalse(carries_key(report))
+
+    def test_concurrent_searches_still_share_one_quota_with_the_status_check(self):
+        fake = FakeSerpApi(used=196, lag=True, status="active")
+        _, client, _, producer = setup(fake)
+        start, outcomes = threading.Barrier(8), []
+
+        def worker():
+            start.wait()
+            try:
+                crawl(producer, client)
+                outcomes.append("searched")
+            except UsageBlocked as blocked:
+                outcomes.append(blocked.state)
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        self.assertEqual((fake.searches, outcomes.count("searched"), outcomes.count("paused_threshold")), (4, 4, 4))
+
+
+class RobotsAndProtectionsForOtherFetching(unittest.TestCase):
+    """Waiving robots.txt for the authenticated SerpApi search changes nothing else."""
+
+    def site(self, answers=None, robots="User-agent: *\nDisallow: /private\n", address="93.184.216.34"):
+        sent = []
+
+        def send(scheme, host, port, ip, target, headers, timeout, limit):
+            sent.append((host, target))
+            if target == "/robots.txt":
+                return 200, {"Content-Type": "text/plain"}, robots.encode()
+            for prefix, answer in (answers or {}).items():
+                if target.startswith(prefix):
+                    return answer(target) if callable(answer) else answer
+            return 200, {"Content-Type": "text/html"}, b"<html><body>events</body></html>"
+        client = SafeFetcher(0, resolver=lambda host, port, type=None: [(None, None, None, None, (address, port))], send=send, sleep=lambda s: None, state=HostPolicy())
+        return client, sent
+
+    def test_ordinary_website_fetching_still_obeys_robots_txt(self):
+        client, sent = self.site()
+        recording = RecordingFetcher(client, 5)
+        self.assertIn("events", recording.get("https://site.example/events"))
+        with self.assertRaises(BlockedError):
+            recording.get("https://site.example/private/page")
+        self.assertNotIn(("site.example", "/private/page"), sent)
+        with self.assertRaises(BlockedError) as caught:   # a producer cannot waive robots.txt for a page: only an authenticated request may
+            recording.get("https://site.example/private/page", check_robots=False)
+        self.assertIn("only waived for an authenticated API request", str(caught.exception))
+        self.assertNotIn(("site.example", "/private/page"), sent)
+        self.assertEqual([p.outcome for p in recording.fetches], ["ok", "blocked", "blocked"])
+
+    def test_every_other_protection_still_applies_to_a_request_that_waives_robots_txt(self):
+        secret = {"api_key": KEY}
+        client, sent = self.site(address="10.0.0.5")
+        with self.assertRaises(BlockedError):
+            RecordingFetcher(client, 5).get("https://site.example/private/x", check_robots=False, secret_query=secret)
+        self.assertEqual(sent, [], "a private address is refused before anything is sent")
+        client, sent = self.site()
+        with self.assertRaises(BlockedError):
+            RecordingFetcher(client, 5).get("http://site.example/private/x", check_robots=False, secret_query=secret)
+        self.assertEqual(sent, [], "credentials only over https")
+        client, sent = self.site({"/private": (302, {"Location": "https://elsewhere.example/"}, b"")})
+        with self.assertRaises(BlockedError) as caught:
+            RecordingFetcher(client, 5).get("https://site.example/private/x", check_robots=False, secret_query=secret)
+        self.assertIn("redirect", str(caught.exception))
+        self.assertEqual([host for host, _ in sent], ["site.example"], "robots.txt was not even read, and the redirect was not followed")
+        client, _ = self.site({"/private": lambda target: (200, dict(JSON), json.dumps({"echo": KEY}).encode())})
+        recording = RecordingFetcher(client, 5)
+        with self.assertRaises(BlockedError):
+            recording.get("https://site.example/private/x", check_robots=False, secret_query=secret)
+        self.assertEqual([(p.outcome, p.body) for p in recording.fetches], [("blocked", None)], "an echo is still refused and not kept")
+        client, _ = self.site({"/private": lambda target: (200, dict(JSON), json.dumps({"api_key": KEY, "ok": 1}).encode())})
+        self.assertNotIn(KEY, RecordingFetcher(client, 5).get("https://site.example/private/x", check_robots=False, secret_query=secret, drop_fields=("api_key",)))
+        client, _ = self.site({"/private": (429, {"Retry-After": "60"}, b"")})
+        with self.assertRaises(BlockedError):
+            RecordingFetcher(client, 5).get("https://site.example/private/x", check_robots=False, secret_query=secret)
+        with self.assertRaises(BlockedError) as caught:
+            RecordingFetcher(client, 5).get("https://site.example/private/x", check_robots=False, secret_query=secret)
+        self.assertIn("slow down", str(caught.exception), "backoff still applies")
+        client, _ = self.site()
+        budget = RecordingFetcher(client, 1)
+        budget.get("https://site.example/private/x", check_robots=False, secret_query=secret)
+        from area_events.discovery.fetching import BudgetExceeded
+        with self.assertRaises(BudgetExceeded):
+            budget.get("https://site.example/private/x", check_robots=False, secret_query=secret)
+        limits = []
+        SafeFetcher(0, resolver=resolver, send=lambda *a: (limits.append(a[7]) or (200, dict(JSON), b"{}")), sleep=lambda s: None,
+                    state=HostPolicy()).fetch("https://site.example/x", check_robots=False, secret_query=secret)
+        from area_events.discovery.safe import MAX_BYTES
+        self.assertEqual(limits, [MAX_BYTES], "the response size limit is unchanged")
+
+    def test_a_client_without_check_robots_still_works_when_robots_txt_is_honoured(self):
+        class OldClient:
+            def fetch(self, url, binary=None):
+                return types.SimpleNamespace(url=url, status=200, content_type="text/html", text="page", body=b"")
+        recording = RecordingFetcher(OldClient(), 5)
+        self.assertEqual((recording.get("https://site.example/a"), recording.get("https://site.example/b", True)), ("page", "page"))
 
 
 # --- the service, persistence, the control API and Home Assistant ---------------------------------------------------------
