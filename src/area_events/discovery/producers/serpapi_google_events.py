@@ -36,8 +36,8 @@ When an event still has no street address (Google often gives only 'Red Silo Bre
 as the provider reports it, becomes the event's, recorded in the evidence as from Google Maps. A street address the event already has is kept and no
 lookup is made. The event's identity, times, url and verification status never change. A definitive no_match or ambiguity withholds an event this source
 has not submitted before (set aside with its reason); an event it already has stays as it was, so withholding never removes an existing event from the
-feed. 'unavailable' (no key, a budget, the account or the provider) is never taken as a no_match: the event is kept as it is, and when an earlier scan
-gave it a Google Maps address for the same venue, that address is kept.
+feed. 'unavailable' (no key, a budget, the account or the provider) is never taken as a no_match: the event is kept as it is. Whatever the answer, when
+an earlier scan gave the event a Google Maps address for the same venue and Maps does not match it now, that address and its evidence are kept.
 """
 import hashlib
 import json
@@ -635,9 +635,10 @@ class SerpApiGoogleEventsProducer:
 
     @staticmethod
     def _placed(candidate, city, state, places, before, notes):
-        """The candidate with its venue's Google Maps street address when it has none; the candidate as it is when it has one, names no venue, or no
-        answer is available (with the address an earlier scan took from Google Maps for the same venue); None for a new candidate whose venue is
-        definitively not one business with a street address in its town. Its identity, times, url and verification status never change."""
+        """The candidate with its venue's Google Maps street address when it has none; the candidate as it is when it has one or names no venue; on any
+        other answer (unavailable, no_match, ambiguous) the address an earlier scan took from Google Maps for the same venue, else the candidate as it is,
+        or None for a new candidate whose venue is definitively not one business with a street address in its town. Its identity, times, url and
+        verification status never change."""
         if STREET_LINE.search(candidate.address or "") or not candidate.venue:
             return candidate
         notes["venues_looked_up"] = notes.get("venues_looked_up", 0) + 1
@@ -647,10 +648,12 @@ class SerpApiGoogleEventsProducer:
             return _addressed(candidate, found.address, f"Street address {found.address} from Google Maps: {found.evidence}")
         if found.status == "unavailable":
             notes["venues_unavailable"] = notes.get("venues_unavailable", 0) + 1
-            earlier = next((line for line in (before.verification.evidence if before else ()) if line.startswith("Street address ") and " from Google Maps: " in line),
-                           None)
-            if earlier and before.venue == candidate.venue and STREET_LINE.search(before.address or ""):
-                return _addressed(candidate, before.address, earlier)
+        # any answer but a match: an address an earlier scan took from Google Maps for the same venue is kept, with its own evidence line
+        earlier = next((line for line in (before.verification.evidence if before else ()) if line.startswith("Street address ") and " from Google Maps: " in line),
+                       None)
+        if earlier and before.venue == candidate.venue and STREET_LINE.search(before.address or ""):
+            return _addressed(candidate, before.address, earlier)
+        if found.status == "unavailable":
             return candidate
         if before is not None:   # an event this source already has stays as it is: withholding it would not remove it from the feed
             notes["venues_unmatched_kept"] = notes.get("venues_unmatched_kept", 0) + 1

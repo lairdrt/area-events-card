@@ -351,6 +351,60 @@ class TheProducer(Setup):
         self.assertEqual(plain.address, "Red Silo Brewing, Cookeville, TN", "a new event is kept as Google gave it, not withheld")
         self.assertEqual(self.fake.maps_searches, searches)
 
+    def later(self, body=NO_RESULTS, query="Red Silo Brewing, Cookeville, TN"):
+        """A later scan's resolver: nothing cached (a fresh database), and Maps answering `query` with `body`."""
+        self.answer(query, body)
+        other = open_persistence(os.path.join(self.folder.name, f"later-{self.fake.maps_searches}-{len(self.fake.targets)}.db"), ExactMatch(), lambda: self.now)
+        self.addCleanup(other.close)
+        self.venues = VenueResolver(self.account, other.venues, clock=lambda: self.now, fetch=self.client)
+
+    def test_an_earlier_maps_address_survives_a_later_no_match_ambiguity_or_unavailable_answer(self):
+        [first] = self.crawl([OPEN_MIC]).candidates
+        two = listed({"title": "Red Silo Brewing", "address": RED_SILO, "place_id": "one"},
+                     {"title": "Red Silo Brewing", "address": "900 S Jefferson Ave, Cookeville, TN 38501", "place_id": "two"})
+        for label, body in (("A no_match", NO_RESULTS), ("B ambiguous", two), ("C unavailable", {"error": "Your account has run out of searches."})):
+            with self.subTest(label):
+                self.later(body)
+                result = self.crawl([OPEN_MIC], previous=[first])
+                self.assertEqual(result.candidates, (first,), "the address and its original Google Maps evidence are kept")
+                self.assertEqual(self.venues.status, "searched" if label[0] != "C" else "provider error")
+
+    def test_d_a_changed_venue_does_not_inherit_the_earlier_address(self):
+        [first] = self.crawl([OPEN_MIC]).candidates
+        moved = observed("Open Mic Night", "Fri, Nov 6, 7 – 10 PM", venue="Red Silo Taproom", link=OPEN_MIC["link"])
+        self.later(NO_RESULTS, "Red Silo Taproom, Cookeville, TN")
+        [kept] = self.crawl([moved], previous=[first]).candidates
+        self.assertEqual(kept.local_id, first.local_id, "the same event")
+        self.assertEqual(kept.address, "Red Silo Brewing, Cookeville, TN", "as Google gives it, not the other venue's address")
+        self.assertFalse([line for line in kept.verification.evidence if " from Google Maps: " in line])
+
+    def test_e_new_events_with_a_no_match_or_ambiguity_are_still_withheld(self):
+        two = listed({"title": "Red Silo Brewing", "address": RED_SILO, "place_id": "one"},
+                     {"title": "Red Silo Brewing", "address": "900 S Jefferson Ave, Cookeville, TN 38501", "place_id": "two"})
+        for label, body in (("no_match", NO_RESULTS), ("ambiguous", two)):
+            with self.subTest(label):
+                self.later(body)
+                result = self.crawl([OPEN_MIC])
+                self.assertEqual((result.candidates, result.notes["set_aside"]), ((), 1))
+
+    def test_f_a_street_address_the_source_gives_is_kept_whatever_an_earlier_scan_found(self):
+        [first] = self.crawl([OPEN_MIC]).candidates
+        searches = self.fake.maps_searches
+        given = observed("Open Mic Night", "Fri, Nov 6, 7 – 10 PM", lines=("Red Silo Brewing, 120 W 1st St", "Cookeville, TN"), link=OPEN_MIC["link"])
+        [kept] = self.crawl([given], previous=[first, replace(first, local_id=self.crawl([given], venues=False).candidates[0].local_id)]).candidates
+        self.assertEqual(kept.address, "Red Silo Brewing, 120 W 1st St, Cookeville, TN")
+        self.assertEqual(self.fake.maps_searches, searches, "no lookup")
+
+    def test_g_repeated_scans_keep_one_evidence_line(self):
+        [first] = self.crawl([OPEN_MIC]).candidates
+        self.later(NO_RESULTS)
+        previous = first
+        for scan in range(3):
+            [previous] = self.crawl([OPEN_MIC], previous=[previous]).candidates
+            with self.subTest(scan=scan):
+                self.assertEqual(previous, first)
+                self.assertEqual(len([line for line in previous.verification.evidence if " from Google Maps: " in line]), 1)
+
     def test_an_event_without_a_venue_is_not_looked_up(self):
         [candidate] = self.crawl([observed("Street Fair", "Sat, Nov 7, 10 AM – 4 PM", venue=None, lines=("Downtown", "Cookeville, TN"))]).candidates
         self.assertEqual((candidate.address, self.fake.maps_searches), ("Downtown, Cookeville, TN", 0))
