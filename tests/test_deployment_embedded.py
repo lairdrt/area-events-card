@@ -24,7 +24,7 @@ class EmbeddedDeploymentPythonTests(unittest.TestCase):
     def test_all_embedded_python_blocks_parse(self):
         text = DEPLOYER.read_text(encoding="utf-8")
         blocks = BLOCKS.findall(text)
-        self.assertEqual(12, len(blocks), "all remote Python blocks must be covered")
+        self.assertEqual(15, len(blocks), "all remote Python blocks must be covered")
         for n, block in enumerate(blocks, 1):
             with self.subTest(block=n):
                 ast.parse(block, filename=f"embedded_{n}.py")
@@ -114,6 +114,44 @@ class EmbeddedDeploymentPythonTests(unittest.TestCase):
         ):
             with self.subTest(required=required):
                 self.assertIn(required, section)
+
+    def _block(self, marker):
+        return next(b for b in BLOCKS.findall(DEPLOYER.read_text(encoding="utf-8")) if marker in b)
+
+    def test_clean_stop_reads_the_unit_stop_timeout_it_waits_out(self):
+        # Execute only the extracted pure parser of systemd's TimeoutStopUSec text; never the remote stop.
+        tree = ast.parse(self._block("def seconds(text):"))
+        parser = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "seconds")
+        namespace = {"re": re}
+        exec(compile(ast.Module(body=[parser], type_ignores=[]), "<seconds>", "exec"), namespace)
+        seconds = namespace["seconds"]
+        for text, expected in (("1min 30s", 90), ("90s", 90), ("2min", 120), ("1h", 3600), ("500ms", 0.5), ("1min 30s 500ms", 90.5)):
+            with self.subTest(text=text):
+                self.assertAlmostEqual(expected, seconds(text))
+        for text in ("infinity", "", "90", "1min thirty"):
+            with self.subTest(text=text):
+                with self.assertRaises(RuntimeError):
+                    seconds(text)
+
+    def test_clean_stop_waits_for_a_drained_service_and_accepts_only_a_clean_result(self):
+        block = self._block("def seconds(text):")
+        drained = block.index("AE_REQUIRE_DRAINED")
+        stop = block.index("['systemctl','--user','stop',unit]")
+        self.assertLess(drained, stop, "the drain is confirmed before the stop")
+        for required in ("get('paused') is True", "get('state')=='paused'", "get('leased')==0", "timeout=int(limit)+30",
+                         "Result')!='success'", "0<limit<=bound", "'port 8780' not in"):
+            with self.subTest(required=required):
+                self.assertIn(required, block)
+        self.assertNotIn("kill", block)
+
+    def test_offline_discovery_setting_change_migrates_nothing(self):
+        block = self._block("AE_ALLOW_STOPPED")
+        offline = block.split("elif active in ('inactive','failed')", 1)[1]
+        self.assertLess(offline.index("if code!=str(database): raise"), offline.index("'-m','area_events',action"),
+                        "the installed code's schema is compared with the database before the CLI opens it")
+        self.assertIn("api-token", block)
+        self.assertNotIn("print(token", block)
+        self.assertNotIn("'Bearer '+token}))", block)
 
     def test_planner_does_not_trust_joint_receipt(self):
         text = DEPLOYER.read_text(encoding="utf-8")

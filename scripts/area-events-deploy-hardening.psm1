@@ -117,6 +117,51 @@ function Wait-AreaEventsHaAsset {
     if ($pause -gt 0) { & $Sleep $pause }
   }
 }
+function Resolve-AreaEventsDiscoveryState {
+  <# The discovery state the deployer acts on, from the authenticated API status: the host loop's state, the operator's pause and the number
+     of leased jobs. 'running' and 'paused' are both healthy operating states. Draining is complete when the pause is in force, the host loop
+     has observed it (it claims no job in a paused cycle) and no job is leased. #>
+  [CmdletBinding()]
+  param([Parameter(Mandatory)]$Status)
+  $field = { param($name) $property = $Status.PSObject.Properties[$name]; if ($property) { $property.Value } else { $null } }
+  $state = & $field 'state'; $paused = & $field 'paused'; $leased = & $field 'leased'
+  if ($state -isnot [string] -or -not $state) { throw 'Discovery status has no host state.' }
+  if ($paused -isnot [bool]) { throw 'Discovery status has no valid pause setting.' }
+  if (-not ($leased -is [int] -or $leased -is [long]) -or $leased -lt 0) { throw 'Discovery status has no valid leased-job count.' }
+  $healthy = $state -in @('running', 'paused')
+  return [pscustomobject]@{ State = $state; Paused = $paused; Leased = [int]$leased; Healthy = $healthy
+                            Drained = ($healthy -and $paused -and $state -eq 'paused' -and $leased -eq 0) }
+}
+
+function Test-AreaEventsDiscoveryRestored {
+  <# True when the current discovery state is the one recorded before the maintenance window: the same pause setting, and a host loop that
+     operates under it. #>
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][bool]$OriginalPaused, [Parameter(Mandatory)]$Current)
+  return [bool]($Current.Healthy -and $Current.Paused -eq $OriginalPaused -and $Current.State -eq $(if ($OriginalPaused) { 'paused' } else { 'running' }))
+}
+
+function Wait-AreaEventsDiscoveryCondition {
+  <# Probe the discovery state until $Condition holds or the deadline passes. A failed probe is not fatal before the deadline. Returns the state
+     that satisfied the condition; throws, with the last observation, when the deadline expires. $Clock and $Sleep are injectable for tests. #>
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][scriptblock]$Probe, [Parameter(Mandatory)][scriptblock]$Condition, [Parameter(Mandatory)][string]$Description,
+        [ValidateRange(1,900)][int]$DeadlineSeconds = 60, [ValidateRange(1,60)][int]$PauseSeconds = 5,
+        [scriptblock]$Clock = { [DateTime]::UtcNow }, [scriptblock]$Sleep = { param($Seconds) Start-Sleep -Seconds $Seconds })
+  $deadline = (& $Clock).AddSeconds($DeadlineSeconds)
+  $last = 'no answer'
+  while ($true) {
+    try {
+      $current = & $Probe
+      $last = "state $($current.State), paused $($current.Paused), leased jobs $($current.Leased)"
+      if (& $Condition $current) { return $current }
+    } catch { $last = $_.Exception.Message }
+    $remaining = [int][Math]::Floor(($deadline - (& $Clock)).TotalSeconds)
+    if ($remaining -lt 1) { throw "Discovery did not $Description within $DeadlineSeconds seconds (last: $last)." }
+    & $Sleep ([Math]::Min($PauseSeconds, $remaining))
+  }
+}
+
 function Assert-AreaEventsFeedResponse {
   [CmdletBinding()]
   param([Parameter(Mandatory)]$Response, [Parameter(Mandatory)][string]$Area)
@@ -197,4 +242,4 @@ function Resolve-AreaEventsComponentPlan {
   }
 }
 
-Export-ModuleMember -Function Import-AreaEventsDpapiCredential, New-AreaEventsRemotePythonCommand, Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsModuleFingerprint, Get-AreaEventsRequiredFrontendAssets, Wait-AreaEventsHaAsset, Assert-AreaEventsFeedResponse, Test-AreaEventsCodeBackupMembers, Resolve-AreaEventsSystemdLayout, Convert-AreaEventsSystemdExecStart, Resolve-AreaEventsComponentPlan
+Export-ModuleMember -Function Import-AreaEventsDpapiCredential, New-AreaEventsRemotePythonCommand, Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsModuleFingerprint, Get-AreaEventsRequiredFrontendAssets, Wait-AreaEventsHaAsset, Resolve-AreaEventsDiscoveryState, Test-AreaEventsDiscoveryRestored, Wait-AreaEventsDiscoveryCondition, Assert-AreaEventsFeedResponse, Test-AreaEventsCodeBackupMembers, Resolve-AreaEventsSystemdLayout, Convert-AreaEventsSystemdExecStart, Resolve-AreaEventsComponentPlan

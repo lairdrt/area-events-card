@@ -5,6 +5,8 @@
   Build and perform read-only preflight, then stop before production writes.
 .PARAMETER SetupCredentials
   Prompt once and store an HA token encrypted with Windows DPAPI for this user.
+.PARAMETER DrainTimeoutSeconds
+  How long a Cubi update waits, with new scans paused, for a running source scan to finish before it gives up without stopping the service.
 #>
 [CmdletBinding()]
 param(
@@ -12,7 +14,8 @@ param(
   [switch]$SetupCredentials,
   [string]$HaUrl = $(if ($env:HA_URL) { $env:HA_URL } else { 'http://192.168.1.48:8123' }),
   [string]$ConfigShare = $(if ($env:HA_CONFIG_SHARE) { $env:HA_CONFIG_SHARE } else { 'Z:\' }),
-  [int]$RestartTimeoutSeconds = 240
+  [int]$RestartTimeoutSeconds = 240,
+  [ValidateRange(30,900)][int]$DrainTimeoutSeconds = 420
 )
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'area-events-deploy-hardening.psm1') -Force
@@ -23,6 +26,11 @@ $script:RemoteBackup = $null
 $script:CredentialPath = Join-Path $env:LOCALAPPDATA 'AreaEvents\ha-token.dpapi'
 $script:LockPath = Join-Path ([IO.Path]::GetTempPath()) 'area-events-deploy.lock'
 $script:LocalBackupRoot = Join-Path $env:LOCALAPPDATA 'AreaEventsBackups'
+# The discovery pause setting found at preflight, and whether this run has paused discovery for its maintenance window (and so must restore it).
+$script:OriginalDiscoveryPaused = $null
+$script:DiscoveryQuiesced = $false
+$script:DiscoveryClock = { [DateTime]::UtcNow }
+$script:DiscoverySleep = { param($Seconds) Start-Sleep -Seconds $Seconds }
 $schemaText = Get-Content -Raw (Join-Path $script:Repo 'src\area_events\persistence\schema.py')
 $schemaVersions=[regex]::Matches($schemaText,'(?m)^\s*\((\d+),\s*"')
 if (-not $schemaVersions.Count) { throw 'Could not read the migration versions from schema.py.' }
@@ -242,6 +250,7 @@ def api(path):
  req=urllib.request.Request('https://192.168.1.88:8780/v1/'+path,headers={'Authorization':'Bearer '+token})
  with urllib.request.urlopen(req,context=context,timeout=8) as r: return json.load(r)
 status=api('discovery/status'); status_data=status.get('status',status); z['api_state']=status_data.get('state') or status_data.get('runtime',{}).get('state'); z['api_samples']={}
+z['api_paused']=status_data.get('settings',{}).get('paused'); z['api_leased']=status_data.get('jobs',{}).get('leased')
 areas_page=api('areas')
 if not isinstance(areas_page,dict) or not isinstance(areas_page.get('areas'),list): raise RuntimeError('invalid area feed schema')
 area_keys={x.get('name'):x.get('area_key') for x in areas_page['areas'] if isinstance(x,dict)}
@@ -258,8 +267,12 @@ print(json.dumps(z))
   if ($remote.integrity -ne 'ok' -or $remote.foreign_keys -ne 0) { throw 'Cubi database integrity check failed.' }
   if (-not $remote.code_writable -or -not $remote.backup_writable -or @($remote.required_tools.PSObject.Properties | Where-Object { -not $_.Value }).Count) { throw 'Cubi code/backup write access or a required remote command is unavailable.' }
   if ($remote.schema -gt $script:TargetSchema) { throw "Production schema $($remote.schema) is newer than this source ($script:TargetSchema); refusing to deploy older code." }
-  if ($remote.api_state -ne 'running') { throw 'Cubi discovery service API is not healthy.' }
+  # Paused is an operating state like running; whichever this is, it is the state the deployment restores after its maintenance window.
+  $discovery=Resolve-AreaEventsDiscoveryState -Status ([pscustomobject]@{state=$remote.api_state;paused=$remote.api_paused;leased=$remote.api_leased})
+  if (-not $discovery.Healthy) { throw "Cubi discovery service API is not healthy (discovery state '$($discovery.State)')." }
   if ($remote.unit -notmatch 'ActiveState=active' -or $remote.unit -notmatch '/home/robohobo/area-events-discovery' -or $remote.unit -notmatch 'port 8780') { throw 'Expected Discovery service is not active on port 8780; refusing to act.' }
+  $script:OriginalDiscoveryPaused=[bool]$discovery.Paused
+  Write-Host "Discovery is $($discovery.State) (pause setting: $(if ($discovery.Paused) { 'paused' } else { 'not paused' }); $($discovery.Leased) leased jobs); a Cubi update restores this pause setting."
   $script:Head=(Invoke-Bounded 'git.exe' @('-C',$script:Repo,'rev-parse','HEAD') 10).Trim()
   $script:PreflightRemote=$remote
   $script:PreflightHaConfig=$haConfig
@@ -513,6 +526,117 @@ finally:
   $res=Invoke-CubiPython $py @{AE_ARCHIVE=$archive;AE_BACKUP=$script:RemoteBackup;AE_TARGET="$script:TargetSchema";AE_MIGRATE=$(if($migrate){'1'}else{'0'})} 600 | ConvertFrom-Json
   if (-not $res.passed -or $res.images.ok -ne $true) { throw 'Installation or migration rehearsal failed.' }; return $res
 }
+function Get-CubiDiscoveryState {
+  # Read-only, through the authenticated API: the host loop's state, the pause setting, the leased jobs and the running backend build.
+  $py=@'
+import json,ssl,urllib.request
+root='/home/robohobo/area-events-discovery'; token=open(root+'/data/discovery/api-read-token',encoding='utf-8').read().strip(); ctx=ssl.create_default_context(cafile=root+'/certs/cert.pem')
+req=urllib.request.Request('https://192.168.1.88:8780/v1/discovery/status',headers={'Authorization':'Bearer '+token})
+with urllib.request.urlopen(req,context=ctx,timeout=8) as r: s=json.load(r)
+s=s.get('status',s)
+print(json.dumps({'state':s.get('state') or s.get('runtime',{}).get('state'),'paused':s.get('settings',{}).get('paused'),'leased':s.get('jobs',{}).get('leased'),'build':s.get('build')}))
+'@
+  $raw=Invoke-CubiPython $py @{} 25 | ConvertFrom-Json
+  $state=Resolve-AreaEventsDiscoveryState -Status $raw
+  $state | Add-Member -NotePropertyName Build -NotePropertyValue $raw.build
+  return $state
+}
+function Set-CubiDiscoveryPaused([bool]$Paused,[switch]$AllowStopped) {
+  # The existing control: the authenticated API's idempotent pause/resume while the service runs. Only with -AllowStopped, and only when the
+  # service is deliberately stopped, the installed CLI changes the persisted setting instead, and only when that installed code has the
+  # database's own schema, so that it migrates nothing.
+  $py=@'
+import json,os,sqlite3,ssl,subprocess,urllib.request
+root='/home/robohobo/area-events-discovery'; db=root+'/data/discovery/discovery.db'; paused=os.environ['AE_PAUSED']=='1'; action='pause' if paused else 'resume'
+active=subprocess.run(['systemctl','--user','is-active','area-events-discovery.service'],capture_output=True,text=True,timeout=12).stdout.strip()
+if active=='active':
+ token=open(root+'/data/discovery/api-token',encoding='utf-8').read().strip(); ctx=ssl.create_default_context(cafile=root+'/certs/cert.pem')
+ req=urllib.request.Request('https://192.168.1.88:8780/v1/discovery/'+action,data=b'{}',method='POST',headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
+ with urllib.request.urlopen(req,context=ctx,timeout=8) as r: json.load(r)
+ print(json.dumps({'via':'api','action':action}))
+elif active in ('inactive','failed') and os.environ.get('AE_ALLOW_STOPPED')=='1':
+ python=root+'/.venv/bin/python'
+ c=sqlite3.connect('file:'+db+'?mode=ro',uri=True,timeout=5)
+ try: database=c.execute('select max(version) from schema_migrations').fetchone()[0]
+ finally: c.close()
+ code=subprocess.run([python,'-I','-c','from area_events.persistence.schema import LATEST; print(LATEST)'],capture_output=True,text=True,timeout=30,check=True).stdout.strip()
+ if code!=str(database): raise RuntimeError('installed code has schema '+code+' but the database has '+str(database)+'; the discovery setting was left unchanged')
+ subprocess.run([python,'-I','-m','area_events',action,'--db',db],cwd=root,capture_output=True,text=True,timeout=60,check=True)
+ c=sqlite3.connect('file:'+db+'?mode=ro',uri=True,timeout=5)
+ try: stored=c.execute("select value from settings where key='paused'").fetchone()
+ finally: c.close()
+ if stored is None or (stored[0]=='1')!=paused: raise RuntimeError('the persisted discovery setting was not changed')
+ print(json.dumps({'via':'cli','action':action}))
+else: raise RuntimeError('the Discovery service is '+(active or 'in an unknown state')+'; its discovery setting was not changed')
+'@
+  Invoke-CubiPython $py @{AE_PAUSED=$(if ($Paused) { '1' } else { '0' });AE_ALLOW_STOPPED=$(if ($AllowStopped) { '1' } else { '0' })} 150 | ConvertFrom-Json
+}
+function Invoke-DiscoveryQuiesce {
+  # Opens the maintenance window: no new source scan may start, and a running one finishes on its own within the drain deadline. The pause stays
+  # in the database across the stop and the new service's start, so nothing is scanned until Restore-DiscoveryState.
+  $current=Get-CubiDiscoveryState
+  if (-not $current.Healthy) { throw "Discovery is not in an operating state ('$($current.State)'); the maintenance window was not opened." }
+  if ($current.Paused -ne $script:OriginalDiscoveryPaused) { throw 'The discovery pause setting changed after preflight; the maintenance window was not opened, so there is no unclear state to restore.' }
+  $script:DiscoveryQuiesced=$true
+  $null=Set-CubiDiscoveryPaused $true
+  Write-Host "New discovery scans paused; waiting up to $DrainTimeoutSeconds s for a running scan to finish."
+  $drained=Wait-AreaEventsDiscoveryCondition -Probe { Get-CubiDiscoveryState } -Condition { param($s) $s.Drained } -Description 'drain' `
+    -DeadlineSeconds $DrainTimeoutSeconds -PauseSeconds 5 -Clock $script:DiscoveryClock -Sleep $script:DiscoverySleep
+  Write-Host "Discovery drained: paused, host loop idle, $($drained.Leased) leased jobs."
+}
+function Restore-DiscoveryState {
+  # Closes the maintenance window: the pause setting found at preflight is put back and confirmed. Nothing to do when no window was opened.
+  if (-not $script:DiscoveryQuiesced) { return }
+  $wanted=[bool]$script:OriginalDiscoveryPaused; $name=$(if ($wanted) { 'paused' } else { 'running' })
+  $set=Set-CubiDiscoveryPaused $wanted -AllowStopped
+  if ($set.via -eq 'cli') {
+    Write-Warning "The Discovery service is stopped; its persisted discovery setting is restored ($name) for its next start."
+  } else {
+    $null=Wait-AreaEventsDiscoveryCondition -Probe { Get-CubiDiscoveryState } -Condition { param($s) Test-AreaEventsDiscoveryRestored -OriginalPaused $script:OriginalDiscoveryPaused -Current $s } `
+      -Description 'return to its original state' -DeadlineSeconds 60 -PauseSeconds 3 -Clock $script:DiscoveryClock -Sleep $script:DiscoverySleep
+    Write-Host "Discovery state restored and confirmed: $name."
+  }
+  $script:DiscoveryQuiesced=$false
+}
+function Stop-CubiService([switch]$RequireDrained) {
+  # The one way the deployer stops the service: only the intended unit; with -RequireDrained only after the drain is confirmed once more; and
+  # waiting out the unit's own stop timeout (plus a margin) instead of abandoning a stop in progress. A stop that systemd had to end by force
+  # fails the step; the deployer itself never sends a kill signal.
+  $py=@'
+import json,os,re,ssl,subprocess,time,urllib.request
+root='/home/robohobo/area-events-discovery'; unit='area-events-discovery.service'; bound=120
+def show(*names):
+ out=subprocess.run(['systemctl','--user','show',unit]+['--property='+n for n in names],capture_output=True,text=True,timeout=12,check=True).stdout
+ return dict(line.split('=',1) for line in out.splitlines() if '=' in line)
+def seconds(text):
+ parts=re.findall(r'(\d+)(min|ms|us|h|s)',text)
+ if not parts or re.sub(r'\d+(?:min|ms|us|h|s)|\s','',text): raise RuntimeError('unrecognized stop timeout: '+text)
+ return sum(int(n)*{'h':3600,'min':60,'s':1,'ms':0.001,'us':0.000001}[u] for n,u in parts)
+before=show('ActiveState','WorkingDirectory','ExecStart','TimeoutStopUSec')
+if os.path.realpath(before.get('WorkingDirectory',''))!=root or 'port 8780' not in before.get('ExecStart',''): raise RuntimeError('refusing to stop an unexpected service')
+limit=seconds(before.get('TimeoutStopUSec',''))
+if not 0<limit<=bound: raise RuntimeError('the unit stop timeout ('+before.get('TimeoutStopUSec','')+') is outside the deployer bound of '+str(bound)+' s')
+if before.get('ActiveState') in ('inactive','failed'):
+ print(json.dumps({'stopped':True,'already':before['ActiveState'],'seconds':0}))
+else:
+ if os.environ.get('AE_REQUIRE_DRAINED')=='1':
+  token=open(root+'/data/discovery/api-read-token',encoding='utf-8').read().strip(); ctx=ssl.create_default_context(cafile=root+'/certs/cert.pem')
+  req=urllib.request.Request('https://192.168.1.88:8780/v1/discovery/status',headers={'Authorization':'Bearer '+token})
+  with urllib.request.urlopen(req,context=ctx,timeout=8) as r: s=json.load(r)
+  s=s.get('status',s)
+  if not (s.get('settings',{}).get('paused') is True and s.get('runtime',{}).get('state')=='paused' and s.get('jobs',{}).get('leased')==0):
+   raise RuntimeError('discovery is not drained; the service was not stopped')
+ started=time.monotonic()
+ subprocess.run(['systemctl','--user','stop',unit],timeout=int(limit)+30,check=True)
+ after=show('ActiveState','Result')
+ if after.get('ActiveState') not in ('inactive','failed'): raise RuntimeError('the service is still '+after.get('ActiveState','in an unknown state')+' after its stop')
+ if after.get('Result')!='success': raise RuntimeError('the service did not stop cleanly (systemd result: '+after.get('Result','unknown')+')')
+ print(json.dumps({'stopped':True,'already':None,'seconds':round(time.monotonic()-started,1)}))
+'@
+  $res=Invoke-CubiPython $py @{AE_REQUIRE_DRAINED=$(if ($RequireDrained) { '1' } else { '0' })} 240 | ConvertFrom-Json
+  if ($res.stopped -ne $true) { throw 'The Discovery service stop could not be confirmed.' }
+  if ($res.already) { Write-Host "Discovery service already $($res.already)." } else { Write-Host "Discovery service stopped cleanly in $($res.seconds) s." }
+}
 function Invoke-CubiDeploy($state) {
   $archive="/home/robohobo/.cache/ae-deploy-$([guid]::NewGuid().ToString('N')).tar"
   $null=Invoke-Bounded 'scp.exe' (@(Get-SshBase)+@($script:Archive,"$($script:Cubi):$archive")) 120
@@ -534,6 +658,8 @@ try:
 finally: shutil.rmtree(work,ignore_errors=True)
 '@
   $null=Invoke-CubiPython $installPy @{AE_ARCHIVE=$archive} 600
+  # The drained service stops before stage 2; stage 2 refuses to touch code or schema while it still runs.
+  Stop-CubiService -RequireDrained
   $py=$script:ImageDepsPy+"`n"+@'
 import json,os,re,shlex,shutil,sqlite3,subprocess,tarfile,tempfile
 root='/home/robohobo/area-events-discovery'; run=os.path.basename(os.environ['AE_ARCHIVE']).replace('.tar',''); stage=root+'/.ae-stage-'+run
@@ -549,8 +675,8 @@ if legacy and not os.path.isfile(root+'/scripts/discovery.py'): raise RuntimeErr
 if modern and not (os.path.isfile(root+'/pyproject.toml') and os.path.isdir(root+'/src/area_events')): raise RuntimeError('active modular package is incomplete')
 if legacy==modern: raise RuntimeError('active Discovery Service code layout is unknown or ambiguous')
 if os.path.lexists(stage): raise RuntimeError('deployment staging path already exists')
+if subprocess.run(['systemctl','--user','is-active','area-events-discovery.service'],capture_output=True,text=True,timeout=12).stdout.strip() not in ('inactive','failed'): raise RuntimeError('the Discovery service is not stopped; code and schema are changed only while it is stopped')
 os.mkdir(stage,0o700)
-subprocess.run(['systemctl','--user','stop','area-events-discovery.service'],timeout=45,check=True)
 with tarfile.open(os.environ['AE_ARCHIVE']) as t:
  members=t.getmembers()
  if any(os.path.isabs(m.name) or '..' in m.name.split('/') or m.issym() or m.islnk() for m in members): raise RuntimeError('unsafe deployment archive')
@@ -623,7 +749,7 @@ for area in ('San Diego','Austin'):
  page=get('events?area='+urllib.parse.quote(area_key)+'&limit=1')
  if not isinstance(page,dict) or not isinstance(page.get('events'),list): raise RuntimeError('invalid event feed schema for '+area)
  samples[area]=len(page['events'])
-print(json.dumps({'state':state,'samples':samples}))
+print(json.dumps({'state':state,'samples':samples,'build':s.get('build')}))
 '@
   # A missing or broken image engine fails verification (and so triggers recovery) instead of silently disabling image extraction.
   $imagePy=$script:ImageDepsPy+"`n"+@'
@@ -634,14 +760,15 @@ print(json.dumps({'ok':True,'result':json.loads(ae_image_smoke(root+'/.venv/bin/
   $images=Invoke-CubiPython $imagePy @{} 150 | ConvertFrom-Json
   if ($images.ok -ne $true -or $images.result.ok -ne $true) { throw 'Cubi image extraction self-check failed.' }
   Write-Host "Image extraction verified: $($images.result.engine)"
+  # Paused is healthy here: during a Cubi update the new service starts inside the maintenance window, before the discovery state is restored.
   $deadline=(Get-Date).AddSeconds(90); $h=$null; $last='no response'
   while ((Get-Date) -lt $deadline) {
-    try { $h=Invoke-CubiPython $py @{} 25 | ConvertFrom-Json; if ($h.state -eq 'running' -and $h.samples.'San Diego' -gt 0 -and $h.samples.Austin -gt 0) { break } }
+    try { $h=Invoke-CubiPython $py @{} 25 | ConvertFrom-Json; if ($h.state -in @('running','paused') -and $h.samples.'San Diego' -gt 0 -and $h.samples.Austin -gt 0) { break } }
     catch { $last=$_.Exception.Message }
     Start-Sleep -Seconds 4
   }
-  if ($null -eq $h -or $h.state -ne 'running' -or $null -eq $h.samples.'San Diego' -or $null -eq $h.samples.Austin) { throw "Cubi API did not become healthy within 90 seconds. Last check: $last" }
-  Write-Host "API verified; valid event page lengths San Diego/Austin: $($h.samples.'San Diego')/$($h.samples.Austin)"
+  if ($null -eq $h -or $h.state -notin @('running','paused') -or $null -eq $h.samples.'San Diego' -or $null -eq $h.samples.Austin) { throw "Cubi API did not become healthy within 90 seconds. Last check: $last" }
+  Write-Host "API verified ($($h.build), discovery $($h.state)); valid event page lengths San Diego/Austin: $($h.samples.'San Diego')/$($h.samples.Austin)"
   if ($script:CubiTransitionId) {
     $cleanup=@'
 import json,os,re,shutil
@@ -936,14 +1063,16 @@ function Invoke-Recovery($phase,$state,$schemaChanged,$haChanged) {
   if ($phase -eq 'Cubi cutover') {
     if ($script:SchemaChanged -or $schemaChanged) {
       Write-Warning "DB schema advanced; stopping the intended service without restoring or downgrading data. Snapshot retained at $script:RemoteBackup."
-      try { $null=Invoke-Cubi "systemctl --user stop area-events-discovery.service" 60 } catch { Write-Warning 'Could not confirm the service stopped; inspect it before retrying.' }
+      try { Stop-CubiService } catch { Write-Warning "Could not confirm the service stopped cleanly ($($_.Exception.Message)); inspect it before retrying." }
       return
     }
     Write-Warning 'Restoring Cubi code only; database is untouched.'
+    Stop-CubiService
     $py=$script:ImageDepsPy+"`n"+@'
 import json,os,re,shutil,sqlite3,ssl,subprocess,tarfile,tempfile,time,urllib.request
-root='/home/robohobo/area-events-discovery'; t=tempfile.mkdtemp(dir=root,prefix='.ae-restore-')
-subprocess.run(['systemctl','--user','stop','area-events-discovery.service'],timeout=45,check=True)
+root='/home/robohobo/area-events-discovery'
+if subprocess.run(['systemctl','--user','is-active','area-events-discovery.service'],capture_output=True,text=True,timeout=12).stdout.strip() not in ('inactive','failed'): raise RuntimeError('the Discovery service is not stopped; code is restored only while it is stopped')
+t=tempfile.mkdtemp(dir=root,prefix='.ae-restore-')
 with tarfile.open(os.environ['AE_BACKUP']+'/accepted-files.tar.gz') as z:
  members=z.getmembers()
  if any(os.path.isabs(m.name) or '..' in m.name.split('/') or m.issym() or m.islnk() for m in members): raise RuntimeError('unsafe rollback archive')
@@ -991,7 +1120,7 @@ for attempt in range(30):
   time.sleep(1)
 status_data=status.get('status',status) if isinstance(status,dict) else {}
 state=status_data.get('state') or status_data.get('runtime',{}).get('state')
-if state!='running': raise RuntimeError('accepted Cubi service failed rollback health check')
+if state not in ('running','paused'): raise RuntimeError('accepted Cubi service failed rollback health check')
 '@
     $null=Invoke-CubiPython $py @{AE_BACKUP=$script:RemoteBackup;AE_TRANSITION=$script:CubiTransitionId} 600
   } elseif ($phase -eq 'Home Assistant installation') {
@@ -1009,8 +1138,10 @@ function Invoke-Main {
     Plan={ param($p) $plan=Invoke-DeploymentPlan $p; $script:DeploymentState=$plan.State; $plan.State | Add-Member -NotePropertyName NoChanges -NotePropertyValue $plan.NoChanges; $plan.State }
     Backup={ param($s) Invoke-Backups $script:DeploymentState }
     Rehearse={ param($s) Invoke-Rehearsal $script:DeploymentState }
+    Quiesce={ param($s) Invoke-DiscoveryQuiesce }
     DeployCubi={ param($s,$r) Invoke-CubiDeploy $script:DeploymentState }
     VerifyCubi={ param($s) Test-CubiHealth }
+    RestoreDiscovery={ param($s) Restore-DiscoveryState }
     DeployHA={ param($s) Install-Ha }
     VerifyHA={ param($s) Test-HaAssets }
     Recover={ param($phase,$s,$schema,$ha) Invoke-Recovery $phase $script:DeploymentState $schema $ha }

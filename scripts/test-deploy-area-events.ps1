@@ -33,8 +33,10 @@ function New-Ops([string]$FailAt = '', [switch]$NoChanges, [switch]$SchemaChange
     Plan = { param($s) & $script:mockCall 'plan' ([pscustomobject]@{ NoChanges=$script:noChanges;CubiNeeded=$script:cubiNeeded;HANeeded=$script:haNeeded }) }
     Backup = { param($s) & $script:mockCall 'backup' }
     Rehearse = { param($s) & $script:mockCall 'rehearse' ([pscustomobject]@{ Passed = $true }) }
+    Quiesce = { param($s) & $script:mockCall 'quiesce' }
     DeployCubi = { param($s,$r) & $script:mockCall 'cubi' ([pscustomobject]@{ Changed = $true; SchemaChanged = $script:schemaChanged }) }
     VerifyCubi = { param($s) & $script:mockCall 'verify-cubi' }
+    RestoreDiscovery = { param($s) & $script:mockCall 'restore-discovery' }
     DeployHA = { param($s) $null=& $script:mockCall 'ha-file-transfer'; $null=& $script:mockCall 'ha-restart'; return [pscustomobject]@{ Changed = $true } }
     VerifyHA = { param($s) & $script:mockCall 'health-check' }
     Recover = { param($phase,$s,$schema,$ha) $script:recovered = $true; $script:recoveryArgs = @($phase,$schema,$ha); & $script:mockCall 'recover' }
@@ -199,7 +201,7 @@ Check 'successful deployment uses required order' {
   $ops=New-Ops
   $result=Invoke-AreaEventsDeploymentEngine -Operations $ops
   if ($result.Result -ne 'Deployed') { throw "unexpected result $($result.Result)" }
-  if (($script:order -join ',') -ne 'preflight,build,plan,backup,rehearse,cubi,verify-cubi,ha-file-transfer,ha-restart,health-check') { throw "wrong order: $($script:order -join ',')" }
+  if (($script:order -join ',') -ne 'preflight,build,plan,backup,rehearse,quiesce,cubi,verify-cubi,restore-discovery,ha-file-transfer,ha-restart,health-check') { throw "wrong order: $($script:order -join ',')" }
 }
 Check 'dry run builds locally but makes no production writes' {
   $ops=New-Ops
@@ -220,15 +222,20 @@ Check 'HA-only update skips Cubi restart and migration rehearsal' {
   $ops=New-Ops -CubiNeeded $false
   $result=Invoke-AreaEventsDeploymentEngine -Operations $ops
   if ($result.Result -ne 'Deployed' -or $script:order -contains 'cubi' -or $script:order -contains 'rehearse') { throw 'unneeded Cubi work was performed' }
+  if ($script:order -contains 'quiesce' -or $script:order -contains 'restore-discovery') { throw 'discovery was paused for an update that does not stop the service' }
 }
-foreach ($failure in @('preflight','build','plan','backup','rehearse','cubi','verify-cubi','ha-file-transfer','ha-restart','health-check')) {
+foreach ($failure in @('preflight','build','plan','backup','rehearse','quiesce','cubi','verify-cubi','restore-discovery','ha-file-transfer','ha-restart','health-check')) {
   Check "failure at $failure is surfaced" {
     $ops=New-Ops -FailAt $failure
     $threw=$false
     try { Invoke-AreaEventsDeploymentEngine -Operations $ops | Out-Null } catch { $threw=$_.Exception.Message -match "$failure simulated failure" }
     if (-not $threw) { throw 'failure was swallowed or replaced' }
-    if ($failure -in @('preflight','build','plan','backup','rehearse') -and $script:recovered) { throw 'recovery ran before production modification was attempted' }
+    $restores=@($script:order | Where-Object { $_ -eq 'restore-discovery' }).Count
+    if ($failure -in @('preflight','build','plan','backup','rehearse','quiesce','restore-discovery') -and $script:recovered) { throw 'code recovery ran although the service was never changed or was already verified' }
     if ($failure -in @('cubi','verify-cubi','ha-file-transfer','ha-restart','health-check') -and -not $script:recovered) { throw 'recovery was not attempted after production modification was attempted' }
+    if ($failure -in @('preflight','build','plan','backup','rehearse') -and $restores) { throw 'the discovery state was changed before the maintenance window opened' }
+    if ($failure -in @('quiesce','cubi','verify-cubi','restore-discovery','ha-file-transfer','ha-restart','health-check') -and $restores -ne 1) { throw "the discovery state was restored $restores times" }
+    if ($failure -in @('cubi','verify-cubi') -and ($script:order -join ',') -notmatch "$failure,recover,restore-discovery$") { throw "discovery must be restored after the code recovery: $($script:order -join ',')" }
   }
 }
 Check 'HA Samba write, rename, and removal preflight succeeds and cleans up' {
@@ -503,6 +510,142 @@ Check 'HA readiness is polled before the asset downloads, which keep their 12 s 
 Check 'the readiness probe runs through the script''s bounded runner with the caller''s variables' {
   function Probe-Scope { $expected = '200'; Wait-AreaEventsHaAsset -DeadlineSeconds 30 -PauseSeconds 0 -Fetch { param($s) (Invoke-Bounded 'cmd.exe' @('/c', "echo $expected") ($s + 8)).Trim() } }
   if ((Probe-Scope) -ne 1) { throw 'the probe did not see the caller scope or the bounded runner' }
+}
+# --- the maintenance window: the deployer's own pause, drain, stop and restore functions against a fake Cubi on a fake clock ---------------
+Check 'discovery states: running and paused are healthy; drained needs the pause, an idle host loop and no lease' {
+  $s={ param($state,$paused,$leased) Resolve-AreaEventsDiscoveryState -Status ([pscustomobject]@{state=$state;paused=$paused;leased=$leased}) }
+  $running=& $s 'running' $false 0; $busy=& $s 'running' $true 1; $unseen=& $s 'running' $true 0; $leasedPaused=& $s 'paused' $true 1; $drained=& $s 'paused' $true 0
+  if (-not $running.Healthy -or $running.Drained) { throw 'a running service is healthy and not drained' }
+  if (-not $busy.Healthy -or $busy.Drained -or $unseen.Drained -or $leasedPaused.Drained) { throw 'a scan still running, or a pause the host has not seen, counted as drained' }
+  if (-not $drained.Healthy -or -not $drained.Drained) { throw 'a paused, idle service without leases is drained' }
+  if ((& $s 'stopped' $false 0).Healthy) { throw 'a stopped host loop passed as healthy' }
+  foreach ($bad in @(@{state='running';paused=$null;leased=0},@{state='running';paused=$false;leased=$null},@{state='running';paused=$false;leased=-1},@{state=$null;paused=$false;leased=0})) {
+    $threw=$false; try { Resolve-AreaEventsDiscoveryState -Status ([pscustomobject]$bad) | Out-Null } catch { $threw=$true }
+    if (-not $threw) { throw "an invalid discovery status was accepted: $($bad | ConvertTo-Json -Compress)" }
+  }
+  if (-not (Test-AreaEventsDiscoveryRestored -OriginalPaused $false -Current $running) -or (Test-AreaEventsDiscoveryRestored -OriginalPaused $false -Current $drained)) { throw 'running restore check is wrong' }
+  if (-not (Test-AreaEventsDiscoveryRestored -OriginalPaused $true -Current $drained) -or (Test-AreaEventsDiscoveryRestored -OriginalPaused $true -Current $running)) { throw 'paused restore check is wrong' }
+}
+function New-FakeCubi([bool]$Paused, [int[]]$Leased=@(0), [int]$HostLag=1) {
+  # One Discovery service: its pause setting, the leased jobs each probe sees (the last repeats), and a host loop that observes a changed setting
+  # $HostLag probes later. Every deployer action is recorded in Calls.
+  $script:cubi=[pscustomobject]@{Paused=$Paused;Host=$(if ($Paused) { 'paused' } else { 'running' });Leased=$Leased;Probes=0;Lag=0;HostLag=$HostLag;Active=$true
+                                 Calls=[System.Collections.Generic.List[string]]::new()}
+  $script:fakeNow=[DateTime]'2026-11-01T00:00:00Z'
+  $script:DiscoveryClock={ $script:fakeNow }
+  $script:DiscoverySleep={ param($Seconds) $script:fakeNow=$script:fakeNow.AddSeconds($Seconds) }
+  $script:OriginalDiscoveryPaused=$Paused; $script:DiscoveryQuiesced=$false; $script:SchemaChanged=$false
+}
+function Get-CubiDiscoveryState {
+  $c=$script:cubi; $c.Probes++; $c.Calls.Add('probe')
+  if (-not $c.Active) { throw 'connection refused' }
+  $leased=$c.Leased[[Math]::Min($c.Probes-1,$c.Leased.Count-1)]
+  if ($c.Lag -gt 0) { $c.Lag-- } else { $c.Host=$(if ($c.Paused -and $leased -eq 0) { 'paused' } else { 'running' }) }
+  Resolve-AreaEventsDiscoveryState -Status ([pscustomobject]@{state=$c.Host;paused=$c.Paused;leased=$leased})
+}
+function Set-CubiDiscoveryPaused([bool]$Paused,[switch]$AllowStopped) {
+  $c=$script:cubi; $action=$(if ($Paused) { 'pause' } else { 'resume' })
+  if (-not $c.Active) { if (-not $AllowStopped) { throw 'the Discovery service is inactive' }; $c.Paused=$Paused; $c.Calls.Add("cli-$action"); return [pscustomobject]@{via='cli'} }
+  if ($c.Paused -ne $Paused) { $c.Lag=$c.HostLag }
+  $c.Paused=$Paused; $c.Calls.Add($action); [pscustomobject]@{via='api'}
+}
+function Stop-CubiService([switch]$RequireDrained) {
+  $c=$script:cubi
+  if ($RequireDrained -and -not ($c.Paused -and $c.Host -eq 'paused')) { throw 'discovery is not drained; the service was not stopped' }
+  $c.Calls.Add($(if ($RequireDrained) { 'stop-drained' } else { 'stop' })); $c.Active=$false
+}
+function Invoke-CubiPython { $script:cubi.Calls.Add('remote-code-restore'); throw 'offline test: no remote command' }
+function New-MaintenanceOps([scriptblock]$DeployCubi) {
+  $ops=New-Ops -HANeeded $false
+  $ops.Quiesce={ param($s) $script:cubi.Calls.Add('quiesce'); Invoke-DiscoveryQuiesce }
+  $ops.DeployCubi=$DeployCubi
+  $ops.VerifyCubi={ param($s) $script:cubi.Calls.Add('verify'); if ((Get-CubiDiscoveryState).State -notin @('running','paused')) { throw 'unhealthy' } }
+  $ops.RestoreDiscovery={ param($s) Restore-DiscoveryState }
+  $ops.Recover={ param($phase,$s,$schema,$ha) $script:cubi.Calls.Add("recover:$phase"); Invoke-Recovery $phase $null $schema $ha }
+  return $ops
+}
+$DrainTimeoutSeconds=420
+Check 'normal running deployment: pauses, waits for the running scan, stops drained, then restores running' {
+  New-FakeCubi -Paused $false -Leased @(1,1,1,0)
+  $ops=New-MaintenanceOps { param($s,$r) Stop-CubiService -RequireDrained; $script:cubi.Calls.Add('install-migrate'); $script:cubi.Active=$true; [pscustomobject]@{Changed=$true;SchemaChanged=$true} }
+  $result=Invoke-AreaEventsDeploymentEngine -Operations $ops
+  $calls=@($script:cubi.Calls | Where-Object { $_ -ne 'probe' }) -join ','
+  if ($result.Result -ne 'Deployed' -or $calls -ne 'quiesce,pause,stop-drained,install-migrate,verify,resume') { throw "unexpected maintenance sequence: $calls" }
+  if ($script:cubi.Paused -or $script:cubi.Host -ne 'running' -or $script:DiscoveryQuiesced) { throw 'discovery was not left running' }
+  if (($script:fakeNow - [DateTime]'2026-11-01T00:00:00Z').TotalSeconds -ge $DrainTimeoutSeconds) { throw 'the drain took the whole deadline' }
+}
+Check 'paused deployment: an originally paused service is drained, deployed and left paused' {
+  New-FakeCubi -Paused $true -Leased @(0)
+  $ops=New-MaintenanceOps { param($s,$r) Stop-CubiService -RequireDrained; $script:cubi.Active=$true; [pscustomobject]@{Changed=$true;SchemaChanged=$false} }
+  $result=Invoke-AreaEventsDeploymentEngine -Operations $ops
+  if ($result.Result -ne 'Deployed' -or -not $script:cubi.Paused -or $script:cubi.Host -ne 'paused') { throw 'an originally paused service did not stay paused' }
+  if ($script:cubi.Calls -contains 'resume') { throw 'a paused service was resumed' }
+  if ($script:cubi.Calls -notcontains 'stop-drained') { throw 'the paused service was not stopped through the drain check' }
+}
+Check 'drain timeout: gives up at the deadline without stopping anything and restores running discovery' {
+  New-FakeCubi -Paused $false -Leased @(1)
+  $script:DrainTimeoutSeconds=60
+  $ops=New-MaintenanceOps { param($s,$r) $script:cubi.Calls.Add('cutover'); [pscustomobject]@{Changed=$true;SchemaChanged=$false} }
+  $message=''; try { Invoke-AreaEventsDeploymentEngine -Operations $ops 3>$null | Out-Null } catch { $message=$_.Exception.Message } finally { $script:DrainTimeoutSeconds=420 }
+  if ($message -notmatch 'did not drain within 60 seconds.*leased jobs 1') { throw "unexpected outcome: $message" }
+  if ($script:cubi.Calls -contains 'cutover' -or @($script:cubi.Calls | Where-Object { $_ -like 'stop*' -or $_ -like 'recover*' }).Count) { throw 'the service was touched after a failed drain' }
+  $elapsed=($script:fakeNow - [DateTime]'2026-11-01T00:00:00Z').TotalSeconds
+  if ($elapsed -lt 55 -or $elapsed -gt 60) { throw "gave up after $elapsed s" }
+  if ($script:cubi.Paused -or $script:cubi.Host -ne 'running') { throw 'discovery was not restored after the failed drain' }
+}
+Check 'deployment failure: a failed cutover is recovered first, then the discovery state is restored' {
+  New-FakeCubi -Paused $false -Leased @(0)
+  $ops=New-MaintenanceOps { param($s,$r) Stop-CubiService -RequireDrained; throw 'cutover simulated failure' }
+  $ops.Recover={ param($phase,$s,$schema,$ha) $script:cubi.Calls.Add("recover:$phase"); $script:cubi.Active=$true }   # the code-only rollback restarted the service
+  $message=''; try { Invoke-AreaEventsDeploymentEngine -Operations $ops | Out-Null } catch { $message=$_.Exception.Message }
+  $calls=@($script:cubi.Calls | Where-Object { $_ -ne 'probe' }) -join ','
+  if ($message -notmatch 'cutover simulated failure') { throw "the original failure was lost: $message" }
+  if ($calls -ne 'quiesce,pause,stop-drained,recover:Cubi cutover,resume') { throw "unexpected recovery sequence: $calls" }
+  if ($script:cubi.Paused -or $script:cubi.Host -ne 'running') { throw 'discovery was not restored after recovery' }
+}
+Check 'schema migration failure: the service stays stopped with its new code, and only the persisted setting is restored' {
+  New-FakeCubi -Paused $false -Leased @(0)
+  $ops=New-MaintenanceOps { param($s,$r) Stop-CubiService -RequireDrained; $script:SchemaChanged=$true; throw 'migration simulated failure' }
+  $message=''; try { Invoke-AreaEventsDeploymentEngine -Operations $ops 3>$null | Out-Null } catch { $message=$_.Exception.Message }
+  $calls=@($script:cubi.Calls | Where-Object { $_ -ne 'probe' }) -join ','
+  if ($message -notmatch 'migration simulated failure') { throw "the original failure was lost: $message" }
+  if ($script:cubi.Calls -contains 'remote-code-restore') { throw 'older code was restored over an advanced schema' }
+  if ($calls -ne 'quiesce,pause,stop-drained,recover:Cubi cutover,stop,cli-resume') { throw "unexpected sequence: $calls" }
+  if ($script:cubi.Active -or $script:cubi.Paused) { throw 'the service must stay stopped with its original (running) setting persisted' }
+}
+Check 'code-only rollback stops the service cleanly before it restores any code' {
+  New-FakeCubi -Paused $false -Leased @(0)
+  $threw=$false; try { Invoke-Recovery 'Cubi cutover' $null $false $false 3>$null } catch { $threw=$true }
+  if (-not $threw -or (@($script:cubi.Calls) -join ',') -ne 'stop,remote-code-restore') { throw "unexpected rollback order: $(@($script:cubi.Calls) -join ',')" }
+}
+Check 'successful restart: restore waits until the host loop runs again, and fails at its deadline if it never does' {
+  New-FakeCubi -Paused $false -Leased @(0) -HostLag 3
+  $script:DiscoveryQuiesced=$true; $script:cubi.Paused=$true; $script:cubi.Host='paused'
+  Restore-DiscoveryState
+  if ($script:cubi.Host -ne 'running' -or $script:DiscoveryQuiesced) { throw 'the restored state was not confirmed' }
+  if (@($script:cubi.Calls | Where-Object { $_ -eq 'probe' }).Count -lt 4) { throw 'restore did not wait for the host loop' }
+  New-FakeCubi -Paused $false -Leased @(0) -HostLag 1000
+  $script:DiscoveryQuiesced=$true; $script:cubi.Paused=$true; $script:cubi.Host='paused'
+  $message=''; try { Restore-DiscoveryState } catch { $message=$_.Exception.Message }
+  if ($message -notmatch 'did not return to its original state within 60 seconds') { throw "unexpected outcome: $message" }
+}
+Check 'no maintenance window opens when the pause setting changed after preflight' {
+  New-FakeCubi -Paused $false -Leased @(0)
+  $script:OriginalDiscoveryPaused=$true
+  $threw=$false; try { Invoke-DiscoveryQuiesce } catch { $threw=$true }
+  Restore-DiscoveryState
+  if (-not $threw -or $script:cubi.Calls -contains 'pause' -or $script:cubi.Calls -contains 'resume') { throw 'the setting was changed although its original value was unclear' }
+}
+Check 'the service is stopped only by the clean-stop helper, and code changes only while it is stopped' {
+  $text=Get-Content -Raw (Join-Path $PSScriptRoot 'deploy-area-events.ps1')
+  if ([regex]::Matches($text,"'systemctl','--user','stop'").Count -ne 1 -or $text -match 'systemctl --user stop|systemctl.{0,20}kill|SIGKILL|kill -9') { throw 'a stop or kill bypasses Stop-CubiService' }
+  $deploy=$text.Substring($text.IndexOf('function Invoke-CubiDeploy('),$text.IndexOf('function Test-CubiHealth {')-$text.IndexOf('function Invoke-CubiDeploy('))
+  $stop=$deploy.IndexOf('Stop-CubiService -RequireDrained'); $stage2=$deploy.IndexOf('$py=$script:ImageDepsPy')
+  if ($stop -lt 0 -or $stage2 -lt $stop -or $deploy.IndexOf('$installPy @{') -gt $stop) { throw 'the cutover does not stop the drained service between dependency staging and code installation' }
+  foreach ($section in @($deploy.Substring($stage2), $text.Substring($text.IndexOf("Write-Warning 'Restoring Cubi code only")))) {
+    if ($section -notmatch "not in \('inactive','failed'\): raise RuntimeError") { throw 'code is changed without confirming the service is stopped' }
+  }
+  if ($text -notmatch 'Quiesce=\{ param\(\$s\) Invoke-DiscoveryQuiesce \}' -or $text -notmatch 'RestoreDiscovery=\{ param\(\$s\) Restore-DiscoveryState \}') { throw 'the maintenance window is not part of the normal deployment operations' }
 }
 if ($script:failures) { Write-Error "$script:failures deployment tests failed"; exit 1 }
 Write-Host 'All deployment engine checks passed.'
