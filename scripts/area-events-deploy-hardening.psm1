@@ -51,33 +51,49 @@ function Assert-AreaEventsHaPrerequisites {
   return $true
 }
 
+function Get-AreaEventsModuleFingerprint {
+  <# The build's fingerprint of one frontend module (scripts/build.mjs): the first 12 hex digits of the sha-256 of its text with LF line endings. #>
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$Path)
+  $text = [IO.File]::ReadAllText($Path).Replace("`r`n", "`n").Replace("`r", "`n")
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { $digest = $sha.ComputeHash((New-Object Text.UTF8Encoding $false).GetBytes($text)) } finally { $sha.Dispose() }
+  return (-join ($digest | ForEach-Object { $_.ToString('x2') })).Substring(0, 12)
+}
+
 function Get-AreaEventsRequiredFrontendAssets {
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$FrontendRoot)
   $root = [IO.Path]::GetFullPath($FrontendRoot)
   $manifest = Join-Path $root 'presentation\manifest.js'
   if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { throw 'Presentation manifest is missing.' }
-  $text = Get-Content -Raw -LiteralPath $manifest
-  $imports = [regex]::Matches($text, '(?m)^\s*import\s+.+?\s+from\s+["''](\./[^"'']+\.js)["'']\s*;?')
-  if (-not $imports.Count) { throw 'Presentation manifest has no statically registered module imports.' }
+  # A relative import, optionally with the build's content fingerprint: import { x } from "./community.js?v=<12 hex>";
+  $importPattern = '(?m)^\s*(?:import|export)\s+.+?\s+from\s+["''](\./[^"''?]+\.js)(?:\?v=([0-9a-f]+))?["'']\s*;?'
+  if (-not [regex]::Matches((Get-Content -Raw -LiteralPath $manifest), $importPattern).Count) { throw 'Presentation manifest has no statically registered module imports.' }
+  $card = Join-Path $root 'area-events-card.js'
   $assets = [System.Collections.Generic.List[string]]::new()
-  $assets.Add((Join-Path $root 'area-events-card.js'))
+  $assets.Add($card)
   $assets.Add((Join-Path $root 'manager.js'))
-  $assets.Add($manifest)
-  foreach ($match in $imports) {
-    $relative = $match.Groups[1].Value.Substring(2).Replace('/', '\')
-    $asset = Join-Path (Split-Path -Parent $manifest) $relative
-    if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Manifest asset is missing: $relative" }
-    if (-not $assets.Contains($asset)) { $assets.Add($asset) }
+  # Every module the card loads, through the whole import graph, must be deployed and served; a fingerprinted import must name the exact content
+  # of the module it loads (the build's sha-256 of its LF text), or a browser could keep a cached copy of a different version under that address.
+  $queue = [System.Collections.Generic.Queue[string]]::new()
+  $queue.Enqueue($card); $queue.Enqueue($manifest)
+  while ($queue.Count) {
+    $file = $queue.Dequeue()
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Required frontend asset is missing: $file" }
+    if ($file -ne $card -and -not $assets.Contains($file)) { $assets.Add($file) } elseif ($file -ne $card) { continue }
+    foreach ($match in [regex]::Matches([IO.File]::ReadAllText($file), $importPattern)) {
+      $specifier = $match.Groups[1].Value
+      $asset = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $file) $specifier.Substring(2).Replace('/', '\')))
+      $from = $file.Substring($root.Length).TrimStart('\').Replace('\', '/')
+      if (-not $asset.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Frontend module is missing: $specifier (imported by $from)" }
+      if ($match.Groups[2].Success) {
+        $actual = Get-AreaEventsModuleFingerprint $asset
+        if ($actual -ne $match.Groups[2].Value) { throw "Module version mismatch: $from imports ${specifier}?v=$($match.Groups[2].Value), but that module's fingerprint is $actual" }
+      }
+      if (-not $assets.Contains($asset)) { $queue.Enqueue($asset) }
+    }
   }
-  # Modules the card itself imports (the filters beside the presentation manifest) must be deployed and served too.
-  $cardText = Get-Content -Raw -LiteralPath (Join-Path $root 'area-events-card.js')
-  foreach ($match in [regex]::Matches([string]$cardText, '(?m)^\s*import\s+.+?\s+from\s+["''](\./[^"'']+\.js)["'']\s*;?')) {
-    $asset = Join-Path $root $match.Groups[1].Value.Substring(2).Replace('/', '\')
-    if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Card module is missing: $($match.Groups[1].Value)" }
-    if (-not $assets.Contains($asset)) { $assets.Add($asset) }
-  }
-  foreach ($asset in $assets) { if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Required frontend asset is missing: $asset" } }
   return $assets.ToArray()
 }
 
@@ -181,4 +197,4 @@ function Resolve-AreaEventsComponentPlan {
   }
 }
 
-Export-ModuleMember -Function Import-AreaEventsDpapiCredential, New-AreaEventsRemotePythonCommand, Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsRequiredFrontendAssets, Wait-AreaEventsHaAsset, Assert-AreaEventsFeedResponse, Test-AreaEventsCodeBackupMembers, Resolve-AreaEventsSystemdLayout, Convert-AreaEventsSystemdExecStart, Resolve-AreaEventsComponentPlan
+Export-ModuleMember -Function Import-AreaEventsDpapiCredential, New-AreaEventsRemotePythonCommand, Test-AreaEventsShareCapabilities, Assert-AreaEventsHaPrerequisites, Get-AreaEventsModuleFingerprint, Get-AreaEventsRequiredFrontendAssets, Wait-AreaEventsHaAsset, Assert-AreaEventsFeedResponse, Test-AreaEventsCodeBackupMembers, Resolve-AreaEventsSystemdLayout, Convert-AreaEventsSystemdExecStart, Resolve-AreaEventsComponentPlan

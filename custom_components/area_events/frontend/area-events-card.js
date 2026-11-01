@@ -10,9 +10,9 @@
  * visual editor; the filter chips are the viewer's own choices, saved per card instance (see "Preferences").
  */
 
-import { PRESENTATIONS } from "./presentation/manifest.js";
-import { PRESETS as DATE_PRESETS, calendarDate, eventOverlapsWindow, normalizeSelection, resolveWindow } from "./filters/date-windows.js";
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-c20affcf";
+import { PRESENTATIONS } from "./presentation/manifest.js?v=6562079a3286";
+import { PRESETS as DATE_PRESETS, calendarDate, eventOverlapsWindow, normalizeSelection, resolveWindow } from "./filters/date-windows.js?v=9d4d01da8a5d";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-dc670477";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never

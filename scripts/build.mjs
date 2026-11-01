@@ -1,4 +1,5 @@
-// Minimal build: stamps the host card with its build identifier and copies the module folders it imports (presentation, filters) to
+// Minimal build: stamps the host card with its build identifier and copies the module folders it imports (presentation, filters), every relative
+// import fingerprinted with the imported module's content hash (see versionImports below), to
 //   custom_components/area_events/frontend/   (what the integration serves; committed, so installs need no build)
 //   dist/                                     (generated, not stored in Git)
 // The identifier is "AREA-EVENTS <integration version>-<hash of the source>", shown in the card footer and
@@ -40,10 +41,32 @@ const modules = MODULE_FOLDERS.map((folder) => {
   if (!files.length) throw new Error(`src/frontend/${folder} has no modules`);
   return { folder, files };
 });
+
+// Every relative import names the module it loads with that module's content fingerprint ("./community.js?v=<sha-256 of its built text>"). Home Assistant
+// gives only the card a new address per deployment (?v=<file time>); the browser may keep using a cached module for an address it has seen, even on a hard
+// reload. A changed module therefore gets a new address, and so does every module above it up to the card (each fingerprint covers the
+// fingerprints it imports); an unchanged module keeps its address and its cached copy. The server ignores the query.
+const RELATIVE_IMPORT = /(\b(?:import|export)\b[^;]*?\bfrom\s*|\bimport\s*)(["'])(\.\.?\/[^"'?]+\.js)\2/g;
+const fingerprints = new Map();
+function versionImports(text, path, chain) {
+  if (/\bimport\s*\(\s*["'`]\.\.?\//.test(text)) throw new Error(`${path} imports a module dynamically; its address would not be fingerprinted`);
+  return text.replace(RELATIVE_IMPORT, (_, head, quote, specifier) => `${head}${quote}${specifier}?v=${fingerprint(join(dirname(path), specifier), [...chain, path]).version}${quote}`);
+}
+function fingerprint(path, chain = []) {
+  if (chain.includes(path)) throw new Error(`import cycle: ${[...chain, path].join(" -> ")}`);
+  if (!fingerprints.has(path)) {
+    if (!path.startsWith(sourceDir) || !existsSync(path)) throw new Error(`${chain.at(-1)} imports a missing module: ${path}`);
+    const text = versionImports(readCanonical(path), path, chain);
+    fingerprints.set(path, { text, version: createHash("sha256").update(text).digest("hex").slice(0, 12) });
+  }
+  return fingerprints.get(path);
+}
+const servedModule = (folder, name) => fingerprint(join(sourceDir, folder, name)).text;
+// The identifier covers the modules as served (their fingerprinted imports included), so a different module graph is a different build.
 const moduleSource = modules.flatMap(({ folder, files }) =>
-  files.map((name) => `${folder === "presentation" ? "" : `${folder}/`}${name}\n${readCanonical(join(sourceDir, folder, name))}`)).join("\n");
+  files.map((name) => `${folder === "presentation" ? "" : `${folder}/`}${name}\n${servedModule(folder, name)}`)).join("\n");
 const identifier = `AREA-EVENTS ${version}-${createHash("sha1").update(source).update(moduleSource).digest("hex").slice(0, 8)}`;
-const built = source.replaceAll("__AREA_EVENTS_CARD_BUILD__", identifier);
+const built = versionImports(source.replaceAll("__AREA_EVENTS_CARD_BUILD__", identifier), join(sourceDir, "area-events-card.js"), []);
 
 // The tracked integration bundle is committed for installation without a build.
 // Do NOT rewrite it when only the working tree's line endings differ.
@@ -52,7 +75,7 @@ mkdirSync(tracked, { recursive: true });
 writeTracked(join(tracked, "area-events-card.js"), built);
 for (const { folder, files } of modules) {
   mkdirSync(join(tracked, folder), { recursive: true });
-  for (const name of files) writeTracked(join(tracked, folder, name), readCanonical(join(sourceDir, folder, name)));
+  for (const name of files) writeTracked(join(tracked, folder, name), servedModule(folder, name));
 }
 
 // dist is untracked and can always use canonical LF bytes.
@@ -61,7 +84,7 @@ mkdirSync(dist, { recursive: true });
 writeFileSync(join(dist, "area-events-card.js"), built);
 for (const { folder, files } of modules) {
   mkdirSync(join(dist, folder), { recursive: true });
-  for (const name of files) writeFileSync(join(dist, folder, name), readCanonical(join(sourceDir, folder, name)));
+  for (const name of files) writeFileSync(join(dist, folder, name), servedModule(folder, name));
 }
 console.log(`Built ${join(tracked, "area-events-card.js")} (${identifier})`);
 console.log(`Built ${join(dist, "area-events-card.js")} (${identifier})`);

@@ -1,4 +1,4 @@
-import { element, PRESENTATION_CONTRACT } from "./contract.js";
+import { element, PRESENTATION_CONTRACT } from "./contract.js?v=748f2d97ba3d";
 
 /** Safe generic renderer used for unknown event types and renderer failures. */
 export const genericRenderer = {

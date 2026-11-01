@@ -1135,18 +1135,21 @@ test("the card the integration serves is the current source, stamped", async () 
   const canonical = (text) => text.replace(/\r\n?/g, "\n");
   const readCanonical = (url) => canonical(readFileSync(url, "utf8"));
   const source = readCanonical(new URL("../src/frontend/area-events-card.js", import.meta.url));
+  // The packaged files are the sources with each relative import fingerprinted (?v=<content hash>; tests/build.test.mjs checks the fingerprints);
+  // the identifier covers the modules as served.
+  const unversioned = (text) => text.replace(/(["'])(\.\.?\/[^"'?]+\.js)\?v=[0-9a-f]{12}\1/g, "$1$2$1");
+  const packaged = (path) => readCanonical(new URL(`../custom_components/area_events/frontend/${path}`, import.meta.url));
   const modules = ["community.js", "contract.js", "generic.js", "manifest.js", "nasa-mission.js", "registry.js"]
-    .map((name) => `${name}\n${readCanonical(new URL(`../src/frontend/presentation/${name}`, import.meta.url))}`)
-    .concat([`filters/date-windows.js\n${readCanonical(new URL("../src/frontend/filters/date-windows.js", import.meta.url))}`]).join("\n");
+    .map((name) => `${name}\n${packaged(`presentation/${name}`)}`)
+    .concat([`filters/date-windows.js\n${packaged("filters/date-windows.js")}`]).join("\n");
   const { version } = JSON.parse(readFileSync(new URL("../custom_components/area_events/manifest.json", import.meta.url), "utf8"));
   const identifier = `AREA-EVENTS ${version}-${createHash("sha1").update(source).update(modules).digest("hex").slice(0, 8)}`;
-  const served = readCanonical(new URL("../custom_components/area_events/frontend/area-events-card.js", import.meta.url));
-  assert.equal(served, source.replaceAll("__AREA_EVENTS_CARD_BUILD__", identifier), "run npm run build and commit the result");
+  const served = packaged("area-events-card.js");
+  assert.equal(unversioned(served), source.replaceAll("__AREA_EVENTS_CARD_BUILD__", identifier), "run npm run build and commit the result");
   for (const name of ["community.js", "contract.js", "generic.js", "manifest.js", "nasa-mission.js", "registry.js"]) {
-    assert.equal(readCanonical(new URL(`../custom_components/area_events/frontend/presentation/${name}`, import.meta.url)),
-      readCanonical(new URL(`../src/frontend/presentation/${name}`, import.meta.url)), `${name} is packaged from source`);
+    assert.equal(unversioned(packaged(`presentation/${name}`)), readCanonical(new URL(`../src/frontend/presentation/${name}`, import.meta.url)), `${name} is packaged from source`);
   }
-  assert.equal(readCanonical(new URL("../custom_components/area_events/frontend/filters/date-windows.js", import.meta.url)),
+  assert.equal(unversioned(packaged("filters/date-windows.js")),
     readCanonical(new URL("../src/frontend/filters/date-windows.js", import.meta.url)), "the date-window module is packaged from source");
 });
 

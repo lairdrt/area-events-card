@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -60,11 +61,11 @@ test("frontend build leaves committed HA assets untouched under LF and CRLF chec
         endingName + ": dist bundle must match committed source");
       for (const name of presentation) {
         assert.equal(readFileSync(join(temporary, "dist/presentation", name), "utf8"),
-          original("src/frontend/presentation/" + name));
+          original("custom_components/area_events/frontend/presentation/" + name));
       }
       for (const name of filters) {
         assert.equal(readFileSync(join(temporary, "dist/filters", name), "utf8"),
-          original("src/frontend/filters/" + name));
+          original("custom_components/area_events/frontend/filters/" + name));
       }
 
       // A legitimately changed source must regenerate the tracked bundle while
@@ -85,6 +86,58 @@ test("frontend build leaves committed HA assets untouched under LF and CRLF chec
         assert.ok(!/(^|[^\r])\n/.test(updated), "Windows output introduced LF-only lines");
       }
     }
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+// Every relative import of the built card and its modules carries the imported module's content fingerprint, so a browser that cached one version
+// of a module cannot reuse it for another; an unchanged module keeps its address.
+const IMPORT = /\bfrom\s*["'](\.\.?\/[^"'?]+\.js)(?:\?v=([0-9a-f]+))?["']/g;
+function graph(frontend) {
+  const found = new Map();
+  const visit = (relative) => {
+    if (found.has(relative)) return;
+    const text = normalize(readFileSync(join(frontend, relative), "utf8"));
+    const imports = [...text.matchAll(IMPORT)].map(([, specifier, version]) => ({ target: join(dirname(relative), specifier).replace(/\\/g, "/"), version }));
+    found.set(relative, { text, imports });
+    for (const { target } of imports) visit(target);
+  };
+  visit("area-events-card.js");
+  return found;
+}
+const fingerprintOf = (text) => createHash("sha256").update(text).digest("hex").slice(0, 12);
+
+test("the built module graph is fingerprinted end to end and a changed renderer changes only its own chain", () => {
+  const committed = graph(join(root, "custom_components/area_events/frontend"));
+  assert.deepEqual([...committed.keys()].sort(), ["area-events-card.js", "filters/date-windows.js", "presentation/community.js", "presentation/contract.js",
+    "presentation/generic.js", "presentation/manifest.js", "presentation/nasa-mission.js", "presentation/registry.js"]);
+  for (const [name, { imports }] of committed) {
+    for (const { target, version } of imports) {
+      assert.equal(version, fingerprintOf(committed.get(target).text), `${name} imports ${target} with the fingerprint of its served text`);
+    }
+  }
+  const sourceImports = [...original("src/frontend/presentation/manifest.js").matchAll(IMPORT)];
+  assert.ok(sourceImports.length && sourceImports.every(([, , version]) => version === undefined), "the sources keep plain imports");
+
+  const temporary = mkdtempSync(join(tmpdir(), "area-events-fingerprint-"));
+  try {
+    cpSync(join(root, "src/frontend"), join(temporary, "src/frontend"), { recursive: true });
+    mkdirSync(join(temporary, "scripts"), { recursive: true });
+    cpSync(join(root, "scripts/build.mjs"), join(temporary, "scripts/build.mjs"));
+    mkdirSync(join(temporary, "custom_components/area_events"), { recursive: true });
+    writeFileSync(join(temporary, "custom_components/area_events/manifest.json"), original("custom_components/area_events/manifest.json"));
+    const rebuild = () => { execFileSync(process.execPath, [join(temporary, "scripts/build.mjs")], { cwd: temporary, stdio: "pipe" });
+      return graph(join(temporary, "custom_components/area_events/frontend")); };
+    const before = rebuild();
+    assert.deepEqual([...before].map(([name, { text }]) => [name, text]), [...committed].map(([name, { text }]) => [name, text]), "the build is deterministic");
+    const community = join(temporary, "src/frontend/presentation/community.js");
+    writeFileSync(community, readFileSync(community, "utf8").replace("`Source: ${event.sourceName}`", "`Source: ${event.sourceName} (changed)`"));
+    const after = rebuild();
+    const changed = [...after.keys()].filter((name) => after.get(name).text !== before.get(name).text).sort();
+    assert.deepEqual(changed, ["area-events-card.js", "presentation/community.js", "presentation/manifest.js"], "the renderer and every module above it, up to the card");
+    assert.notEqual(after.get("area-events-card.js").text.match(/AREA-EVENTS \S+-[0-9a-f]{8}/)[0], before.get("area-events-card.js").text.match(/AREA-EVENTS \S+-[0-9a-f]{8}/)[0],
+      "a different module graph is a different build");
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }

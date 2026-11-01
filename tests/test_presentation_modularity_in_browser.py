@@ -36,9 +36,9 @@ export const communityRenderer = {
 PAGE = """<!doctype html><meta charset="utf-8"><pre id="out"></pre>
 <script>customElements.define("home-assistant", class extends HTMLElement {});</script>
 <script type="module">
-import { PRESENTATIONS } from "/presentation/manifest.js";
+import { PRESENTATIONS } from "/presentation/manifest.js@@MANIFEST@@";
 import "/area-events-card.js";
-const { element, PRESENTATION_CONTRACT } = await import("/presentation/contract.js");
+const { element, PRESENTATION_CONTRACT } = await import("/presentation/contract.js@@CONTRACT@@");
 if (@@OVERLAP@@) PRESENTATIONS.register({
   id: "overlap-test", contract: PRESENTATION_CONTRACT, eventTypes: ["overlap.test"],
   styles: ".overlap-event .image { aspect-ratio: 1 / 1; } .overlap-event .description { font-weight: 700; }",
@@ -102,7 +102,10 @@ class PresentationModularityInBrowser(unittest.TestCase):
 
     def browser_result(self, overlap=False):
         frontend = self.root / "custom_components" / "area_events" / "frontend"
-        (frontend / "fixture.html").write_text(PAGE.replace("@@OVERLAP@@", "true" if overlap else "false"), encoding="utf-8")
+        # the same module instances the card uses: the built imports carry content fingerprints (?v=...), and a module is identified by its full address
+        version = lambda importer, module: re.search(rf'from "\./{re.escape(module)}(\?v=[0-9a-f]+)?"', (frontend / importer).read_text(encoding="utf-8")).group(1) or ""
+        page = PAGE.replace("@@MANIFEST@@", version("area-events-card.js", "presentation/manifest.js")).replace("@@CONTRACT@@", version("presentation/registry.js", "contract.js"))
+        (frontend / "fixture.html").write_text(page.replace("@@OVERLAP@@", "true" if overlap else "false"), encoding="utf-8")
         server = ThreadingHTTPServer(("127.0.0.1", 0), partial(QuietHandler, directory=str(frontend)))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()

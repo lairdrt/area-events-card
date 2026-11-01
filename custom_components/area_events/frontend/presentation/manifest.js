@@ -1,7 +1,7 @@
-import { PresentationRegistry } from "./registry.js";
-import { communityRenderer } from "./community.js";
-import { genericRenderer } from "./generic.js";
-import { nasaMissionRenderer } from "./nasa-mission.js";
+import { PresentationRegistry } from "./registry.js?v=7ac27f0958aa";
+import { communityRenderer } from "./community.js?v=093e05da18a1";
+import { genericRenderer } from "./generic.js?v=aa3f635bd928";
+import { nasaMissionRenderer } from "./nasa-mission.js?v=6308bbbd10a7";
 
 /** Renderer registration manifest. Adding a renderer changes this manifest, not host selection logic. */
 export const PRESENTATIONS = new PresentationRegistry([communityRenderer, genericRenderer, nasaMissionRenderer]);

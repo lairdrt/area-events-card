@@ -354,6 +354,36 @@ import { resolveWindow } from "./filters/date-windows.js";
     if ($assets.Count -ne 5 -or $assets -notcontains (Join-Path $filters 'date-windows.js')) { throw "card module not represented in required assets: $($assets.Count)" }
   } finally { Remove-Item -LiteralPath $root -Recurse -Force }
 }
+Check 'the whole fingerprinted module graph is required and every fingerprint must match its module' {
+  $repo=Join-Path $PSScriptRoot '..\custom_components\area_events\frontend'
+  $assets=@(Get-AreaEventsRequiredFrontendAssets $repo | ForEach-Object { $_.Substring([IO.Path]::GetFullPath($repo).Length+1).Replace('\','/') })
+  foreach ($name in 'area-events-card.js','manager.js','presentation/manifest.js','presentation/registry.js','presentation/community.js','presentation/generic.js',
+                     'presentation/nasa-mission.js','presentation/contract.js','filters/date-windows.js') {
+    if ($assets -notcontains $name) { throw "the built frontend's $name is not a required asset: $($assets -join ', ')" }
+  }
+  if ($assets[0] -ne 'area-events-card.js') { throw 'the card must stay the first asset (the readiness probe)' }
+  $root=Join-Path ([IO.Path]::GetTempPath()) ('ae-fingerprints-'+[guid]::NewGuid().ToString('N'))
+  $presentation=Join-Path $root 'presentation'; New-Item -ItemType Directory -Path $presentation | Out-Null
+  try {
+    Set-Content (Join-Path $root 'manager.js') 'manager'
+    Set-Content (Join-Path $presentation 'contract.js') 'export const contract = 1;'
+    $contract=Get-AreaEventsModuleFingerprint (Join-Path $presentation 'contract.js')
+    Set-Content (Join-Path $presentation 'community.js') "import { contract } from `"./contract.js?v=$contract`";"
+    $community=Get-AreaEventsModuleFingerprint (Join-Path $presentation 'community.js')
+    Set-Content (Join-Path $presentation 'manifest.js') "import { communityRenderer } from `"./community.js?v=$community`";"
+    $manifest=Get-AreaEventsModuleFingerprint (Join-Path $presentation 'manifest.js')
+    Set-Content (Join-Path $root 'area-events-card.js') "import { PRESENTATIONS } from `"./presentation/manifest.js?v=$manifest`";"
+    $assets=@(Get-AreaEventsRequiredFrontendAssets $root)
+    if ($assets.Count -ne 5 -or $assets -notcontains (Join-Path $presentation 'contract.js')) { throw "a module two imports deep is not required: $($assets.Count)" }
+    [IO.File]::WriteAllText((Join-Path $presentation 'contract.js'), "export const contract = 1;`r`n".Replace("`r`n", "`n"))
+    $lf=Get-AreaEventsModuleFingerprint (Join-Path $presentation 'contract.js')
+    [IO.File]::WriteAllText((Join-Path $presentation 'contract.js'), "export const contract = 1;`r`n")
+    if ((Get-AreaEventsModuleFingerprint (Join-Path $presentation 'contract.js')) -ne $lf) { throw 'a CRLF checkout must have the fingerprint of its LF text' }
+    Set-Content (Join-Path $presentation 'contract.js') 'export const contract = 2;'   # deployed without rebuilding the modules that import it
+    $message=''; try { Get-AreaEventsRequiredFrontendAssets $root | Out-Null } catch { $message=$_.Exception.Message }
+    if ($message -notmatch 'Module version mismatch: presentation/community.js imports \./contract\.js\?v=') { throw "a stale fingerprint was not reported: '$message'" }
+  } finally { Remove-Item -LiteralPath $root -Recurse -Force }
+}
 Check 'valid empty event feeds pass and malformed feeds fail' {
   Assert-AreaEventsFeedResponse -Response ([pscustomobject]@{events=@()}) -Area 'Empty' | Out-Null
   $threw=$false; try { Assert-AreaEventsFeedResponse -Response ([pscustomobject]@{events=$null}) -Area 'Bad' | Out-Null } catch { $threw=$true }

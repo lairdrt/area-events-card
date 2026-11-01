@@ -84,6 +84,7 @@ class CardInABrowser(unittest.TestCase):
                 handle.write(page)
             class Handler(http.server.BaseHTTPRequestHandler):
                 def do_GET(self):
+                    self.path = self.path.partition("?")[0]   # as Home Assistant's static files: the modules' ?v= fingerprints are cache keys only
                     if self.path == "/card.html":
                         path, content_type = html, "text/html; charset=utf-8"
                     elif self.path == "/area_events/area-events-card.js":

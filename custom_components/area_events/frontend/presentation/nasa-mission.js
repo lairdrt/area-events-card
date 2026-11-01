@@ -1,4 +1,4 @@
-import { element, PRESENTATION_CONTRACT } from "./contract.js";
+import { element, PRESENTATION_CONTRACT } from "./contract.js?v=748f2d97ba3d";
 
 /** Synthetic-only renderer proof. Its detail fields are optional typed event data. */
 export const nasaMissionRenderer = {

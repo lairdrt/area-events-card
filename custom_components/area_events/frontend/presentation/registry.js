@@ -1,4 +1,4 @@
-import { isRenderer } from "./contract.js";
+import { isRenderer } from "./contract.js?v=748f2d97ba3d";
 
 /** A small registry independent of event discovery and the Home Assistant host. */
 export class PresentationRegistry {
