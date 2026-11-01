@@ -29,7 +29,7 @@ DISCOVERY = os.path.join(ROOT, "src", "area_events")
 # Neutral modules: generic utilities and libraries that belong to no engine and no source. They may import only each other and the standard library.
 NEUTRAL = frozenset(("discovery.safe", "common.timeutil", "common.textutil", "geolocation.textloc", "contracts.evidence", "enrichment.media", "enrichment.maps", "enrichment.images", "image_extractor", "image_extractor.v1", "image_extractor.association", "image_extractor.responsive", "image_extractor.goose3_adapter", "image_extractor.selfcheck", "classification.classify", "classification.classifiers"))
 PRODUCER_MAY_USE = frozenset(("image_extractor.v1", "image_extractor.association", "image_extractor.responsive", "discovery.safe", "common.timeutil", "common.textutil", "geolocation.textloc"))
-PRODUCER_MAY_USE_SERVICE = frozenset(("discovery.producer", "discovery.fetching", "discovery.urls"))
+PRODUCER_MAY_USE_SERVICE = frozenset(("discovery.producer", "discovery.fetching", "discovery.urls", "discovery.event_links"))
 COMPOSITION_ROOT = "app"
 PERSISTENCE = "persistence"
 PORTS = "persistence.ports"
@@ -58,16 +58,17 @@ ALLOWED = {
     "discovery.producers.localist": {"discovery.producer", "discovery.safe"},
     "discovery.producers.sources_producer": {"discovery.producer", "discovery.safe", "discovery.urls"},
     "discovery.safe": set(), "discovery.scheduler": {PORTS}, "discovery.service": {"contracts.evidence", "discovery.safe", "discovery.producer", "contracts.models", "discovery.fetching", PORTS}, "discovery.urls": set(),
+    "discovery.event_links": {"discovery.safe", "discovery.urls"},   # the shared event-page finder: producer support, reaching the database only through the port it is given
     "enrichment": set(), "enrichment.images": set(), "enrichment.maps": set(), "enrichment.media": {"enrichment.maps", "geolocation.textloc", "discovery.safe"},
     "enrichment.service": {"classification.classifiers", "enrichment.images", "discovery.safe", "enrichment.media", "contracts.models", PORTS, "extraction.text"},
     "extraction": set(), "extraction.text": {"geolocation.textloc"}, "extraction.service": {"contracts.evidence", "geolocation.textloc", "contracts.models", "extraction.text"},
     "geolocation": set(), "geolocation.location": {"discovery.safe"}, "geolocation.place": {"geolocation.location"}, "geolocation.textloc": set(),
     PERSISTENCE: set(), PORTS: set(), f"{PERSISTENCE}.areas": {"contracts.models"}, f"{PERSISTENCE}.control": {"contracts.models", f"{PERSISTENCE}.naming"}, f"{PERSISTENCE}.naming": {"discovery.producer"}, f"{PERSISTENCE}.reviewed": {f"{PERSISTENCE}.events"},
     f"{PERSISTENCE}.crawl": {"contracts.models", PORTS, f"{PERSISTENCE}.repositories", "discovery.urls"},
-    f"{PERSISTENCE}.events": {"contracts.models", DEDUPLICATION, "api.events"}, f"{PERSISTENCE}.media": {"contracts.models"},
+    f"{PERSISTENCE}.events": {"contracts.models", DEDUPLICATION, "api.events"}, f"{PERSISTENCE}.media": {"contracts.models"}, f"{PERSISTENCE}.event_links": set(),
     f"{PERSISTENCE}.processing": {"contracts.evidence", "contracts.models", f"{PERSISTENCE}.events"}, f"{PERSISTENCE}.reading": {"contracts.models"},
     f"{PERSISTENCE}.repositories": {"contracts.models", "discovery.producer", "discovery.urls"}, f"{PERSISTENCE}.scheduling": {"contracts.models"}, f"{PERSISTENCE}.schema": set(),
-    f"{PERSISTENCE}.store": {"contracts.models", f"{PERSISTENCE}.schema"}, BUILD: {f"{PERSISTENCE}.{n}" for n in ("areas", "control", "crawl", "events", "media", "naming", "processing", "reading", "repositories", "reviewed", "scheduling", "store", "trashcan")} | {PORTS},
+    f"{PERSISTENCE}.store": {"contracts.models", f"{PERSISTENCE}.schema"}, BUILD: {f"{PERSISTENCE}.{n}" for n in ("areas", "control", "crawl", "event_links", "events", "media", "naming", "processing", "reading", "repositories", "reviewed", "scheduling", "store", "trashcan")} | {PORTS},
     f"{PERSISTENCE}.trashcan": {"contracts.models", "discovery.urls", "trashcan"},
     "validation": set(), "validation.processing": {"contracts.models", PORTS},
 }

@@ -11,6 +11,7 @@ Persistence never imports the modules that use it; they never import its impleme
     EventQueries       read normalized events
     DiscoveryReader    the read contract over the discovery data (changes, snapshot, candidates, pages, status): defined in contracts.py
     MediaWork          what media enrichment takes from, and returns to, the database
+    EventLinkCache     what the shared event-page finder remembers: each lookup's answer and its request counts
 """
 from dataclasses import dataclass
 from typing import Optional, Protocol
@@ -216,3 +217,19 @@ class MediaCache(Protocol):
     def prune(self) -> None: ...
 
     def save(self) -> None: ...
+
+
+class EventLinkCache(Protocol):
+    """What the shared event-page finder keeps: the answer of each lookup (an event page or None) and the requests counted per UTC day and month."""
+
+    def recall(self, key: str): ...   # (url or None, checked_at) or None
+
+    def remember(self, key: str, url: Optional[str], checked_at: int, event_day: str) -> None: ...
+
+    def requests(self, periods) -> dict: ...
+
+    def count_request(self, periods) -> None: ...
+
+    def use_up(self, period: str, requests: int) -> None: ...
+
+    def forget_before(self, day: str) -> None: ...

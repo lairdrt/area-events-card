@@ -430,6 +430,20 @@ CREATE TABLE trashcan_occurrences (
 );
 CREATE INDEX trashcan_occurrences_lookup ON trashcan_occurrences(source_key, starts_at);
 """),
+    (11, "the shared event-page finder's cache: each lookup's answer and its requests per UTC day and month", """
+CREATE TABLE event_link_lookups (
+  lookup_key    TEXT PRIMARY KEY CHECK (length(lookup_key) = 64),   -- sha-256 of the event's title, day, venue and town
+  url           TEXT,                       -- the event page found, or NULL: nothing credible
+  checked_at    INTEGER NOT NULL,
+  event_day     TEXT NOT NULL               -- YYYY-MM-DD, so lookups for past events are dropped
+);
+CREATE INDEX event_link_lookups_day ON event_link_lookups(event_day);
+
+CREATE TABLE event_link_usage (
+  period        TEXT PRIMARY KEY,           -- a UTC day (YYYY-MM-DD) or month (YYYY-MM)
+  requests      INTEGER NOT NULL CHECK (requests >= 0)
+);
+"""),
 )
 
 LATEST = MIGRATIONS[-1][0]

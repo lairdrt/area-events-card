@@ -25,8 +25,10 @@ names one year ("events in San Diego November 2026") accepts only events in that
 is ever invented. Aggregated results are never treated as verified.
 
 An event's url is its own page as Google lists it: the result's `link`, else a `ticket_info` link (information before tickets), each only when its address
-names the event by its title or is a Facebook or Eventbrite event page. A search, map, SerpApi address or a page that does not name the event leaves the url empty; a link never
-makes an event verified.
+names the event by its title or is a Facebook or Eventbrite event page. A search, map, SerpApi address or a page that does not name the event is never used.
+When Google lists no such page, the producer asks the shared EventLinkFinder (event_links.py) once for the event's title, date, venue and town: what
+it returns meets the same rule, and is recorded in the evidence as found by search. Without a finder, or when it finds nothing, the url stays empty.
+A link never makes an event verified.
 """
 import hashlib
 import json
@@ -34,12 +36,13 @@ import re
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import unquote, urlencode, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from ..event_links import event_page, names_event
 from ..producer import EventCandidate, ProducerResult, Provenance, stated
 from ..safe import FetchError
 
@@ -408,41 +411,24 @@ def _web(value):
     return value if parts and parts.scheme in ("http", "https") and parts.hostname else None
 
 
-# Addresses that are never one event's own page: searches, maps and the provider's own API (serpapi_event_details_link is a keyed details search)
-_NOT_EVENT_PAGES = re.compile(r"(?:^|\.)(?:serpapi\.com|google(?:\.[a-z]{2,3}){1,2}|goo\.gl|bing\.com|duckduckgo\.com|maps\.apple\.com)$")
-_WORD = re.compile(r"[a-z0-9]+")
-_COMMON = frozenset(("the", "and", "for", "with", "from", "presents", "featuring", "event", "events"))
+# What may be one event's own page, and whether its title names the event: the shared rules (event_links), which a link found by search meets too
+_page = event_page
 # Event pages by the platform's own address structure: a Facebook event (/events/.../<id>) and an Eventbrite event (/e/<slug>-<id>)
 _PLATFORM_EVENT = ((re.compile(r"(?:^|\.)facebook\.com$"), re.compile(r"^/events/(?:[^/]+/)*\d{6,}/?$")),
                    (re.compile(r"(?:^|\.)eventbrite\.[a-z.]+$"), re.compile(r"^/e/(?:[^/]*-)?\d{6,}/?$")))
 
 
-def _page(value):
-    """A web address that could be one event's page: http(s) with a host and a path, no credentials or spaces, not a search, map or SerpApi address."""
-    if not isinstance(value, str) or len(value) > 2000 or re.search(r"\s", value):
-        return None
-    try:
-        parts = urlsplit(value)
-        host = (parts.hostname or "").lower()
-        credentials = parts.username or parts.password
-    except ValueError:
-        return None
-    if parts.scheme not in ("http", "https") or not host or credentials or _NOT_EVENT_PAGES.search(host) or parts.path.strip("/") == "":
-        return None
-    return value
-
-
 def _names_event(url, title, place):
-    """Does the address name this event? A known platform's event-page structure, or at least two of the title's distinctive words (one, for a title with only
-    one) in its path, not counting words of the venue, address or search location (a venue's own page names the venue, not the event)."""
+    """Does the address name this event? A known platform's event-page structure, or the title's distinctive words in its path (names_event)."""
     parts = urlsplit(url)
     host, path = parts.hostname.lower(), unquote(parts.path)
-    if any(hosts.search(host) and paths.match(path) for hosts, paths in _PLATFORM_EVENT):
-        return True
-    distinctive = {w for w in _WORD.findall(title.lower()) if len(w) >= 3 and w not in _COMMON and not w.isdigit()} - set(_WORD.findall(place.lower()))
-    words = _WORD.findall(path.lower())
-    found = sum(1 for w in distinctive if any(p == w or (len(w) >= 4 and p.startswith(w)) for p in words))
-    return bool(distinctive) and found >= min(2, len(distinctive))
+    return any(hosts.search(host) and paths.match(path) for hosts, paths in _PLATFORM_EVENT) or names_event(url, title, place)
+
+
+def _city(result, options):
+    """The event's town as the result's last address line gives it ('San Diego, CA'), else the search location's first part."""
+    lines = [line for line in (result.get("address") or []) if isinstance(line, str) and line.strip()] if isinstance(result.get("address"), list) else []
+    return (lines[-1] if len(lines) > 1 else options.get("location") or "").split(",")[0].strip()
 
 
 def _event_url(result, title, place):
@@ -472,8 +458,8 @@ class SerpApiGoogleEventsProducer:
          "max": MAX_LOOKAHEAD_DAYS},
     )
 
-    def __init__(self, account=None, clock=time.time):
-        self.account, self.clock = account, clock
+    def __init__(self, account=None, clock=time.time, links=None):
+        self.account, self.clock, self.links = account, clock, links   # links: an EventLinkFinder, asked only for an event Google gives no page for
 
     @staticmethod
     def validate_options(options):
@@ -563,13 +549,29 @@ class SerpApiGoogleEventsProducer:
                 if candidate.local_id in seen:
                     continue
                 seen.add(candidate.local_id)
+                if candidate.url is None and self.links is not None:
+                    place = " ".join(filter(None, (candidate.venue, candidate.address, options.get("location"))))
+                    candidate = self._linked(candidate, _city(result, options), place, notes)
                 candidates.append(candidate)
             if len(results) < RESULTS_PER_PAGE or not (payload.get("serpapi_pagination") or {}).get("next"):
                 break
         notes["candidates"] = len(candidates)
+        if "links_looked_up" in notes:
+            notes["link_search"] = self.links.status
         for number, (reason, count) in enumerate(sorted(reasons.items(), key=lambda item: -item[1])[:8]):
             notes[f"set_aside_{number}"] = f"{count}: {reason}"
         return ProducerResult(tuple(candidates), (), notes)
+
+    def _linked(self, candidate, city, place, notes):
+        """The candidate with the event page the shared finder returns, if it meets this producer's own link rule; everything else, its identity
+        included, as it was."""
+        notes["links_looked_up"] = notes.get("links_looked_up", 0) + 1
+        url = _page(self.links.find_event_url(candidate.title, candidate.starts_at, candidate.venue, city))
+        if not url or not _names_event(url, candidate.title, place):
+            return candidate
+        notes["links_found"] = notes.get("links_found", 0) + 1
+        evidence = candidate.verification.evidence + ("Event page found by a web search for the title, date and place; Google listed none",)
+        return replace(candidate, url=url, verification=replace(candidate.verification, evidence=evidence))
 
     @staticmethod
     def _candidate(result, options, zone, today, listing_url, retrieved_at):

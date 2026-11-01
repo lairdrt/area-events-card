@@ -18,6 +18,7 @@ import types
 from dataclasses import dataclass
 
 from .enrichment.media import MediaService
+from .discovery.event_links import EventLinkFinder
 from .discovery.safe import HostPolicy, SafeFetcher
 from .api.http_api import ApiTokens, DiscoveryApi, DiscoveryApiServer
 from .contracts.models import ProcessingConfig, SourceSpec
@@ -105,9 +106,10 @@ class DiscoveryApp:
 def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None, worker_id="worker-1", request_interval=2.0, store_options=None,
           host_config=HostConfig(), scheduler_config=SchedulerConfig(), service_gate=True,
           extraction_config=ExtractionConfig(), processing_config=ProcessingConfig(), enrichment_config=EnrichmentConfig(), media_dir=None, nominatim_interval=15.0,
-          deduplication=DEFAULT_DEDUPLICATION, serpapi_api_key=None):
+          deduplication=DEFAULT_DEDUPLICATION, serpapi_api_key=None, event_links=None):
     """The connected Discovery Service objects for one database. `serpapi_api_key` is the SerpApi key (default: the SERPAPI_API_KEY
-    environment variable of the host process); it is held in memory by the one SerpApiAccount and never stored. `fetch_client` replaces the network client (tests); otherwise a
+    environment variable of the host process); it is held in memory by the one SerpApiAccount and never stored. `event_links` is the shared
+    EventLinkFinder (default: one that keeps its cache in this database, reads its own key and searches nothing without one). `fetch_client` replaces the network client (tests); otherwise a
     SafeFetcher is made with the given (or a new) HostPolicy, which every fetcher of this service shares. With the default `config` the
     service crawls only sources that an enabled area uses and honours the operator's pause; pass a DiscoveryConfig (require_area False)
     and service_gate=False for the earlier, area-less behaviour. `deduplication` is the name of a strategy in DEDUPLICATORS, or an object
@@ -123,9 +125,10 @@ def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None,
     # one account for every SerpApi source: its usage policy is read from the shared settings each time a search is considered
     serpapi = SerpApiAccount(client, serpapi_api_key if serpapi_api_key is not None else os.environ.get("SERPAPI_API_KEY"),
                              lambda: control.get_status().settings, clock)
+    links = event_links or EventLinkFinder(persistence.event_links, clock=clock)
     adapters = {"sandiego_gov": CityOfSanDiegoProducer(), "localist": LocalistProducer(),
                 "sources_producer": SourcesProducer(image_extractor=default_image_extractor()),
-                "serpapi_google_events": SerpApiGoogleEventsProducer(serpapi, clock)}
+                "serpapi_google_events": SerpApiGoogleEventsProducer(serpapi, clock, links)}
     service = DiscoveryService(persistence.crawl, client, adapters, clock, config, worker_id,
                                pacing=pacing if service_gate else None, gate=scheduler if service_gate else None)
     host = DiscoveryHost(service, scheduler, clock, host_config)

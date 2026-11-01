@@ -10,11 +10,12 @@ from dataclasses import dataclass
 from .areas import AreaRepository, SettingsRepository
 from .control import SqliteControlStorage
 from .crawl import SqliteCrawlStorage
+from .event_links import SqliteEventLinkCache
 from .events import DuplicateMaintenance, EventRepository, SqliteEventQueries
 from .reviewed import ReviewedReconciliation
 from .naming import DisplayNames
 from .media import LocalMediaFiles, LocalMediaWork, MediaRepository, SqliteMediaStore
-from .ports import MediaCache
+from .ports import EventLinkCache, MediaCache
 from .processing import ProcessingRepository, SqliteProcessingStorage
 from .reading import LocalDiscoveryReader
 from .repositories import CandidateRepository, ChangeLog, JobRepository, PageRepository, Retention, SourceCleanup, SourceRepository
@@ -45,6 +46,7 @@ class Persistence:
     media_cache: MediaCache
     media_work: object
     media_files: object
+    event_links: EventLinkCache
     source_cleanup: object
     display_names: object
     trashcan: object
@@ -76,6 +78,7 @@ def open_persistence(db_path, deduplicator, clock=time.time, store_options=None,
         media_cache=media_store,
         media_work=LocalMediaWork(store, media_repository, clock),
         media_files=LocalMediaFiles(media_store),
+        event_links=SqliteEventLinkCache(store),
         source_cleanup=SourceCleanup(store, clock, reserved_source_keys),
         display_names=DisplayNames(store, changes, clock),
         trashcan=trashcan,
