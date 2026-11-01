@@ -222,6 +222,24 @@ class EventLinks(unittest.TestCase):
         both = result("Holiday Market", self.WHEN, ticket_info=[{"source": "Facebook", "link_type": "tickets", "link": FACEBOOK}])
         self.assertEqual(scan(both)["Holiday Market"].url, "https://example.org/holiday-market")
 
+    def test_a_top_level_link_must_name_the_event_like_any_other(self):
+        top = lambda link, tickets=(): scan(result("Holiday Market", self.WHEN, link=link,
+                                                   ticket_info=[{"source": s, "link_type": k, "link": u} for s, k, u in tickets]))["Holiday Market"].url
+        self.assertEqual(top("https://www.balboapark.org/events/holiday-market-2026"), "https://www.balboapark.org/events/holiday-market-2026")
+        self.assertEqual(top(FACEBOOK), FACEBOOK, "a Facebook event page")
+        for generic in ("https://www.balboapark.org/balboa-park", "https://www.balboapark.org/visit", "https://www.balboapark.org/events",
+                        "https://www.balboapark.org/events/jazz-night", "https://www.facebook.com/BalboaParkSD/"):
+            with self.subTest(link=generic):
+                self.assertIsNone(top(generic), "a venue page, a listing or another event's page")
+                self.assertIsNone(top(generic, [("Venue", "tickets", "https://www.balboapark.org/private-events")]), "nothing suitable anywhere")
+                self.assertEqual(top(generic, [("Eventbrite", "tickets", EVENTBRITE), ("Venue", "more info", ORGANIZER)]), ORGANIZER,
+                                 "a refused top-level link does not stop ticket_info: information before tickets")
+                self.assertEqual(top(generic, [("Eventbrite", "tickets", EVENTBRITE), ("Facebook", "tickets", FACEBOOK)]), EVENTBRITE, "Google's order")
+        self.assertEqual(top("javascript:alert('holiday-market')", [("Facebook", "tickets", FACEBOOK)]), FACEBOOK, "an invalid top-level link falls back")
+        self.assertEqual(top("https://www.google.com/search?q=holiday+market", [("Facebook", "tickets", FACEBOOK)]), FACEBOOK)
+        self.assertEqual(top("https://www.balboapark.org/events/holiday-market-2026", [("Facebook", "more info", FACEBOOK)]),
+                         "https://www.balboapark.org/events/holiday-market-2026", "an event-specific top-level link comes first")
+
     def test_without_a_top_level_link_a_ticket_link_that_is_the_event_page_is_used(self):
         self.assertEqual(self.url(tickets=[("facebook.com", "tickets", FACEBOOK)]), FACEBOOK, "a Facebook event page")
         self.assertEqual(self.url(tickets=[("Eventbrite", "tickets", EVENTBRITE)]), EVENTBRITE, "an Eventbrite event page, address as given")

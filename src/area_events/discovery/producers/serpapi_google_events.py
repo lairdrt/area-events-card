@@ -24,8 +24,8 @@ must agree, and every start must lie within the source's rolling look-ahead wind
 names one year ("events in San Diego November 2026") accepts only events in that year. A result without a stated start time is set aside, and no time or end
 is ever invented. Aggregated results are never treated as verified.
 
-An event's url is its own page as Google lists it: the result's `link`, else a `ticket_info` link (information before tickets) whose address names the event by
-its title or is a Facebook or Eventbrite event page. A search, map, SerpApi address or a page that does not name the event leaves the url empty; a link never
+An event's url is its own page as Google lists it: the result's `link`, else a `ticket_info` link (information before tickets), each only when its address
+names the event by its title or is a Facebook or Eventbrite event page. A search, map, SerpApi address or a page that does not name the event leaves the url empty; a link never
 makes an event verified.
 """
 import hashlib
@@ -446,14 +446,13 @@ def _names_event(url, title, place):
 
 
 def _event_url(result, title, place):
-    """The event's own page, or None: Google's top-level `link`; else a ticket_info link that names the event, an information link ("more info") before a
-    ticket seller's. Nothing is made up, searched for or taken from the venue, the map or SerpApi's details search."""
-    top = _page(result.get("link"))
-    if top:
-        return top
+    """The event's own page, or None: Google's top-level `link`, else a ticket_info link, an information link ("more info") before a ticket seller's; each
+    only when it names the event (a refused top-level link still lets ticket_info be read). Nothing is made up, searched for or taken from the venue, the
+    map or SerpApi's details search."""
     entries = [entry for entry in (result.get("ticket_info") or []) if isinstance(entry, dict)] if isinstance(result.get("ticket_info"), list) else []
-    for entry in sorted(entries, key=lambda entry: str(entry.get("link_type") or "").strip().lower() == "tickets"):   # stable: Google's order within each kind
-        url = _page(entry.get("link"))
+    ranked = sorted(entries, key=lambda entry: str(entry.get("link_type") or "").strip().lower() == "tickets")   # stable: Google's order within each kind
+    for link in [result.get("link")] + [entry.get("link") for entry in ranked]:
+        url = _page(link)
         if url and _names_event(url, title, place):
             return url
     return None
