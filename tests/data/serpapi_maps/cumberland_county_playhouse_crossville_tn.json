@@ -1,0 +1,31 @@
+{
+  "_recorded": "SerpApi engine=google_maps type=search, live 2026-11-01; minimized to the fields the resolver reads (no key, no account data)",
+  "search_parameters": {
+    "engine": "google_maps",
+    "type": "search",
+    "q": "Cumberland County Playhouse, Crossville, TN",
+    "google_domain": "google.com",
+    "hl": "en"
+  },
+  "search_information": {
+    "local_results_state": "Showing results for type: \"place\" instead of type: \"search\"",
+    "query_displayed": "Cumberland County Playhouse, Crossville, TN"
+  },
+  "place_results": {
+    "title": "Cumberland County Playhouse",
+    "place_id": "ChIJrff3JlBQZ4gRbEDiCpGhRVM",
+    "gps_coordinates": {
+      "latitude": 35.9547117,
+      "longitude": -85.0739219
+    },
+    "address": "221 Tennessee Ave, Crossville, TN 38555",
+    "type": [
+      "Performing arts theater",
+      "Auditorium",
+      "Children's theater",
+      "Live music venue",
+      "Theater company",
+      "Theater production"
+    ]
+  }
+}

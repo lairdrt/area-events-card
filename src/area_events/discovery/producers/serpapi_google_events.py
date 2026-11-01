@@ -30,6 +30,14 @@ When Google lists no such page, the producer asks the shared EventLinkFinder (ev
 it returns (a page the finder confirmed by reading it) meets the same rule, and is recorded in the evidence as found by search. When Google gave no
 street address, the venue's street address that page states is used, recorded with where on the page it was read. Without a finder, or when it finds
 nothing, the url stays empty and the address as Google gave it. A link never makes an event verified.
+
+When an event still has no street address (Google often gives only 'Red Silo Brewing, Cookeville, TN'), the producer asks the shared venue resolver
+(venues.py) for the venue in the event's town and state, through one scan view (a bounded number of new Maps searches per scan): a match's street address,
+as the provider reports it, becomes the event's, recorded in the evidence as from Google Maps. A street address the event already has is kept and no
+lookup is made. The event's identity, times, url and verification status never change. A definitive no_match or ambiguity withholds an event this source
+has not submitted before (set aside with its reason); an event it already has stays as it was, so withholding never removes an existing event from the
+feed. 'unavailable' (no key, a budget, the account or the provider) is never taken as a no_match: the event is kept as it is, and when an earlier scan
+gave it a Google Maps address for the same venue, that address is kept.
 """
 import hashlib
 import json
@@ -439,6 +447,22 @@ def _town_line(result):
     return lines[-1].strip() if len(lines) > 1 else None
 
 
+def _town_and_state(result, options):
+    """(town, state) of the event: the result's town line ('Cookeville, TN'), else the search location ('Cookeville, Tennessee, United States')."""
+    line = [p.strip() for p in (_town_line(result) or "").split(",") if p.strip()]
+    if len(line) >= 2:
+        return line[0], line[1]
+    location = [p.strip() for p in (options.get("location") or "").split(",") if p.strip()]
+    return (line[0] if line else location[0] if location else ""), (location[1] if len(location) > 1 else "")
+
+
+def _addressed(candidate, address, line):
+    """The candidate with a street address it lacked and the evidence line that says where it came from; 'address' is no longer missing."""
+    verification = replace(candidate.verification, evidence=candidate.verification.evidence + (line,),
+                           missing=tuple(name for name in candidate.verification.missing if name != "address"))
+    return replace(candidate, address=address, verification=verification)
+
+
 def _event_url(result, title, place):
     """The event's own page, or None: Google's top-level `link`, else a ticket_info link, an information link ("more info") before a ticket seller's; each
     only when it names the event (a refused top-level link still lets ticket_info be read). Nothing is made up, searched for or taken from the venue, the
@@ -466,8 +490,9 @@ class SerpApiGoogleEventsProducer:
          "max": MAX_LOOKAHEAD_DAYS},
     )
 
-    def __init__(self, account=None, clock=time.time, links=None):
+    def __init__(self, account=None, clock=time.time, links=None, venues=None):
         self.account, self.clock, self.links = account, clock, links   # links: an EventLinkFinder, asked only for an event Google gives no page for
+        self.venues = venues   # a VenueResolver, asked only for an event without a street address
 
     @staticmethod
     def validate_options(options):
@@ -519,6 +544,8 @@ class SerpApiGoogleEventsProducer:
         retrieved_at, today = now.isoformat(timespec="seconds"), now.astimezone(zone).date()
         notes = {"searches": 0, "results": 0, "candidates": 0, "set_aside": 0, "pages": 0}
         reasons, candidates, seen = {}, [], set()
+        places = self.venues.for_scan() if self.venues is not None else None
+        submitted = {record.local_id: record for record in previous or ()}
         for page in range(int(options.get("max_pages", 1))):
             url = self.search_url(options, page)
             try:
@@ -560,12 +587,22 @@ class SerpApiGoogleEventsProducer:
                 if candidate.url is None and self.links is not None:
                     place = " ".join(filter(None, (candidate.venue, candidate.address, options.get("location"))))
                     candidate = self._linked(candidate, _city(result, options), _town_line(result), place, notes)
+                if places is not None:
+                    placed = self._placed(candidate, *_town_and_state(result, options), places, submitted.get(candidate.local_id), notes)
+                    if placed is None:
+                        notes["set_aside"] += 1
+                        reason = "a new event whose venue is not one Google Maps business with a street address in its town"
+                        reasons[reason] = reasons.get(reason, 0) + 1
+                        continue
+                    candidate = placed
                 candidates.append(candidate)
             if len(results) < RESULTS_PER_PAGE or not (payload.get("serpapi_pagination") or {}).get("next"):
                 break
         notes["candidates"] = len(candidates)
         if "links_looked_up" in notes:
             notes["link_search"] = self.links.status
+        if "venues_looked_up" in notes:
+            notes["venue_searches"] = places.searches
         for number, (reason, count) in enumerate(sorted(reasons.items(), key=lambda item: -item[1])[:8]):
             notes[f"set_aside_{number}"] = f"{count}: {reason}"
         return ProducerResult(tuple(candidates), (), notes)
@@ -595,6 +632,30 @@ class SerpApiGoogleEventsProducer:
                 evidence += (f"Street address {link.address} from {link.address_basis} on {url}"
                              + ("" if address == link.address else f", with Google's town line {town_line}"),)
         return replace(candidate, url=url, address=address, verification=replace(candidate.verification, evidence=evidence))
+
+    @staticmethod
+    def _placed(candidate, city, state, places, before, notes):
+        """The candidate with its venue's Google Maps street address when it has none; the candidate as it is when it has one, names no venue, or no
+        answer is available (with the address an earlier scan took from Google Maps for the same venue); None for a new candidate whose venue is
+        definitively not one business with a street address in its town. Its identity, times, url and verification status never change."""
+        if STREET_LINE.search(candidate.address or "") or not candidate.venue:
+            return candidate
+        notes["venues_looked_up"] = notes.get("venues_looked_up", 0) + 1
+        found = places.resolve_venue(candidate.venue, city, state)
+        if found.matched:
+            notes["venue_addresses"] = notes.get("venue_addresses", 0) + 1
+            return _addressed(candidate, found.address, f"Street address {found.address} from Google Maps: {found.evidence}")
+        if found.status == "unavailable":
+            notes["venues_unavailable"] = notes.get("venues_unavailable", 0) + 1
+            earlier = next((line for line in (before.verification.evidence if before else ()) if line.startswith("Street address ") and " from Google Maps: " in line),
+                           None)
+            if earlier and before.venue == candidate.venue and STREET_LINE.search(before.address or ""):
+                return _addressed(candidate, before.address, earlier)
+            return candidate
+        if before is not None:   # an event this source already has stays as it is: withholding it would not remove it from the feed
+            notes["venues_unmatched_kept"] = notes.get("venues_unmatched_kept", 0) + 1
+            return candidate
+        return None
 
     @staticmethod
     def _candidate(result, options, zone, today, listing_url, retrieved_at):

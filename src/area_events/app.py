@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from .enrichment.media import MediaService
 from .discovery.event_links import EventLinkFinder
 from .discovery.safe import HostPolicy, SafeFetcher
+from .discovery.venues import VenueResolver
 from .api.http_api import ApiTokens, DiscoveryApi, DiscoveryApiServer
 from .contracts.models import ProcessingConfig, SourceSpec
 from .control.service import LocalDiscoveryControl
@@ -91,6 +92,7 @@ class DiscoveryApp:
     media_files: object
     media_work: object
     serpapi: object = None    # the one SerpApi account (key held in memory only) every SerpApi source shares
+    venues: object = None     # the one VenueResolver (Google Maps through that account) any producer may be given
 
     def register_known_sources(self):
         """Register every built-in source (idempotent). A source that no enabled area uses is registered but idle."""
@@ -106,11 +108,12 @@ class DiscoveryApp:
 def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None, worker_id="worker-1", request_interval=2.0, store_options=None,
           host_config=HostConfig(), scheduler_config=SchedulerConfig(), service_gate=True,
           extraction_config=ExtractionConfig(), processing_config=ProcessingConfig(), enrichment_config=EnrichmentConfig(), media_dir=None, nominatim_interval=15.0,
-          deduplication=DEFAULT_DEDUPLICATION, serpapi_api_key=None, event_links=None):
+          deduplication=DEFAULT_DEDUPLICATION, serpapi_api_key=None, event_links=None, venues=None):
     """The connected Discovery Service objects for one database. `serpapi_api_key` is the SerpApi key (default: the SERPAPI_API_KEY
     environment variable of the host process); it is held in memory by the one SerpApiAccount and never stored. `event_links` is the shared
     EventLinkFinder (default: one that keeps its cache in this database, reads its own key, searches nothing without one and reads the pages it
-    proposes through the service's fetch client). `fetch_client` replaces the network client (tests); otherwise a
+    proposes through the service's fetch client). `venues` is the shared VenueResolver (default: one that searches Google Maps through the one
+    SerpApiAccount, keeps its cache and Maps budget in this database and reads through the service's fetch client). `fetch_client` replaces the network client (tests); otherwise a
     SafeFetcher is made with the given (or a new) HostPolicy, which every fetcher of this service shares. With the default `config` the
     service crawls only sources that an enabled area uses and honours the operator's pause; pass a DiscoveryConfig (require_area False)
     and service_gate=False for the earlier, area-less behaviour. `deduplication` is the name of a strategy in DEDUPLICATORS, or an object
@@ -127,9 +130,10 @@ def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None,
     serpapi = SerpApiAccount(client, serpapi_api_key if serpapi_api_key is not None else os.environ.get("SERPAPI_API_KEY"),
                              lambda: control.get_status().settings, clock)
     links = event_links or EventLinkFinder(persistence.event_links, clock=clock, fetch=client)   # pages are read through the service's one safe client
+    places = venues or VenueResolver(serpapi, persistence.venues, clock=clock, fetch=client)     # Maps searches share that account's permit and allowance
     adapters = {"sandiego_gov": CityOfSanDiegoProducer(), "localist": LocalistProducer(),
                 "sources_producer": SourcesProducer(image_extractor=default_image_extractor()),
-                "serpapi_google_events": SerpApiGoogleEventsProducer(serpapi, clock, links)}
+                "serpapi_google_events": SerpApiGoogleEventsProducer(serpapi, clock, links, places)}
     service = DiscoveryService(persistence.crawl, client, adapters, clock, config, worker_id,
                                pacing=pacing if service_gate else None, gate=scheduler if service_gate else None)
     host = DiscoveryHost(service, scheduler, clock, host_config)
@@ -148,7 +152,7 @@ def build(db_path, clock=time.time, fetch_client=None, policy=None, config=None,
     enrichment = MediaEnrichmentService(persistence.media_work, resolver, SourcePhotos(client, persistence.media_cache, persistence.media_work, clock, enrichment_config), clock,
                                         enrichment_config)
     return DiscoveryApp(persistence, policy, service, persistence.reader, control, scheduler, host, processing, events, extraction, enrichment, persistence.media_files,
-                        persistence.media_work, serpapi)
+                        persistence.media_work, serpapi, places)
 
 
 def build_api(app, tokens, clock=time.time, host="127.0.0.1", port=8780, allow_remote=False, tls=None, allow_plain=False):

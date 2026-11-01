@@ -59,6 +59,7 @@ ALLOWED = {
     "discovery.producers.sources_producer": {"discovery.producer", "discovery.safe", "discovery.urls", "discovery.webpage"},
     "discovery.safe": set(), "discovery.scheduler": {PORTS}, "discovery.service": {"contracts.evidence", "discovery.safe", "discovery.producer", "contracts.models", "discovery.fetching", PORTS}, "discovery.urls": set(),
     "discovery.event_links": {"discovery.safe", "discovery.urls", "discovery.webpage"},   # the shared event-page finder: producer support, reaching the database only through the port it is given
+    "discovery.venues": {"discovery.webpage"},   # the shared venue resolver: producer support, given the SerpApi account and fetch client, reaching the database only through its port
     "discovery.webpage": set(),   # reading a fetched page (JSON-LD events, visible text, street addresses), shared by producers and the event-page finder
     "enrichment": set(), "enrichment.images": set(), "enrichment.maps": set(), "enrichment.media": {"enrichment.maps", "geolocation.textloc", "discovery.safe"},
     "enrichment.service": {"classification.classifiers", "enrichment.images", "discovery.safe", "enrichment.media", "contracts.models", PORTS, "extraction.text"},
@@ -66,10 +67,10 @@ ALLOWED = {
     "geolocation": set(), "geolocation.location": {"discovery.safe"}, "geolocation.place": {"geolocation.location"}, "geolocation.textloc": set(),
     PERSISTENCE: set(), PORTS: set(), f"{PERSISTENCE}.areas": {"contracts.models"}, f"{PERSISTENCE}.control": {"contracts.models", f"{PERSISTENCE}.naming"}, f"{PERSISTENCE}.naming": {"discovery.producer"}, f"{PERSISTENCE}.reviewed": {f"{PERSISTENCE}.events"},
     f"{PERSISTENCE}.crawl": {"contracts.models", PORTS, f"{PERSISTENCE}.repositories", "discovery.urls"},
-    f"{PERSISTENCE}.events": {"contracts.models", DEDUPLICATION, "api.events"}, f"{PERSISTENCE}.media": {"contracts.models"}, f"{PERSISTENCE}.event_links": set(),
+    f"{PERSISTENCE}.events": {"contracts.models", DEDUPLICATION, "api.events"}, f"{PERSISTENCE}.media": {"contracts.models"}, f"{PERSISTENCE}.event_links": set(), f"{PERSISTENCE}.venues": set(),
     f"{PERSISTENCE}.processing": {"contracts.evidence", "contracts.models", f"{PERSISTENCE}.events"}, f"{PERSISTENCE}.reading": {"contracts.models"},
     f"{PERSISTENCE}.repositories": {"contracts.models", "discovery.producer", "discovery.urls"}, f"{PERSISTENCE}.scheduling": {"contracts.models"}, f"{PERSISTENCE}.schema": set(),
-    f"{PERSISTENCE}.store": {"contracts.models", f"{PERSISTENCE}.schema"}, BUILD: {f"{PERSISTENCE}.{n}" for n in ("areas", "control", "crawl", "event_links", "events", "media", "naming", "processing", "reading", "repositories", "reviewed", "scheduling", "store", "trashcan")} | {PORTS},
+    f"{PERSISTENCE}.store": {"contracts.models", f"{PERSISTENCE}.schema"}, BUILD: {f"{PERSISTENCE}.{n}" for n in ("areas", "control", "crawl", "event_links", "events", "media", "naming", "processing", "reading", "repositories", "reviewed", "scheduling", "store", "trashcan", "venues")} | {PORTS},
     f"{PERSISTENCE}.trashcan": {"contracts.models", "discovery.urls", "trashcan"},
     "validation": set(), "validation.processing": {"contracts.models", PORTS},
 }

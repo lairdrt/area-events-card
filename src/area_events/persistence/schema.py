@@ -448,6 +448,27 @@ CREATE TABLE event_link_usage (
   requests      INTEGER NOT NULL CHECK (requests >= 0)
 );
 """),
+    (12, "the shared venue resolver's cache: each venue's Google Maps answer and its searches per UTC month", """
+CREATE TABLE venue_lookups (
+  lookup_key    TEXT PRIMARY KEY CHECK (length(lookup_key) = 64),   -- sha-256 of the normalized venue, town and state
+  query         TEXT NOT NULL,              -- that normalized venue, town and state, as searched
+  status        TEXT NOT NULL CHECK (status IN ('matched', 'no_match', 'ambiguous')),   -- a provider failure is never stored
+  name          TEXT,                       -- the business as the provider names it (matched only)
+  address       TEXT,                       -- its street address as the provider gives it (matched only)
+  latitude      REAL,
+  longitude     REAL,
+  place_id      TEXT,
+  evidence      TEXT NOT NULL,              -- why the answer is what it is, in a sentence
+  checked_at    INTEGER NOT NULL,
+  CHECK ((status = 'matched') = (address IS NOT NULL AND name IS NOT NULL))
+);
+CREATE INDEX venue_lookups_checked ON venue_lookups(checked_at);
+
+CREATE TABLE venue_usage (
+  period        TEXT PRIMARY KEY,           -- a UTC month (YYYY-MM)
+  requests      INTEGER NOT NULL CHECK (requests >= 0)
+);
+"""),
 )
 
 LATEST = MIGRATIONS[-1][0]

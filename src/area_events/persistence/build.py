@@ -15,13 +15,14 @@ from .events import DuplicateMaintenance, EventRepository, SqliteEventQueries
 from .reviewed import ReviewedReconciliation
 from .naming import DisplayNames
 from .media import LocalMediaFiles, LocalMediaWork, MediaRepository, SqliteMediaStore
-from .ports import EventLinkCache, MediaCache
+from .ports import EventLinkCache, MediaCache, VenueCache
 from .processing import ProcessingRepository, SqliteProcessingStorage
 from .reading import LocalDiscoveryReader
 from .repositories import CandidateRepository, ChangeLog, JobRepository, PageRepository, Retention, SourceCleanup, SourceRepository
 from .scheduling import SqliteSchedulingStorage
 from .store import DiscoveryStore, SCHEMA_VERSION
 from .trashcan import SqliteTrashcan
+from .venues import SqliteVenueCache
 
 
 def open_duplicate_maintenance(db_path, matcher, clock=time.time):
@@ -47,6 +48,7 @@ class Persistence:
     media_work: object
     media_files: object
     event_links: EventLinkCache
+    venues: VenueCache
     source_cleanup: object
     display_names: object
     trashcan: object
@@ -79,6 +81,7 @@ def open_persistence(db_path, deduplicator, clock=time.time, store_options=None,
         media_work=LocalMediaWork(store, media_repository, clock),
         media_files=LocalMediaFiles(media_store),
         event_links=SqliteEventLinkCache(store),
+        venues=SqliteVenueCache(store),
         source_cleanup=SourceCleanup(store, clock, reserved_source_keys),
         display_names=DisplayNames(store, changes, clock),
         trashcan=trashcan,

@@ -60,13 +60,16 @@ def resolver(host, port, type=None):
 
 
 class FakeSerpApi:
-    """serpapi.com: robots.txt (none), the Account API (which reports the key back, as the real one does) and the search, which costs one search."""
+    """serpapi.com: robots.txt (none), the Account API (which reports the key back, as the real one does) and the search, which costs one search.
+    `searches` counts Google Events searches and `maps_searches` Google Maps searches (engine=google_maps); both use the one allowance. Unless `maps`
+    answers them, a Maps search gets a provider error, so the shared venue resolver has no answer and every event stays as Google gave it."""
 
-    def __init__(self, used=10, spm=250, left=None, price=0, renewal="2026-11-20", status="Active", lag=False, pages=None, account=None, search=None, robots=None):
+    def __init__(self, used=10, spm=250, left=None, price=0, renewal="2026-11-20", status="Active", lag=False, pages=None, account=None, search=None, robots=None,
+                 maps=None):
         self.used, self.spm, self.left, self.price, self.renewal, self.status, self.lag = used, spm, left, price, renewal, status, lag
         self.robots = robots
-        self.pages, self.account, self.search = pages or [page(VALID + UNUSABLE)], account, search
-        self.searches, self.reads, self.targets, self.lock = 0, 0, [], threading.Lock()
+        self.pages, self.account, self.search, self.maps = pages or [page(VALID + UNUSABLE)], account, search, maps
+        self.searches, self.maps_searches, self.reads, self.targets, self.lock = 0, 0, 0, [], threading.Lock()
 
     def __call__(self, scheme, host, port, ip, target, headers, timeout, limit):
         with self.lock:
@@ -84,6 +87,14 @@ class FakeSerpApi:
                         "plan_searches_left": self.spm - self.used if self.left is None else self.left, "extra_credits": 0,
                         "this_month_usage": self.used, "plan_renewal_date": self.renewal}
                 return 200, dict(JSON), json.dumps(body).encode()
+            if path == "/search" and params.get("engine") == "google_maps":
+                assert params.get("api_key") == KEY, "the key reaches the request line"
+                self.maps_searches += 1
+                if not self.lag:
+                    self.used += 1
+                if callable(self.maps):
+                    return self.maps(params)
+                return 200, dict(JSON), json.dumps({"error": "this fake gives no Google Maps answer"}).encode()
             if path == "/search":
                 assert params.get("api_key") == KEY, "the key reaches the request line"
                 self.searches += 1

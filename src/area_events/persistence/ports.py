@@ -12,6 +12,7 @@ Persistence never imports the modules that use it; they never import its impleme
     DiscoveryReader    the read contract over the discovery data (changes, snapshot, candidates, pages, status): defined in contracts.py
     MediaWork          what media enrichment takes from, and returns to, the database
     EventLinkCache     what the shared event-page finder remembers: each lookup's answer and its request counts
+    VenueCache         what the shared venue resolver remembers: each venue's Google Maps answer and its monthly search counts
 """
 from dataclasses import dataclass
 from typing import Optional, Protocol
@@ -235,3 +236,19 @@ class EventLinkCache(Protocol):
     def use_up(self, period: str, requests: int) -> None: ...
 
     def forget_before(self, day: str) -> None: ...
+
+
+class VenueCache(Protocol):
+    """What the shared venue resolver keeps: each venue's answer (matched, no_match or ambiguous; a provider failure is never kept) and the Google Maps
+    searches counted per UTC month."""
+
+    def recall(self, key: str): ...   # (status, name, address, latitude, longitude, place_id, evidence, checked_at) or None
+
+    def remember(self, key: str, query: str, status: str, name: Optional[str], address: Optional[str], latitude: Optional[float], longitude: Optional[float],
+                 place_id: Optional[str], evidence: str, checked_at: int) -> None: ...
+
+    def requests(self, periods) -> dict: ...
+
+    def reserve_request(self, limits) -> bool: ...   # {month: limit}: count one search, atomically, unless the month is at its limit
+
+    def forget_before(self, checked_before: int, period_before: str) -> None: ...

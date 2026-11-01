@@ -1,0 +1,26 @@
+{
+  "_recorded": "SerpApi engine=google_maps type=search, live 2026-11-01; minimized to the fields the resolver reads (no key, no account data)",
+  "search_parameters": {
+    "engine": "google_maps",
+    "type": "search",
+    "q": "Red Silo Brewing, Cookeville, TN",
+    "google_domain": "google.com",
+    "hl": "en"
+  },
+  "search_information": {
+    "local_results_state": "Showing results for type: \"place\" instead of type: \"search\"",
+    "query_displayed": "Red Silo Brewing, Cookeville, TN"
+  },
+  "place_results": {
+    "title": "Red Silo Brewing",
+    "place_id": "ChIJx9zMihAiZ4gRxyEIb929wlA",
+    "gps_coordinates": {
+      "latitude": 36.165345099999996,
+      "longitude": -85.5082642
+    },
+    "address": "118 W 1st St, Cookeville, TN 38501",
+    "type": [
+      "Brewery"
+    ]
+  }
+}
