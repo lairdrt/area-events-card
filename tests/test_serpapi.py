@@ -185,6 +185,105 @@ class ResultsBecomeStandardCandidates(unittest.TestCase):
             crawl(producer, client)
 
 
+# What the Cookeville and Crossville searches returned (stored 2026-10-31): no top-level `link`; the event's address, if any, in ticket_info as
+# {"source", "link_type", "link"}; a keyed details search in serpapi_event_details_link and a Google Maps address in event_location_map.
+DETAILS = "https://serpapi.com/search.json?engine=google_event_details&q=Holiday+Market&htichips=event_token:abc"
+MAP = "https://www.google.com/maps/place/Balboa+Park/@32.73,-117.14,15z"
+
+
+def observed(title, when, tickets=(), **extra):
+    item = result(title, when, serpapi_event_details_link=DETAILS, event_location_map={"image": "https://www.google.com/maps/vt/data=x", "link": MAP},
+                  ticket_info=[{"source": source, "link_type": kind, "link": link} for source, kind, link in tickets], **extra)
+    del item["link"]
+    return item
+
+
+FACEBOOK = "https://www.facebook.com/events/balboa-park-1549-el-prado-san-diego/holiday-market/1570269210910770/"
+EVENTBRITE = "https://www.eventbrite.com/e/2003442079190?aff=ebdiglgoogleliveevents"
+ORGANIZER = "https://www.sdmarkets.org/event-details-registration/holiday-market-2026"
+
+
+def scan(*results):
+    _, client, _, producer = setup(FakeSerpApi(pages=[page(list(results))]))
+    answer = crawl(producer, client)[0]
+    accepted = contract.accept(answer)
+    assert accepted.rejections == (), accepted.rejections
+    return {c.title: c for c in answer.candidates}
+
+
+class EventLinks(unittest.TestCase):
+    WHEN = "Sat, Nov 7, 10 AM – 4 PM"
+
+    def url(self, **kwargs):
+        return scan(observed("Holiday Market", self.WHEN, **kwargs))["Holiday Market"].url
+
+    def test_a_top_level_event_link_is_kept_before_any_ticket_link(self):
+        self.assertEqual(scan(result("Holiday Market", self.WHEN))["Holiday Market"].url, "https://example.org/holiday-market")
+        both = result("Holiday Market", self.WHEN, ticket_info=[{"source": "Facebook", "link_type": "tickets", "link": FACEBOOK}])
+        self.assertEqual(scan(both)["Holiday Market"].url, "https://example.org/holiday-market")
+
+    def test_without_a_top_level_link_a_ticket_link_that_is_the_event_page_is_used(self):
+        self.assertEqual(self.url(tickets=[("facebook.com", "tickets", FACEBOOK)]), FACEBOOK, "a Facebook event page")
+        self.assertEqual(self.url(tickets=[("Eventbrite", "tickets", EVENTBRITE)]), EVENTBRITE, "an Eventbrite event page, address as given")
+        self.assertEqual(self.url(tickets=[("sdmarkets.org", "tickets", ORGANIZER)]), ORGANIZER, "an organiser's page naming the event")
+        self.assertEqual(self.url(tickets=[("Facebook", "tickets", "https://www.facebook.com/events/1570269210910770/")]),
+                         "https://www.facebook.com/events/1570269210910770/", "a Facebook event page by its number alone")
+
+    def test_with_several_links_information_comes_before_tickets_and_google_order_otherwise(self):
+        info = "https://www.balboapark.org/events/holiday-market"
+        self.assertEqual(self.url(tickets=[("Eventbrite", "tickets", EVENTBRITE), ("balboapark.org", "more info", info)]), info)
+        self.assertEqual(self.url(tickets=[("Eventbrite", "tickets", EVENTBRITE), ("Facebook", "tickets", FACEBOOK)]), EVENTBRITE)
+        self.assertEqual(self.url(tickets=[("Venue", "more info", "https://www.balboapark.org/private-events"), ("Facebook", "tickets", FACEBOOK)]), FACEBOOK,
+                         "a page that does not name the event is passed over")
+
+    def test_no_usable_link_leaves_the_url_empty(self):
+        for tickets in ([], [("2silosbrewing.com", "tickets", "https://2silosbrewing.com/private-events")],
+                        [("instagram.com", "tickets", "https://www.instagram.com/p/Deep91GjQ8N/")],
+                        [("viagogo.com.mx", "tickets", "https://www.viagogo.com.mx/Boletos-Teatro/E-162089003")],
+                        [("Balboa Park", "more info", "https://www.balboapark.org/")],
+                        [("Balboa Park", "more info", "https://www.balboapark.org/balboa-park")],
+                        [("Facebook", "tickets", "https://www.facebook.com/BalboaParkSD/")]):
+            with self.subTest(tickets=tickets):
+                self.assertIsNone(self.url(tickets=tickets))
+        self.assertIsNone(scan({**observed("Holiday Market", self.WHEN), "ticket_info": "https://www.facebook.com/events/1/"})["Holiday Market"].url)
+        self.assertIsNone(scan({**observed("Holiday Market", self.WHEN), "ticket_info": [FACEBOOK]})["Holiday Market"].url, "an entry must be an object")
+
+    def test_malformed_or_unsafe_links_are_refused(self):
+        for link in ("javascript:alert('holiday-market')", "ftp://example.org/holiday-market", "//example.org/holiday-market", "https:///holiday-market",
+                     "https://user:secret@example.org/holiday-market", "https://example.org/holiday market", "https://[::1/holiday-market", None, 42,
+                     "https://example.org/" + "holiday-market/" * 200):
+            with self.subTest(link=link):
+                self.assertIsNone(self.url(tickets=[("Somewhere", "tickets", link)]))
+                self.assertIsNone(scan(result("Holiday Market", self.WHEN, link=link))["Holiday Market"].url)
+        self.assertEqual(scan(result("Holiday Market", self.WHEN, link="https://example.org/",
+                                     ticket_info=[{"source": "Facebook", "link_type": "tickets", "link": FACEBOOK}]))["Holiday Market"].url, FACEBOOK,
+                         "a site's front page is not the event's page")
+
+    def test_searches_maps_and_serpapi_addresses_are_never_the_event_page(self):
+        for link in (DETAILS, MAP, "https://serpapi.com/search?engine=google_events&q=Holiday+Market", "https://www.google.com/search?q=Holiday+Market+San+Diego",
+                     "https://maps.google.com/?q=Holiday+Market", "https://maps.app.goo.gl/holiday-market", "https://www.google.co.uk/search?q=holiday+market",
+                     "https://www.bing.com/events/holiday-market", "https://maps.apple.com/?q=holiday-market"):
+            with self.subTest(link=link):
+                self.assertIsNone(self.url(tickets=[("Google", "more info", link)]))
+                self.assertIsNone(scan(result("Holiday Market", self.WHEN, link=link))["Holiday Market"].url)
+        candidate = scan(observed("Holiday Market", self.WHEN))["Holiday Market"]
+        self.assertIsNone(candidate.url, "the details search and the map that every observed result carries are not used")
+        self.assertFalse(any(address in repr(candidate) for address in (DETAILS, MAP)))
+
+    def test_a_link_changes_nothing_else_about_the_candidate(self):
+        plain = scan(observed("Holiday Market", self.WHEN))["Holiday Market"]
+        linked = scan(observed("Holiday Market", self.WHEN, tickets=[("Facebook", "tickets", FACEBOOK)]))["Holiday Market"]
+        top = scan(result("Holiday Market", self.WHEN))["Holiday Market"]
+        self.assertEqual((plain.url, linked.url), (None, FACEBOOK))
+        self.assertEqual(plain.local_id, linked.local_id, "the identity does not depend on the link")
+        self.assertEqual(plain.local_id, top.local_id)
+        for field in ("title", "starts_at", "ends_at", "timezone", "venue", "address", "description", "image_url", "image_source", "categories", "provenance",
+                      "verification"):
+            self.assertEqual(getattr(plain, field), getattr(linked, field), field)
+        self.assertEqual((linked.starts_at, linked.ends_at, linked.image_url), ("2026-11-07T10:00:00-08:00", "2026-11-07T16:00:00-08:00", "https://encrypted-tbn0.gstatic.com/t.jpg"))
+        self.assertEqual((linked.verification.status, linked.verification.verified), ("unverified", False), "a link never makes an event verified")
+
+
 PT_ZONE = __import__("zoneinfo").ZoneInfo("America/Los_Angeles")
 SCAN_DAY = datetime(2026, 10, 31).date()          # the pilots' scan date, in San Diego
 # Every date Google returned in the three live searches of 2026-10-31 (San Diego, Austin, and San Diego with "November 2026" in the query)
@@ -755,6 +854,27 @@ class ThroughTheService(Fixture):
         self.assertEqual(self.count("event_candidates ec JOIN events e USING (event_id)", f"e.event_key = '{markets[0].event_key}'"), 2)
         self.assertEqual([e.title for e in self.all_events(self.built)].count("Jazz Night"), 2,
                          "different event pages are never merged (the existing deduplication rule is unchanged)")
+
+    def test_a_ticket_link_becomes_the_event_url_and_deduplication_treats_it_as_any_other_page(self):
+        self.fake.pages = [page([observed("Holiday Market", "Sat, Nov 7, 10 AM – 4 PM", tickets=[("Facebook", "tickets", FACEBOOK)]),
+                                 observed("Jazz Night", "Fri, Nov 6, 7 – 10 PM", tickets=[("Eventbrite", "tickets", EVENTBRITE)]),
+                                 observed("Late Show", "Sat, Nov 7, 10 PM – Sun, Nov 8, 2 AM", tickets=[("Venue", "tickets", "https://www.balboapark.org/")])])]
+        place = dict(venue="Balboa Park", address="Balboa Park, 1549 El Prado, San Diego, CA")
+        self.add_candidate(self.built, "sandiego_gov", "sandiego_gov:market", document("Holiday Market", url=FACEBOOK, starts_at="2026-11-07T10:00:00-08:00",
+                                                                                       ends_at="2026-11-07T16:00:00-08:00", **place))
+        self.add_candidate(self.built, "sandiego_gov", "sandiego_gov:jazz", document("Jazz Night", url="https://other.example/jazz", starts_at="2026-11-06T19:00:00-08:00",
+                                                                                     ends_at="2026-11-06T22:00:00-08:00", **place))
+        self.drain(self.built)
+        self.scan()
+        events = self.all_events(self.built)
+        markets = [e for e in events if e.title == "Holiday Market"]
+        self.assertEqual([e.source_url for e in markets], [FACEBOOK], "the same Facebook event page: one event")
+        self.assertEqual(sorted(e.source_url for e in events if e.title == "Jazz Night"), sorted([EVENTBRITE, "https://other.example/jazz"]),
+                         "different pages stay apart, as for any producer")
+        self.assertEqual([e.source_url for e in events if e.title == "Late Show"], [None], "a front page is no event page: no url")
+        [rescan] = self.scan()
+        self.assertEqual(rescan.outcome, "completed")
+        self.assertEqual({(e.event_key, e.revision) for e in self.all_events(self.built)}, {(e.event_key, e.revision) for e in events}, "a second scan changes nothing")
 
     def test_a_scan_the_account_does_not_allow_is_released_without_touching_anything_or_the_enabled_flag(self):
         self.scan()

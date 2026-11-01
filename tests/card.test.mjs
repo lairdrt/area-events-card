@@ -143,6 +143,41 @@ test("events render upcoming events with honest verification labels and source l
   assert.ok(byClass(root, "source").every((a) => a.href.startsWith("https://www.kpbs.org/")));
 });
 
+test("the source label opens the event's page when there is one and is the same label as plain text when there is not", async () => {
+  const events = [
+    event("Linked", 1, { url: "https://www.facebook.com/events/abode-coffee/silent-book-club/1660217212106769/", source: { name: "Google Cookeville", key: "serp_cookeville" } }),
+    event("Unlinked", 1, { url: null, source: { name: "Google Cookeville", key: "serp_cookeville" } }),
+    ...["javascript:alert(1)", "https://", "ftp://example.org/x", "https://exa mple.org/x", "/events/x", 42].map((url, i) =>
+      event(`Invalid ${i}`, 1, { url, source: { name: "Google Crossville", key: "serp_crossville" } })),
+    event("Nameless", 1, { url: undefined, source: undefined }),
+    event("Austin Talk", 2, { url: "https://calendar.utexas.edu/event/talk", source: { name: "UT Austin Events", key: "ut_austin" } }),
+  ];
+  const { shadowRoot: root } = await make({}, { feed: makeFeed({ events }) });
+  const tile = (title) => byClass(root, "event").find((e) => text(byClass(e, "title")[0]) === title);
+  const sourceOf = (title) => byClass(tile(title), "source");
+  const anchors = (title) => walk(tile(title)).filter((e) => e.tag === "a");
+
+  const [linked] = sourceOf("Linked");
+  assert.equal(linked.textContent, "Source: Google Cookeville");
+  assert.equal(linked.tag, "a");
+  assert.deepEqual([linked.href, linked.target, linked.rel], ["https://www.facebook.com/events/abode-coffee/silent-book-club/1660217212106769/", "_blank", "noopener noreferrer"]);
+  assert.equal(linked.className, "source", "the existing link, unchanged");
+
+  const [plain] = sourceOf("Unlinked");
+  assert.deepEqual([plain.tag, plain.className, plain.textContent, plain.href], ["div", "source plain", "Source: Google Cookeville", undefined]);
+  assert.deepEqual(anchors("Unlinked"), [], "nothing on the tile is clickable");
+  for (let i = 0; i < 6; i++) {
+    assert.deepEqual(sourceOf(`Invalid ${i}`).map((s) => [s.tag, s.textContent]), [["div", "Source: Google Crossville"]], `invalid url ${i}: plain text`);
+    assert.deepEqual(anchors(`Invalid ${i}`), []);
+  }
+  assert.deepEqual(sourceOf("Nameless"), [], "no page and no name: no label");
+  assert.deepEqual(sourceOf("Austin Talk").map((s) => [s.tag, s.href, s.textContent]), [["a", "https://calendar.utexas.edu/event/talk", "Source: UT Austin Events"]]);
+  for (const title of ["Linked", "Austin Talk"]) {
+    assert.deepEqual(anchors(title).map((a) => a.className), ["source"], "the source label is the tile's only link; the title is not a link");
+    assert.equal(walk(byClass(tile(title), "title")[0]).filter((e) => e.tag === "a").length, 0);
+  }
+});
+
 test("producer filters are optional, match all event source associations, and report unknown or unattached IDs", async () => {
   const events = [
     event("One", 1, { source: { name: "Calendar One", key: "calendar-one" }, source_keys: ["calendar-one"] }),

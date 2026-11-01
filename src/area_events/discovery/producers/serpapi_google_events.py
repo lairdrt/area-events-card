@@ -23,6 +23,10 @@ that month and day (from the scan's local date in the source's time zone), recor
 must agree, and every start must lie within the source's rolling look-ahead window (lookahead_days, default 90, 30 to 365; both ends included); a search that
 names one year ("events in San Diego November 2026") accepts only events in that year. A result without a stated start time is set aside, and no time or end
 is ever invented. Aggregated results are never treated as verified.
+
+An event's url is its own page as Google lists it: the result's `link`, else a `ticket_info` link (information before tickets) whose address names the event by
+its title or is a Facebook or Eventbrite event page. A search, map, SerpApi address or a page that does not name the event leaves the url empty; a link never
+makes an event verified.
 """
 import hashlib
 import json
@@ -33,7 +37,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import unquote, urlencode, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..producer import EventCandidate, ProducerResult, Provenance, stated
@@ -404,6 +408,57 @@ def _web(value):
     return value if parts and parts.scheme in ("http", "https") and parts.hostname else None
 
 
+# Addresses that are never one event's own page: searches, maps and the provider's own API (serpapi_event_details_link is a keyed details search)
+_NOT_EVENT_PAGES = re.compile(r"(?:^|\.)(?:serpapi\.com|google(?:\.[a-z]{2,3}){1,2}|goo\.gl|bing\.com|duckduckgo\.com|maps\.apple\.com)$")
+_WORD = re.compile(r"[a-z0-9]+")
+_COMMON = frozenset(("the", "and", "for", "with", "from", "presents", "featuring", "event", "events"))
+# Event pages by the platform's own address structure: a Facebook event (/events/.../<id>) and an Eventbrite event (/e/<slug>-<id>)
+_PLATFORM_EVENT = ((re.compile(r"(?:^|\.)facebook\.com$"), re.compile(r"^/events/(?:[^/]+/)*\d{6,}/?$")),
+                   (re.compile(r"(?:^|\.)eventbrite\.[a-z.]+$"), re.compile(r"^/e/(?:[^/]*-)?\d{6,}/?$")))
+
+
+def _page(value):
+    """A web address that could be one event's page: http(s) with a host and a path, no credentials or spaces, not a search, map or SerpApi address."""
+    if not isinstance(value, str) or len(value) > 2000 or re.search(r"\s", value):
+        return None
+    try:
+        parts = urlsplit(value)
+        host = (parts.hostname or "").lower()
+        credentials = parts.username or parts.password
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not host or credentials or _NOT_EVENT_PAGES.search(host) or parts.path.strip("/") == "":
+        return None
+    return value
+
+
+def _names_event(url, title, place):
+    """Does the address name this event? A known platform's event-page structure, or at least two of the title's distinctive words (one, for a title with only
+    one) in its path, not counting words of the venue, address or search location (a venue's own page names the venue, not the event)."""
+    parts = urlsplit(url)
+    host, path = parts.hostname.lower(), unquote(parts.path)
+    if any(hosts.search(host) and paths.match(path) for hosts, paths in _PLATFORM_EVENT):
+        return True
+    distinctive = {w for w in _WORD.findall(title.lower()) if len(w) >= 3 and w not in _COMMON and not w.isdigit()} - set(_WORD.findall(place.lower()))
+    words = _WORD.findall(path.lower())
+    found = sum(1 for w in distinctive if any(p == w or (len(w) >= 4 and p.startswith(w)) for p in words))
+    return bool(distinctive) and found >= min(2, len(distinctive))
+
+
+def _event_url(result, title, place):
+    """The event's own page, or None: Google's top-level `link`; else a ticket_info link that names the event, an information link ("more info") before a
+    ticket seller's. Nothing is made up, searched for or taken from the venue, the map or SerpApi's details search."""
+    top = _page(result.get("link"))
+    if top:
+        return top
+    entries = [entry for entry in (result.get("ticket_info") or []) if isinstance(entry, dict)] if isinstance(result.get("ticket_info"), list) else []
+    for entry in sorted(entries, key=lambda entry: str(entry.get("link_type") or "").strip().lower() == "tickets"):   # stable: Google's order within each kind
+        url = _page(entry.get("link"))
+        if url and _names_event(url, title, place):
+            return url
+    return None
+
+
 class SerpApiGoogleEventsProducer:
     adapter = "serpapi_google_events"
     display_name = "SerpApi Google Events"
@@ -531,7 +586,7 @@ class SerpApiGoogleEventsProducer:
         lines = [line for line in (result.get("address") or []) if isinstance(line, str) and line.strip()] if isinstance(result.get("address"), list) else []
         address = _text(", ".join(lines), 300)
         description = _text(result.get("description"))
-        url = _web(result.get("link"))
+        url = _event_url(result, title, " ".join(filter(None, (venue, address, options.get("location")))))
         image = _web(result.get("image")) or _web(result.get("thumbnail"))
         kind = _text(result.get("event_type"), 60)
         identity = "|".join((re.sub(r"[^a-z0-9]+", " ", title.lower()).strip(), start.isoformat(), re.sub(r"[^a-z0-9]+", " ", (lines[0] if lines else venue or "").lower()).strip()))

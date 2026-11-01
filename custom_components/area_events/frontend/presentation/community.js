@@ -79,6 +79,7 @@ export const styles = `
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
   }
   .community-event .source { margin-top: 4px; font-size: 0.8125rem; color: var(--primary-color); overflow-wrap: anywhere; }
+  .community-event .source.plain { color: var(--secondary-text-color); }
   @media (prefers-reduced-motion: reduce) { .community-event .image img { transition: none; } }
 `;
 /*
@@ -216,6 +217,11 @@ const INFO_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
   '<path d="M12 11v6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="12" cy="7.2" r="1.5" fill="currentColor"/></svg>';
 // The credit a map must carry (OpenFreeMap's required text, the OpenStreetMap copyright page) lives behind a small info button on the tile.
 const MAP_CREDITS = [["OpenFreeMap", "https://openfreemap.org"], [" © OpenMapTiles", "https://openmaptiles.org/"], [" Data from OpenStreetMap", "https://www.openstreetmap.org/copyright"]];
+/** An address the source label may open: http(s) with a host. */
+function webPage(url) {
+  if (typeof url !== "string" || !/^https?:\/\//i.test(url) || /\s/.test(url)) return false;
+  try { return Boolean(new URL(url).hostname); } catch { return false; }
+}
 function renderCommunityEvent(event, context) {
     const item = el("div", "event community-event");
 
@@ -385,12 +391,14 @@ function renderCommunityEvent(event, context) {
     if (event.evidence.length) verify.title = event.evidence.join("\n");
     body.append(verify);
 
-    if (/^https?:\/\//i.test(event.url || "")) {
+    if (webPage(event.url)) {
       const link = el("a", "source", `Source: ${event.sourceName || "event page"}`);
       link.href = event.url;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
       body.append(link);
+    } else if (event.sourceName) {
+      body.append(el("div", "source plain", `Source: ${event.sourceName}`));   // no event page to open: the same label, not a link
     }
 
     item.append(image, body);
