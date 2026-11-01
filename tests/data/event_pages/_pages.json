@@ -1,0 +1,73 @@
+{
+ "https://www.sandiegowineclassic.com/icons-legends": {
+  "file": "E02_sandiegowineclassic_icons-legends.html",
+  "final_url": "https://www.sandiegowineclassic.com/icons-legends/"
+ },
+ "https://www.sandiegowineclassic.com/grand-tasting": {
+  "file": "E03_sandiegowineclassic_grand-tasting.html",
+  "final_url": "https://www.sandiegowineclassic.com/grand-tasting/"
+ },
+ "https://www.eventbrite.com/e/san-diego-singles-event-speed-dating-ages-22-30-at-coffee-shop-tickets-2000177736453": {
+  "file": "E05_eventbrite_speed-dating.html",
+  "final_url": "https://www.eventbrite.com/e/san-diego-singles-event-speed-dating-ages-22-30-at-coffee-shop-tickets-2000177736453"
+ },
+ "https://www.eventbrite.com/e/on-the-spot-dating-show-1-year-anniversary-party-tickets-2003434565717": {
+  "file": "E06_eventbrite_on-the-spot.html",
+  "final_url": "https://www.eventbrite.com/e/on-the-spot-dating-show-1-year-anniversary-party-tickets-2003434565717"
+ },
+ "https://ma.to/event/on-the-spot-dating-08-nov-2026": {
+  "file": "E06_mato_on-the-spot.html",
+  "final_url": "https://ma.to/event/on-the-spot-dating-08-nov-2026"
+ },
+ "https://www.1077gracefm.com/2026/10/07/open-mic-night-thu-nov-5-2026-600pm-900pm-red-silo-brewing": {
+  "file": "E07_1077gracefm_open-mic.html",
+  "final_url": "https://www.1077gracefm.com/2026/10/07/open-mic-night-thu-nov-5-2026-600pm-900pm-red-silo-brewing/"
+ },
+ "https://www.eventbrite.com/e/waka-flocka-flame-friends-live-at-revolver-tickets-2003442079190": {
+  "file": "E08_eventbrite_waka-flocka.html",
+  "final_url": "https://www.eventbrite.com/e/waka-flocka-flame-friends-live-at-revolver-tickets-2003442079190"
+ },
+ "https://roastedcookeville.com/event/bomb-shelter-comedy-open-mic/2026-11-05": {
+  "file": "E09_roastedcookeville_bomb-shelter.html",
+  "final_url": "https://roastedcookeville.com/event/bomb-shelter-comedy-open-mic/2026-11-05/"
+ },
+ "https://allevents.in/crossville/veterans-day-program/200030859355641": {
+  "file": "E10_allevents_veterans-day.html",
+  "final_url": "https://allevents.in/crossville/veterans-day-program/200030859355641"
+ },
+ "https://ccplayhouse.com/sh-boom-a-christmas-miracle": {
+  "file": "E12_ccplayhouse_sh-boom.html",
+  "final_url": "https://ccplayhouse.com/sh-boom-a-christmas-miracle/"
+ },
+ "https://batesnutfarm.biz/blogs/events/annual-guns-hoses-chili-cook-off-fundraiser": {
+  "file": "E13_batesnutfarm_guns-hoses.html",
+  "final_url": "https://batesnutfarm.biz/blogs/events/annual-guns-hoses-chili-cook-off-fundraiser"
+ },
+ "https://www.eventbrite.com/e/holiday-marketplace-at-mission-trails-regional-park-tickets-2001272952273": {
+  "file": "E14_eventbrite_holiday-marketplace.html",
+  "final_url": "https://www.eventbrite.com/e/holiday-marketplace-at-mission-trails-regional-park-tickets-2001272952273"
+ },
+ "https://mtrp.org/marketplace/": {
+  "file": "E14_mtrp_marketplace.html",
+  "final_url": "https://mtrp.org/marketplace/"
+ },
+ "https://libertystation.com/do/lisa-e-fine-art-birds-of-a-feather-exhibit": {
+  "file": "E15_libertystation_lisa-e.html",
+  "final_url": "https://libertystation.com/do/lisa-e-fine-art-birds-of-a-feather-exhibit"
+ },
+ "https://www.stubhub.com/in/san-diego-food-and-wine-festival-san-diego-tickets-11-6-2026/event/161086388": {
+  "status": 403
+ },
+ "https://www.facebook.com/sandiegokollective/posts/-vendor-spotlight-pudz-pizza-good-food-great-pizza-and-local-businesses-bringing/1168728652147366": {
+  "status": 400
+ },
+ "https://www.facebook.com/1025wowcountry/posts/-cumberland-county-high-school-veterans-day-celebration-mark-your-calendars-cumb/1782746873854446": {
+  "status": 400
+ },
+ "https://www.stubhub.com/in/sh-boom-a-christmas-miracle-crossville-tickets-11-7-2026/event/162089003": {
+  "status": 403
+ },
+ "https://www.sandiego.org/events-festivals/old-globe-dia-de-los-muertos-day-of-the-dead-celebration/f5a5a26e59be11f1a7f2": {
+  "status": 403
+ }
+}

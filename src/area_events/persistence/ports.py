@@ -220,11 +220,12 @@ class MediaCache(Protocol):
 
 
 class EventLinkCache(Protocol):
-    """What the shared event-page finder keeps: the answer of each lookup (an event page or None) and the requests counted per UTC day and month."""
+    """What the shared event-page finder keeps: the answer of each lookup (an event page and its street address, or None) and the requests counted
+    per UTC day and month."""
 
-    def recall(self, key: str): ...   # (url or None, checked_at) or None
+    def recall(self, key: str): ...   # (url or None, address or None, address_basis or None, checked_at) or None
 
-    def remember(self, key: str, url: Optional[str], checked_at: int, event_day: str) -> None: ...
+    def remember(self, key: str, url: Optional[str], address: Optional[str], address_basis: Optional[str], checked_at: int, event_day: str) -> None: ...
 
     def requests(self, periods) -> dict: ...
 

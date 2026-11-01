@@ -1,7 +1,8 @@
 """The shared event-page finder (discovery/event_links.py) and its use by the SerpApi Google Events producer, offline.
 
 The events are stored Jamestown (Crossville and Cookeville) results that Google listed without a page of their own; the search answers are fixtures in
-the Tavily Search API's documented shape ({"results": [{"title", "url", "content", "score"}]}). No request leaves this process.
+the Tavily Search API's documented shape ({"results": [{"title", "url", "content", "score"}]}), and the 19 live answers and the pages read in the
+November 2026 qualification are replayed from tests/data (tavily_qualification.json, event_pages/). No request leaves this process.
 """
 import contextlib
 import json
@@ -13,7 +14,8 @@ from datetime import date, datetime, timezone
 
 from area_events.deduplication.exact import ExactMatch
 from area_events.discovery import producer as contract
-from area_events.discovery.event_links import MISS_TTL_S, EventLinkFinder, judge
+from area_events.discovery.event_links import MISS_TTL_S, EventLink, EventLinkFinder, check_page, judge
+from area_events.discovery.safe import BlockedError, FetchError
 from area_events.persistence.build import open_persistence
 from tests.test_serpapi import FakeSerpApi, crawl, observed, page, setup
 
@@ -55,6 +57,47 @@ def results(*items):
     return 200, {"query": "q", "results": list(items), "response_time": 0.5}
 
 
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+PAGES = os.path.join(DATA, "event_pages")       # pages read in the qualification, minimized: markup, class/id, visible text and JSON-LD kept
+with open(os.path.join(PAGES, "_pages.json"), encoding="utf-8") as _index:
+    SAVED = json.load(_index)
+
+
+def saved(name):
+    with open(os.path.join(PAGES, name), encoding="utf-8") as page:
+        return page.read()
+
+
+class Page:
+    def __init__(self, url, text):
+        self.url, self.text, self.status, self.content_type, self.body = url, text, 200, "text/html", b""
+
+
+class FakePages:
+    """The shared safe fetch client: `pages` maps an address to its html (or to an exception); any other address is refused, as the qualification's
+    unread or unreadable pages (HTTP 403, 400) were. Each read is recorded."""
+
+    def __init__(self, pages=None, saved_pages=False):
+        self.pages, self.asked = dict(pages or {}), []
+        if saved_pages:
+            for url, entry in SAVED.items():
+                if "file" in entry:
+                    self.pages.setdefault(url, (entry.get("final_url") or url, saved(entry["file"])))
+
+    def fetch(self, url):
+        self.asked.append(url)
+        page = self.pages.get(url) or self.pages.get(url.rstrip("/") + "/")
+        if isinstance(page, Exception):
+            raise page
+        if page is None:
+            raise BlockedError(f"{url}: HTTP 403")
+        final, text = page if isinstance(page, tuple) else (url, page)
+        return Page(final, text)
+
+
+SHOW_PAGE = saved("E12_ccplayhouse_sh-boom.html")       # the playhouse's own page for the show: November 6-December 19, footer address
+
+
 class Clock:
     def __init__(self, now=NOW):
         self.now = now
@@ -82,8 +125,9 @@ class Finding(unittest.TestCase):
             self.persistence.close()
         self.persistence = open_persistence(self.db, ExactMatch(), self.clock)
 
-    def finder(self, fake, key=KEY, **limits):
-        return EventLinkFinder(self.persistence.event_links, api_key=key, clock=self.clock, post=fake, sleep=lambda s: None, **limits)
+    def finder(self, fake, key=KEY, pages=None, **limits):
+        self.pages = pages if pages is not None else FakePages({SHOW: SHOW_PAGE})
+        return EventLinkFinder(self.persistence.event_links, api_key=key, clock=self.clock, post=fake, sleep=lambda s: None, fetch=self.pages, **limits)
 
     def rows(self, table):
         with contextlib.closing(sqlite3.connect(self.db)) as db:
@@ -134,19 +178,20 @@ class Finding(unittest.TestCase):
         self.assertEqual(self.find(finder), SHOW, "asked again once the miss is old")
         self.assertEqual(len(fake.calls), 2)
 
-    def test_a_repeated_event_is_never_searched_again_even_after_a_restart(self):
-        fake = FakeTavily(results(CORRECT))
-        self.assertEqual(self.find(self.finder(fake)), SHOW)
-        self.assertEqual(self.find(self.finder(fake)), SHOW)
+    def test_a_repeated_event_is_never_searched_or_read_again_even_after_a_restart(self):
+        fake, pages = FakeTavily(results(CORRECT)), FakePages({SHOW: SHOW_PAGE})
+        found = EventLink(SHOW, "221 Tennessee Ave, Crossville, TN 38555", "the venue's own website")
+        self.assertEqual(self.finder(fake, pages=pages).find_event_link(TITLE, DAY, VENUE, CITY), found)
+        self.assertEqual(self.find(self.finder(fake, pages=pages)), SHOW)
         self.restart()
         self.clock.now += 30 * 86400
-        self.assertEqual(self.find(self.finder(fake)), SHOW)
-        self.assertEqual(len(fake.calls), 1, "one search for one event")
-        self.assertEqual(self.find(self.finder(fake), day="2026-11-06"), None, "another day, outside the show's run, is another event")
+        self.assertEqual(self.finder(fake, pages=pages).find_event_link(TITLE, DAY, VENUE, CITY), found, "the page and its address, from the cache")
+        self.assertEqual((len(fake.calls), pages.asked), (1, [SHOW]), "one search and one page read for one event")
+        self.assertEqual(self.find(self.finder(fake, pages=pages), day="2026-11-06"), None, "another day, outside the show's run, is another event")
         self.assertEqual(len(fake.calls), 2)
         self.clock.now += 40 * 86400
         self.find(self.finder(fake), title="Mistletoe Market", day="2026-12-20")
-        self.assertEqual([row[3] for row in self.rows("event_link_lookups")], ["2026-12-20"], "lookups for long-past events are dropped")
+        self.assertEqual([row[5] for row in self.rows("event_link_lookups")], ["2026-12-20"], "lookups for long-past events are dropped")
         self.persistence.close()
         for folder, _, names in os.walk(os.path.dirname(self.db)):
             for name in names:
@@ -208,6 +253,167 @@ class Finding(unittest.TestCase):
             self.find(finder, title=f"Holiday Market {number}")
         self.assertEqual(len(fake.calls), 3, "the monthly limit")
         self.assertEqual(dict(self.rows("event_link_usage")), {"2026-10-10": 2, "2026-10-11": 1, "2026-10": 3})
+
+    def test_a_page_that_cannot_be_read_is_never_taken_on_its_snippet(self):
+        for failure in (BlockedError("robots.txt of ccplayhouse.com does not allow this page"), FetchError("HTTP 404"), OSError("unreachable")):
+            with self.subTest(str(failure)):
+                self.setUp()
+                fake = FakeTavily(results(CORRECT))
+                finder = self.finder(fake, pages=FakePages({SHOW: failure}))
+                self.assertIsNone(finder.find_event_link(TITLE, DAY, VENUE, CITY), "a lookup never raises")
+                self.assertEqual(self.pages.asked, [SHOW], "the page is read once, with no retry")
+                self.assertEqual([row[1:4] for row in self.rows("event_link_lookups")], [(None, None, None)], "remembered as nothing credible")
+        self.setUp()
+        self.assertIsNone(self.find(EventLinkFinder(self.persistence.event_links, api_key=KEY, clock=self.clock, post=FakeTavily(results(CORRECT)),
+                                                    sleep=lambda s: None)), "without a page reader nothing can be confirmed, so nothing is searched")
+
+
+# --- the 19 live answers of the qualification, replayed through the finder and the pages it read --------------------------------------------------------
+
+with open(os.path.join(DATA, "tavily_qualification.json"), encoding="utf-8") as _recorded:
+    QUALIFICATION = json.load(_recorded)
+
+# What each recorded search must give: (url, street address, where on the page it was read), or None. Every page was checked by hand.
+EXPECTED = {
+    "E01": None,     # no page of the Gaslamplighter's Día de los Muertos night among the results
+    "E02": ("https://www.sandiegowineclassic.com/icons-legends/", "1735 Hancock St, San Diego, CA 92101", "the event's structured location"),
+    "E03": ("https://www.sandiegowineclassic.com/grand-tasting/", "400 Kettner Blvd, San Diego, CA 92101", "the event's structured location"),
+    "E04": None,     # only social posts that do not name the market in their address
+    "E05": None,     # the session found is at Subterranean Coffee, not Drift Cafe
+    "E06": ("https://www.eventbrite.com/e/on-the-spot-dating-show-1-year-anniversary-party-tickets-2003434565717", "9990 AleSmith Court, San Diego, CA 92126",
+            "the event's structured location"),
+    "E07": ("https://www.1077gracefm.com/2026/10/07/open-mic-night-thu-nov-5-2026-600pm-900pm-red-silo-brewing/", None, None),   # it writes no street
+    "E08": ("https://www.eventbrite.com/e/waka-flocka-flame-friends-live-at-revolver-tickets-2003442079190", "565 South Jefferson Avenue, Cookeville, TN 38501",
+            "the event's structured location"),
+    "E09": ("https://roastedcookeville.com/event/bomb-shelter-comedy-open-mic/2026-11-05/", "1068 E 10th St F, Cookeville, TN 38501", "the event's structured location"),
+    "E10": ("https://allevents.in/crossville/veterans-day-program/200030859355641", "660 Stanley St, Crossville, Tennessee", "the event's structured location"),
+    "E11": None,     # nothing about the tournament
+    "E12": ("https://ccplayhouse.com/sh-boom-a-christmas-miracle/", "221 Tennessee Ave, Crossville, TN 38555", "the venue's own website"),
+    "E13": ("https://batesnutfarm.biz/blogs/events/annual-guns-hoses-chili-cook-off-fundraiser", "15954 Woods Valley Road, Valley Center, CA",
+            "the page's labelled event location"),   # as the event states it, not the footer's contact address (…, CA 92082)
+    "E14": ("https://www.eventbrite.com/e/holiday-marketplace-at-mission-trails-regional-park-tickets-2001272952273",
+            "1 Father Junipero Serra Trail, San Diego, CA 92119", "the event's structured location"),
+    "E15": ("https://libertystation.com/do/lisa-e-fine-art-birds-of-a-feather-exhibit", "2730 Historic Decatur Rd", "the page's labelled event location"),
+    "R01": None,     # the Old Globe's and Old Town's Día de los Muertos: other venues
+    "R04": None, "R05": None, "R11": None,
+}
+
+
+class TheQualificationReplayed(unittest.TestCase):
+    def test_each_recorded_search_gives_the_page_checked_by_hand_and_its_venue_address(self):
+        self.assertEqual(sorted(EXPECTED), sorted(search["id"] for search in QUALIFICATION["searches"]))
+        for search in QUALIFICATION["searches"]:
+            event = QUALIFICATION["events"][search["event"]]
+            with self.subTest(search["id"]):
+                cache = Cache()
+                finder = EventLinkFinder(cache, api_key=KEY, clock=lambda: NOW, post=FakeTavily(results(*search["results"])), sleep=lambda s: None,
+                                         fetch=FakePages(saved_pages=True))
+                link = finder.find_event_link(event["title"], event["starts_at"], event["venue"], event["city"])
+                expected = EXPECTED[search["id"]]
+                self.assertEqual(link, EventLink(*expected) if expected else None)
+
+    def test_unreadable_pages_are_passed_over_for_the_next_confirmed_one(self):
+        e02 = next(s for s in QUALIFICATION["searches"] if s["id"] == "E02")
+        event = QUALIFICATION["events"]["E02"]
+        stubhub, official, *_ = e02["results"]
+        pages = FakePages(saved_pages=True)
+        finder = EventLinkFinder(Cache(), api_key=KEY, clock=lambda: NOW, post=FakeTavily(results(stubhub, official)), sleep=lambda s: None, fetch=pages)
+        self.assertEqual(finder.find_event_url(event["title"], event["starts_at"], event["venue"], event["city"]), EXPECTED["E02"][0])
+        self.assertEqual(pages.asked, [official["url"]], "the festival's own page is read first; reading stops there")
+        finder = EventLinkFinder(Cache(), api_key=KEY, clock=lambda: NOW, post=FakeTavily(results(stubhub)), sleep=lambda s: None, fetch=pages)
+        self.assertIsNone(finder.find_event_url(event["title"], event["starts_at"], event["venue"], event["city"]), "StubHub refused the read (403)")
+
+
+class Cache:
+    """The EventLinkCache port in memory."""
+
+    def __init__(self):
+        self.rows, self.used = {}, {}
+
+    def recall(self, key):
+        return self.rows.get(key)
+
+    def remember(self, key, url, address, address_basis, checked_at, event_day):
+        self.rows[key] = (url, address, address_basis, checked_at)
+
+    def requests(self, periods):
+        return {p: self.used.get(p, 0) for p in periods}
+
+    def count_request(self, periods):
+        for p in periods:
+            self.used[p] = self.used.get(p, 0) + 1
+
+    def use_up(self, period, requests):
+        self.used[period] = max(self.used.get(period, 0), requests)
+
+    def forget_before(self, day):
+        pass
+
+
+def page_of(title, body, footer="", jsonld=None):
+    script = f'<script type="application/ld+json">{json.dumps(jsonld)}</script>' if jsonld else ""
+    return f"<html><head><title>{title}</title>{script}</head><body><main>{body}</main><footer>{footer}</footer></body></html>"
+
+
+HARVEST = ("Harvest Night Market", date(2026, 11, 7), "Drift Cafe", "San Diego")
+
+
+class ReadingThePage(unittest.TestCase):
+    """check_page on the pages read in the qualification, and on small pages made for one rule each."""
+
+    def test_E05_structured_data_that_places_the_event_at_another_venue_refuses_the_page(self):
+        check = check_page(saved("E05_eventbrite_speed-dating.html"), "San Diego Singles Event: Speed Dating", date(2026, 11, 7), "Drift Cafe", "San Diego")
+        self.assertEqual((check.confirmed, check.reason), (False, "its structured data places the event at another venue"))
+
+    def test_structured_data_that_gives_another_day_refuses_the_page_and_a_page_without_it_is_read_as_text(self):
+        roasted = saved("E09_roastedcookeville_bomb-shelter.html")
+        self.assertEqual(check_page(roasted, "Bomb Shelter Comedy Open Mic", date(2026, 11, 12), "Roasted Hemp Co", "Cookeville").reason,
+                         "its structured data gives the event another day")
+        self.assertTrue(check_page(roasted, "Bomb Shelter Comedy Open Mic", date(2026, 11, 5), "Roasted Hemp Co", "Cookeville").confirmed)
+        playhouse = saved("E12_ccplayhouse_sh-boom.html")   # no structured event: its title, the run 'November 6-December 19' and the venue's name
+        self.assertTrue(check_page(playhouse, TITLE, date(2026, 12, 19), VENUE, CITY).confirmed, "the run's last day")
+        self.assertEqual(check_page(playhouse, TITLE, date(2026, 12, 20), VENUE, CITY).reason, "the page does not show the event's day")
+        broken = page_of("Harvest Night Market | Drift Cafe", "Saturday, November 7, 2026 at Drift Cafe", jsonld={"@type": "Event", "name": "Harvest Night Market"})
+        self.assertEqual(check_page(broken, *HARVEST).reason, "its structured data gives the event another day", "a structured event without a date")
+
+    def test_a_festival_s_page_is_not_each_of_its_events_page(self):
+        check = check_page(saved("E02_sandiegowineclassic_icons-legends.html"), "San Diego Food and Wine Festival - Grand Tasting - Saturday",
+                           date(2026, 11, 7), "JULEP Venue", "San Diego")
+        self.assertEqual(check.reason, "its title does not name the event")
+
+    def test_a_labelled_location_naming_another_venue_refuses_the_page(self):
+        cook_off = saved("E13_batesnutfarm_guns-hoses.html")
+        title = "8th Annual Guns & Hoses Chili Cook-Off Fundraiser"
+        self.assertEqual(check_page(cook_off, title, date(2026, 11, 8), "Valley Center Fire Station", "Valley Center").reason, "its labelled location is another venue")
+
+    def test_when_a_page_was_posted_is_not_its_event_s_day(self):
+        self.assertEqual(check_page(saved("E07_1077gracefm_open-mic.html"), "Open Mic Night", date(2026, 10, 7), "Red Silo Brewing", "Cookeville").reason,
+                         "its title gives another day")
+
+    def test_a_footer_address_is_the_venue_s_only_on_the_venue_s_own_website(self):
+        body = "<h1>Harvest Night Market</h1><p>Saturday, November 7, 2026</p><p>Location</p><p>Drift Cafe</p>"
+        organizer = page_of("Harvest Night Market | Valley Events Co", body, "Valley Events Co<br>771 Jamacha Road #301, El Cajon, CA 92019")
+        check = check_page(organizer, *HARVEST)
+        self.assertEqual((check.confirmed, check.address), (True, None), "an organizer's office address is not the venue's")
+        own = page_of("Harvest Night Market | Drift Cafe", body, "Drift Cafe<br>4200 Park Blvd<br>San Diego, CA 92103")
+        self.assertEqual((check_page(own, *HARVEST).address, check_page(own, *HARVEST).address_basis), ("4200 Park Blvd, San Diego, CA 92103", "the venue's own website"))
+        elsewhere = page_of("Harvest Night Market | Drift Cafe", body, "Drift Cafe<br>771 Jamacha Road<br>El Cajon, CA 92019")
+        self.assertIsNone(check_page(elsewhere, *HARVEST).address, "the footer's address is in another town")
+        stated = page_of("Harvest Night Market | Drift Cafe", body + "<p>Address: 3810 Ray St, San Diego, CA 92104</p>", "Drift Cafe<br>4200 Park Blvd<br>San Diego, CA 92103")
+        self.assertEqual(check_page(stated, *HARVEST).address, "3810 Ray St, San Diego, CA 92104", "what the event states comes before the website's footer")
+
+    def test_an_address_is_taken_only_beside_the_venue_and_only_when_the_venue_has_one(self):
+        dated = "<h1>Harvest Night Market</h1><p>Saturday, November 7, 2026 at Drift Cafe.</p>"
+        unrelated = page_of("Harvest Night Market", dated + "<p>Parking at the garage, 1200 Third Ave, San Diego, CA 92101</p>")
+        self.assertIsNone(check_page(unrelated, *HARVEST).address, "an address that is not tied to the venue")
+        beside = page_of("Harvest Night Market", dated + "<p>Drift Cafe</p><p>3810 Ray St, San Diego, CA 92104</p>")
+        self.assertEqual((check_page(beside, *HARVEST).address, check_page(beside, *HARVEST).address_basis),
+                         ("3810 Ray St, San Diego, CA 92104", "the page's text beside the venue's name"))
+        two = page_of("Harvest Night Market", dated + "<p>Location: Drift Cafe</p><p>3810 Ray St, San Diego, CA 92104</p>"
+                                                       "<p>Drift Cafe</p><p>2911 University Ave, San Diego, CA 92104</p>")
+        self.assertIsNone(check_page(two, *HARVEST).address, "two addresses for the venue: which is right is not known")
+        spelled = page_of("Harvest Night Market", dated + "<p>Location: Drift Cafe</p><p>One Ray Street</p><p>San Diego, CA 92104</p>")
+        self.assertIsNone(check_page(spelled, *HARVEST).address, "no house number is written: none is made up")
 
 
 # --- live answers recorded in the November 2026 qualification (15 stored events, every page checked by hand); contents trimmed, words as recorded ---
@@ -316,13 +522,20 @@ def crossville(tickets=(("viagogo.com.mx", "tickets", "https://www.viagogo.com.m
 
 
 class Recording:
-    def __init__(self, answer=None):
-        self.answer, self.asked = answer, []
+    def __init__(self, answer=None, address=None, basis="the event's structured location"):
+        self.answer, self.asked = (EventLink(answer, address, basis if address else None) if answer else None), []
         self.status = "searched"
 
-    def find_event_url(self, title, date, venue, city):
+    def find_event_link(self, title, date, venue, city):
         self.asked.append((title, date, venue, city))
         return self.answer
+
+
+def unplaced(**changes):
+    """The stored serp_crossville result as Google gave it for most Jamestown events: the venue and the town line, no street."""
+    item = crossville()
+    item.update(address=["Cumberland County Playhouse", "Crossville, TN"], **changes)
+    return item
 
 
 def scan_with(links, *items):
@@ -345,8 +558,26 @@ class TheProducerAsksOnlyWhenGoogleGivesNoPage(unittest.TestCase):
         self.assertIsNone(before[TITLE].url)
         self.assertEqual(show.local_id, before[TITLE].local_id, "the event's identity does not depend on its link")
         self.assertEqual((show.verification.status, show.verification.verified), (before[TITLE].verification.status, False), "a link never verifies")
-        self.assertIn("Event page found by a web search for the title, date and place; Google listed none", show.verification.evidence)
+        self.assertIn("Event page found by a web search for the title, date and place and confirmed by reading it (its title, day and venue); "
+                      "Google listed none", show.verification.evidence)
         self.assertEqual((answer.notes["links_looked_up"], answer.notes["links_found"], answer.notes["link_search"]), (1, 1, "searched"))
+
+    def test_the_page_s_street_address_fills_an_address_without_one_and_never_replaces_a_street_address(self):
+        street = "221 Tennessee Ave, Crossville, TN 38555"
+        _, given = scan_with(None, unplaced())
+        answer, found = scan_with(Recording(SHOW, street, "the venue's own website"), unplaced())
+        show, before = found[TITLE], given[TITLE]
+        self.assertEqual((before.address, show.address), ("Cumberland County Playhouse, Crossville, TN", street), "no venue name repeated in the address")
+        self.assertIn(f"Street address {street} from the venue's own website on {SHOW}", show.verification.evidence)
+        self.assertEqual((show.local_id, show.starts_at, show.provenance, show.verification.status, show.verification.missing),
+                         (before.local_id, before.starts_at, before.provenance, before.verification.status, before.verification.missing),
+                         "identity, time, source and verification status are as they were")
+        self.assertEqual(answer.notes["addresses_found"], 1)
+        _, found = scan_with(Recording(SHOW, "2730 Historic Decatur Rd", "the page's labelled event location"), unplaced())
+        self.assertEqual(found[TITLE].address, "2730 Historic Decatur Rd, Crossville, TN", "a street line alone is completed with Google's own town line")
+        _, kept = scan_with(Recording(SHOW, "999 Other St, Crossville, TN 38555"), crossville())
+        self.assertEqual(kept[TITLE].address, "Cumberland County Playhouse, 221 Tennessee Ave, Crossville, TN", "Google's street address is kept")
+        self.assertEqual(kept[TITLE].url, SHOW, "and the page is still used")
 
     def test_an_event_with_a_valid_page_is_never_looked_up(self):
         links = Recording("https://elsewhere.example/should-not-be-used")
@@ -361,7 +592,7 @@ class TheProducerAsksOnlyWhenGoogleGivesNoPage(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         persistence = open_persistence(os.path.join(folder.name, "discovery.db"), ExactMatch(), lambda: NOW)
         self.addCleanup(persistence.close)
-        finder = EventLinkFinder(persistence.event_links, api_key=KEY, clock=lambda: NOW, post=fake, sleep=lambda s: None)
+        finder = EventLinkFinder(persistence.event_links, api_key=KEY, clock=lambda: NOW, post=fake, sleep=lambda s: None, fetch=FakePages())
         second = crossville()
         second.update(title="Mistletoe Market", date={"when": "Fri, Nov 6, 9:00 AM"})
         answer, found = scan_with(finder, crossville(), second)

@@ -1,0 +1,845 @@
+{
+ "note": "Live Tavily Search answers recorded 2026-11-01 for the 15-event qualification (basic depth, 5 results); R* are the variant retry queries.",
+ "events": {
+  "E01": {
+   "area": "San Diego",
+   "title": "Día de los Muertos Night",
+   "starts_at": "2026-11-01T21:30:00-08:00",
+   "venue": "Gaslamplighter Karaoke Cocktail Bar",
+   "city": "San Diego",
+   "address": "Gaslamplighter Karaoke Cocktail Bar, San Diego, CA",
+   "original_url": null
+  },
+  "E02": {
+   "area": "San Diego",
+   "title": "San Diego Food and Wine Festival - Icons and Legends",
+   "starts_at": "2026-11-06T18:30:00-08:00",
+   "venue": "JULEP Venue",
+   "city": "San Diego",
+   "address": "JULEP Venue, San Diego, CA",
+   "original_url": null
+  },
+  "E03": {
+   "area": "San Diego",
+   "title": "San Diego Food and Wine Festival - Grand Tasting - Saturday",
+   "starts_at": "2026-11-07T12:00:00-08:00",
+   "venue": "Embarcadero Marina Park North",
+   "city": "San Diego",
+   "address": "Embarcadero Marina Park North, San Diego, CA",
+   "original_url": null
+  },
+  "E04": {
+   "area": "San Diego",
+   "title": "SDK Friendsgiving Market",
+   "starts_at": "2026-11-07T15:00:00-08:00",
+   "venue": "Kujo Eats",
+   "city": "National City",
+   "address": "Kujo Eats, National City, CA",
+   "original_url": null
+  },
+  "E05": {
+   "area": "San Diego",
+   "title": "San Diego Singles Event: Speed Dating",
+   "starts_at": "2026-11-07T15:00:00-08:00",
+   "venue": "Drift Cafe",
+   "city": "San Diego",
+   "address": "Drift Cafe, San Diego, CA",
+   "original_url": null
+  },
+  "E06": {
+   "area": "San Diego",
+   "title": "On The Spot Dating Show: 1 Year Anniversary Party",
+   "starts_at": "2026-11-07T17:00:00-08:00",
+   "venue": "AleSmith Brewing Company",
+   "city": "San Diego",
+   "address": "AleSmith Brewing Company, San Diego, CA",
+   "original_url": null
+  },
+  "E07": {
+   "area": "Cookeville",
+   "title": "Open Mic Night",
+   "starts_at": "2026-11-05T18:00:00-06:00",
+   "venue": "Red Silo Brewing",
+   "city": "Cookeville",
+   "address": "Red Silo Brewing, Cookeville, TN",
+   "original_url": null
+  },
+  "E08": {
+   "area": "Cookeville",
+   "title": "Waka Flocka Flame & Friends Live",
+   "starts_at": "2026-11-05T19:00:00-06:00",
+   "venue": "Revolver Dance Hall of Cookeville",
+   "city": "Cookeville",
+   "address": "Revolver Dance Hall of Cookeville, Cookeville, TN",
+   "original_url": null
+  },
+  "E09": {
+   "area": "Cookeville",
+   "title": "Bomb Shelter Comedy Open Mic",
+   "starts_at": "2026-11-05T21:00:00-06:00",
+   "venue": "Roasted Hemp Co",
+   "city": "Cookeville",
+   "address": "Roasted Hemp Co, Cookeville, TN",
+   "original_url": null
+  },
+  "E10": {
+   "area": "Crossville",
+   "title": "Veterans Day Program",
+   "starts_at": "2026-11-06T14:00:00-06:00",
+   "venue": "Cumberland County High School",
+   "city": "Crossville",
+   "address": "Cumberland County High School, Crossville, TN",
+   "original_url": null
+  },
+  "E11": {
+   "area": "Crossville",
+   "title": "Annual Panther Golf Tournament",
+   "starts_at": "2026-11-07T08:30:00-06:00",
+   "venue": "Bear Trace At Cumberland Mountain (TN Golf Trail)",
+   "city": "Crossville",
+   "address": "Bear Trace At Cumberland Mountain (TN Golf Trail), Crossville, TN",
+   "original_url": null
+  },
+  "E12": {
+   "area": "Crossville",
+   "title": "Sh-Boom! A Christmas Miracle",
+   "starts_at": "2026-11-07T14:30:00-06:00",
+   "venue": "Cumberland County Playhouse",
+   "city": "Crossville",
+   "address": "Cumberland County Playhouse, Crossville, TN",
+   "original_url": null
+  },
+  "E13": {
+   "area": "San Diego (control)",
+   "title": "8th Annual Guns & Hoses Chili Cook-Off Fundraiser",
+   "starts_at": "2026-11-08T12:00:00-08:00",
+   "venue": "Bates Nut Farm",
+   "city": "Valley Center",
+   "address": "15954 Woods Valley Road, Valley Center, CA",
+   "original_url": "https://batesnutfarm.biz/blogs/events/annual-guns-hoses-chili-cook-off-fundraiser"
+  },
+  "E14": {
+   "area": "San Diego (control)",
+   "title": "Holiday Marketplace at Mission Trails Regional Park",
+   "starts_at": "2026-11-14T09:00:00-08:00",
+   "venue": "Mission Trails Regional Park Visitor Center",
+   "city": "San Diego",
+   "address": "San Diego, CA 92119",
+   "original_url": "https://mtrp.org/marketplace/"
+  },
+  "E15": {
+   "area": "San Diego (control)",
+   "title": "Lisa E Fine Art Birds of a Feather Exhibit",
+   "starts_at": "2026-11-06T16:00:00-08:00",
+   "venue": "Lisa E Fine Art",
+   "city": "San Diego",
+   "address": "2730 Historic Decatur Rd",
+   "original_url": "https://libertystation.com/do/lisa-e-fine-art-birds-of-a-feather-exhibit"
+  }
+ },
+ "searches": [
+  {
+   "id": "E01",
+   "event": "E01",
+   "query": "Día de los Muertos Night Gaslamplighter Karaoke Cocktail Bar San Diego November 1, 2026",
+   "results": [
+    {
+     "title": "Gaslamp Halloween Events - Gaslamp Quarter",
+     "url": "https://gaslamp.org/gaslampquarter-halloween",
+     "content": "[](\n\n#### Gaslamplighter Halloween: Hollywood Rising\n\nSaturday, October 31, 2026 | 7:30 PM–2 AM  \nGaslamplighter Cocktail & Karaoke Bar | 536 Market St, San Diego, CA 92101  \n21+ | Early Bird General Admission: $10\n\nHollywood’s dead are coming back for one more night in the spotlight. [...] This Halloween night, Gaslamplighter presents HOLLYWOOD RISING — a Halloween experience inspired by the legends of Hollywood who refuse to stay buried. The stars are dead, the glamour has decayed, and the afterlife is ready for its encore.\n\nStep into the spotlight for karaoke all night long, cocktails, costumes, and resurrected Hollywood glamour, with DJ Steve Conwai providing the sounds throughout the night. [...] October 24, 25 & 31 + November 1, 2026 | 11 AM – 1:30 PM  \nThe Westgate Hotel – Le Fontainebleau Room  \n1055 Second Ave, San Diego, CA 92101\n\nCelebrate witching season with a spellbinding afternoon inside The Westgate Hotel’s haunted Le Fontainebleau Room. Dress in your most bewitching costume, snap photos in the eerie photo area, and enjoy afternoon tea featuring house-made pastries, savory tea sandwiches, gourmet teas, and wickedly festive treats.",
+     "score": 0.7608822
+    },
+    {
+     "title": "Gaslamplighter",
+     "url": "https://www.instagram.com/gaslamplighter?hl=en",
+     "content": "Karaoke Bar Downtown San Diego Tuesday - Sunday | 7:30PM - 2:00AM Karaoke Starting at 9PM. This Día de los Muertos, join us for a night where the music is",
+     "score": 0.741169
+    },
+    {
+     "title": "Karaoke & Cocktail San Diego Gaslamp, Gaslamplighter",
+     "url": "https://www.thegaslamplighter.com",
+     "content": "Skip to content\n\nThe word \n\nThe word \n\n Book A Reservation\n Karaoke\n Halloween 2026\n VIP Experience\n Private Events\n Menu\n Contact\n\n## San Diego’s Luxury Cocktail & Karaoke Bar\n\n# Cocktail Bar Near Me – Lounge Bars in San Diego [...] Poster for “Hollywood Rising” shows zombie celebrities against a red moon, palm trees, and Hollywood sign. Text reads “Halloween 2026, Saturday, October 31.” Dark, eerie, and dramatic design.\n\nVIP Table [...] Looking for a standout cocktail bar near me that mixes elegance, excitement, and unforgettable cocktails and food? Welcome to Gaslamp Lighter—one of the most sought-after cocktail private parties in San Diego. Located in the bustling Gaslamp Quarter, our lounge blends premium drinks, vibrant ambiance, and live music into one unforgettable night out.",
+     "score": 0.7286136
+    },
+    {
+     "title": "Karaoke Nights San Diego Downtown Set the Tone for ...",
+     "url": "https://www.thegaslamplighter.com/karaoke-nights-gaslamp-san-diego-downtown",
+     "content": "Let the Good Times Roll at GaslampLighter · Karaoke Starts at 9 PM, Tuesday–Sunday · VIP Bottle Service Available · Located in Downtown San Diego's Gaslamp Quarter.",
+     "score": 0.46599558
+    },
+    {
+     "title": "Gaslamplighter - San Diego, CA",
+     "url": "https://www.yelp.com/biz/gaslamplighter-san-diego-3",
+     "content": "GASLAMPLIGHTER - Try Our New Menu - 536 Market St, San Diego, CA 92101, 151 Photos, (619) 514-4555, Mon - Closed, Tue - 7:30 pm - 2:00 am, Wed - 7:30 pm",
+     "score": 0.28387862
+    }
+   ]
+  },
+  {
+   "id": "E02",
+   "event": "E02",
+   "query": "San Diego Food and Wine Festival - Icons and Legends JULEP Venue San Diego November 6, 2026",
+   "results": [
+    {
+     "title": "San Diego Food and Wine Festival - Icons and Legends",
+     "url": "https://www.stubhub.com/in/san-diego-food-and-wine-festival-san-diego-tickets-11-6-2026/event/161086388",
+     "content": "See San Diego Food and Wine Festival - Icons and Legends - Friday live at JULEP venue in San Diego on November 6, 2026, at 6:30 pm.",
+     "score": 0.9416167
+    },
+    {
+     "title": "SDFW Opening Night: Icons + Legends",
+     "url": "https://www.sandiegowineclassic.com/icons-legends",
+     "content": "Icons + Legends, Friday November 6, 2026 at JULEP Venue: opening night of the San Diego Food + Wine Festival, with celebrated chefs and acclaimed wineries.",
+     "score": 0.9152729
+    },
+    {
+     "title": "San Diego Food + Wine Festival · November 1 – 8, 2026",
+     "url": "https://www.sandiegowineclassic.com",
+     "content": "Presented by Blacklane\n\nBig culinary names, unforgettable dishes, and standout wines and spirits, all in one night\n\nJULEP Venue\n\nTickets\n\nGrand Weekend Presented by Southwest Airlines®Two days, one weekend\n\nSaturday, Nov 7 · 11 am – 3 pm\n\n### Grand Tasting\n\nPresented by Southwest Airlines®\n\nSan Diego's iconic waterfront celebration of food, wine, spirits, and culinary discovery.\n\nEmbarcadero Marina Park North\n\nTickets  \n\nSunday, Nov 8 · 11 am – 3 pm\n\n### Grand Fiesta [...] Price increase\n\nGuests toasting with rosé at Grand Tasting Grand Fiesta's best bite: a taco with borage flowers Three chefs at their station at Grand Tasting Performers in Día de Muertos dress at Grand Fiesta A producer pouring at Icons + Legends\n\n## Signature events\n\nFrom an elevated evening of culinary icons to expansive waterfront tastings at the Port of San Diego, these are the events San Diego waits for.\n\nSDFW Opening NightFriday, Nov 6\n\n \n\nFriday, Nov 6 · 6 pm\n\n### Icons + Legends [...] Arrive at Awesome®\n\nThe world's best in food, wine, spirits and beverage, together for eight days on the Pacific Ocean. Michelin and James Beard honorees, legendary winemakers and the tastemakers shaping what's next arrive from both sides of the border and beyond. From intimate dinners to waterfront tastings, the culinary world is coming to San Diego.\n\nFind your event See the lineup\n\nPrice increase",
+     "score": 0.8215175
+    },
+    {
+     "title": "Consider your November 6–8 booked!  The San Diego Food ...",
+     "url": "https://www.facebook.com/BeyondBordersGazette/videos/consider-your-november-68-booked-the-san-diego-food-wine-festival-returns-for-it/2141038416772628",
+     "content": "The festivities begin Friday with the debut of Icons + Legends at JULEP Venue, followed by a two-day waterfront celebration on San Diego Bay",
+     "score": 0.7742597
+    },
+    {
+     "title": "World-Class Tastings, Top Chefs, and Bayfront Celebrations | Visit California",
+     "url": "https://www.visitcalifornia.com/event/san-diego-bay-wine-food-festival",
+     "content": "Skip to content\n\nPlaces to Visit\n\nThings To Do\n\nTrip Inspiration\n\nRoad Trips\n\nPlaces to Visit\n\nThings To Do\n\nTrip Inspiration\n\nRoad Trips\n\nCalifornia Now News\n\nFamily Vacations\n\nVisit Native California\n\nPodcast\n\nTravel Guides\n\nNewsletter\n\nWelcome Centers\n\nRegional Map\n\nFind Your Ultimate Playground\n\nTravel Alerts\n\nFind Your Ultimate Playground\n\nTravel Alerts\n\nEvents & News /\n\nSan Diego Food + Wine Festival\n\nNovember 6–8, 2026\n\n# San Diego Food + Wine Festival [...] In the broadest sense, the San Diego Food + Wine Festival is a tribute to all that’s good about wine, food, and yes—this being San Diego—craft beer. Held at a different venue each November, it draws local, national, and international talents, as well as thousands of attendees—and why wouldn’t it? The weeklong festival is almost guaranteed to have perfect weather, and the outdoor goings-on have the beautiful San Diego skyline and bay as an unbeatable backdrop. [...] MORE:San Diego Taco Shops\n\n## San Diego Food + Wine Festival Events\n\n### Opening Night: Icons + Legends\n\nThings kicks off in grand fashion with Opening Night: Icons + Legends, an evening that brings together some of the region’s most acclaimed chefs, restaurants, wineries, breweries, and spirit producers. Guests can sample signature dishes and small bites while enjoying unlimited tastings of wine, craft beer, and cocktails from California and beyond.",
+     "score": 0.6538572
+    }
+   ]
+  },
+  {
+   "id": "E03",
+   "event": "E03",
+   "query": "San Diego Food and Wine Festival - Grand Tasting - Saturday Embarcadero Marina Park North San Diego November 7, 2026",
+   "results": [
+    {
+     "title": "Events · San Diego Food + Wine Festival · November 1 – 8, 2026",
+     "url": "https://www.sandiegowineclassic.com/events",
+     "content": "Signature\n\n  ### Grand Tasting Presented by Southwest Airlines®\n\n  Nov 7 · Embarcadero Marina Park North · 12 – 3 pm · VIP + Early Entry from 11 am\n\n  Details\n Nov8Sun\n\n  \n\n  VIP\n\n  ### Grand Fiesta VIP Experience Presented by Southwest Airlines®\n\n  Nov 8 · Embarcadero Marina Park North · 11 am – 3 pm · one hour before General Admission\n\n  Details\n Nov8Sun\n\n  \n\n  Signature\n\n  ### Grand Fiesta Presented by Southwest Airlines® [...] Festival Week\n\n  ### Bevan Cellars Wine Lunch at Mister A’s\n\n  Nov 6 · Mister A’s · 12–2 pm\n\n  Details\n Nov6Fri\n\n  \n\n  Signature\n\n  ### Icons + Legends Presented by Blacklane\n\n  Nov 6 · JULEP Venue · 6:30 – 9 pm · Early Entry from 6 pm\n\n  Details\n Nov7Sat\n\n  \n\n  VIP\n\n  ### Grand Tasting VIP Experience Presented by Southwest Airlines®\n\n  Nov 7 · Embarcadero Marina Park North · 11 am – 3 pm · one hour before General Admission\n\n  Details\n Nov7Sat\n\n  \n\n  Signature [...] Nov 8 · Embarcadero Marina Park North · 12 – 3 pm · VIP + Early Entry from 11 am\n\n  Details\n\n## Ticket packages\n\nMore to taste, more to explore. Bundle your festival moments and enjoy preferred package pricing compared to purchasing tickets separately.\n\nNov 6 – 8\n\n### Full Weekend Package\n\nIcons + Legends on Friday, then both days of the Grand Weekend Presented by Southwest Airlines®, on one ticket.\n\nFrom $405See the package Nov 7 – 8\n\n### 2-Day Grand Weekend Package",
+     "score": 0.9134376
+    },
+    {
+     "title": "San Diego Food + Wine Festival · November 1 – 8, 2026",
+     "url": "https://www.sandiegowineclassic.com",
+     "content": "Presented by Blacklane\n\nBig culinary names, unforgettable dishes, and standout wines and spirits, all in one night\n\nJULEP Venue\n\nTickets\n\nGrand Weekend Presented by Southwest Airlines®Two days, one weekend\n\nSaturday, Nov 7 · 11 am – 3 pm\n\n### Grand Tasting\n\nPresented by Southwest Airlines®\n\nSan Diego's iconic waterfront celebration of food, wine, spirits, and culinary discovery.\n\nEmbarcadero Marina Park North\n\nTickets  \n\nSunday, Nov 8 · 11 am – 3 pm\n\n### Grand Fiesta [...] ### Grand Fiesta\n\nPresented by Southwest Airlines®\n\nA vibrant celebration of the flavors and cultures connecting San Diego and Latin America.\n\nEmbarcadero Marina Park North\n\nTickets\n\nPackages\n\n## More to taste. More to explore.\n\nFOMO 4-Pack\n\nBring your crew and save, with four general admission tickets for one Grand Weekend day.\n\nSee the package\n\n2-Day Grand Weekend Package\n\nExperience both days and save compared to purchasing tickets separately.\n\nSee the package\n\nFull Weekend Package [...] ## 2026 sponsors\n\nSouthwest AirlinesOfficial Airline Partner Southwest Airlines Rapid Rewards Credit CardPreferred Credit Card GMCOfficial Auto Sponsor BlacklaneOfficial Luxury Ground Transportation Acqua PannaOfficial Water Partner S. PellegrinoOfficial Water Partner MailleOfficial Condiment Partner\n\n## Get Involved\n\nBrands + restaurants\n\n### Exhibit\n\nConnect directly with thousands of food and drink lovers.\n\nLearn more  \n\nBrand partnerships\n\n### Sponsor",
+     "score": 0.910998
+    },
+    {
+     "title": "Grand Tasting Presented by Southwest Airlines",
+     "url": "https://www.sandiegowineclassic.com/grand-tasting",
+     "content": "Saturday, November 7, 2026; Time: 12 – 3 pm · VIP + Early Entry from 11 am; Place: Embarcadero Marina Park North · 400 Kettner Blvd, San Diego. Get tickets ...Read more",
+     "score": 0.882276
+    },
+    {
+     "title": "🍷 The 22nd annual San Diego Food & Wine Festival ...",
+     "url": "https://www.instagram.com/reel/De9xIUJvw_4",
+     "content": "The Grand Tasting takes place on Saturday, November 7 ⏰ 11AM - 3PM Embarcadero Marina Park North Tickets are ALL INCLUSIVE food and ...Read more",
+     "score": 0.8752871
+    },
+    {
+     "title": "Uncorked: San Diego - Uncorked Wine Festivals",
+     "url": "https://uncorkedwinefestivals.com/uncorked-san-diego-wine-fest",
+     "content": "newlogo-650×255newlogo-650×255newlogo-650×255newlogo-650×255\n\nparallax background\n\n# UNCORKED: SAN DIEGO Embarcadero Marina Park North\n\nSaturday April 25th 2026\n\n1-5pm\n\nWhere: Embarcadero Marina Park North  \n400 Kettner Blvd  \nSan Diego, CA 92101 [...] LOCATION:\n\nWhere: Embarcadero Marina Park North  \n400 Kettner Blvd  \nSan Diego, CA 92101\n\nShare\n\nUncorked Newsletter\n\nSubscribe to the Uncorked Newsletter\n\nBy submitting this form, you are consenting to receive marketing emails from: Uncorked Festivals, 3300 Maxella Ave. #900, Marina Del rey, CA, 90094,  You can revoke your consent to receive emails at any time by using the SafeUnsubscribe® link, found at the bottom of every email. Emails are serviced by Constant Contact\n\nSkip to content [...] Join us Saturday April 25th for the 11th anniversary of Uncorked: San Diego at Marina Park North. Sip & swirl over 150 wines & bubblies from across the globe. Plus savor \"outside the bottle\"options like spirits and canned cocktails, and some incredible zero proof wines and mocktails too. Also enjoy our lawn game lounge, fave local food trucks and a perfectly curated mix of live music by our DJs.",
+     "score": 0.6213807
+    }
+   ]
+  },
+  {
+   "id": "E04",
+   "event": "E04",
+   "query": "SDK Friendsgiving Market Kujo Eats National City November 7, 2026",
+   "results": [
+    {
+     "title": "Pudz Pizza at SDK Friendsgiving Night Market (Nov 2026)",
+     "url": "https://www.facebook.com/sandiegokollective/posts/-vendor-spotlight-pudz-pizza-good-food-great-pizza-and-local-businesses-bringing/1168728652147366",
+     "content": "SDK FRIENDSGIVING NIGHT MARKET 🍂 📅 Saturday, November 7th ⏰ 3–8PM 📍 Kujo Eats Parking Lot 3400 E 8th St, National City, CA 91950. SOCIAL at 4:",
+     "score": 0.9092728
+    },
+    {
+     "title": "SDK FRIENDSGIVING NIGHT MARKET 🤎🍂 Good food ...",
+     "url": "https://www.instagram.com/p/DeGZgIVOWHK",
+     "content": "Saturday, November 7th ⏰ 3–8PM 🍰 Cake Social | 4:30PM 📍 Kujo Eats Parking Lot @kujoeats 3400 E 8th St, National City, CA 91950 🆓 FREE ENTRY",
+     "score": 0.8025714
+    },
+    {
+     "title": "Best Filipino Food in National City, CA | Kujo Eats | Filipino ...",
+     "url": "https://kujoeats.com",
+     "content": "Stop by Kujo Eats and enjoy Filipino food made with care right here in National City. You'll find us at 3400 E 8th St Suite 115-117, with doors open daily from ...Read more",
+     "score": 0.38678718
+    },
+    {
+     "title": "SDK",
+     "url": "https://tavily.com/knowledge/company/RZIGF4sMPrCK",
+     "content": "# SDK Software, Inc.\nID: RZIGF4sMPrCK\nWebsite: www.sdksoft.com\nLegal name: SDK Software Inc.\nHeadquarters: Edison, New Jersey, United States\nLinkedIn: www.linkedin.com/company/sdk · 7,685 followers\nIndustry: IT Services and IT Consulting\nIndustry codes: SIC 73, 737, NAICS 541, 541511\nCompany type: Privately Held\nFounded: 1993\nSocial profiles: www.crunchbase.com/organization/sdk-software\nEmail: info@sdksoft.com\nPhone: 1-763-657-7272, +7636577272 [...] Description: SDK is a technology staffing company that provides technology projects and services. [...] ## Headcount\n- Now: 172 · -2 yearly (-1.1%) · +1 quarterly · +2 monthly\n  - Northern America: 11\n  - Southern Asia: 6\n  - Western Asia: 4\n  - Northern Europe: 3\n  - Sub Saharan Africa: 2\n  - Western Europe: 2\n  - Eastern Europe: 1\n  - South Eastern Asia: 1\n  - Latin America: 0\n  - Southern Europe: 0\n  - Central Asia: 0\n  - Australia New Zealand: 0\n  - Polynesia: 0\n  - Northern Africa: 0\n  - Melanesia: 0\n\n## Financials\n- Annual revenue: 6.11M USD",
+     "score": 0.2435304
+    },
+    {
+     "title": "SDK",
+     "url": "https://tavily.com/knowledge/company/kghMfwJh6EIH",
+     "content": "# SDK A/S\nID: kghMfwJh6EIH\nWebsite: www.sdkgroup.com\nHeadquarters: Fredericia, Denmark\nLinkedIn: www.linkedin.com/company/sdkgroup-com · 5,863 followers\nIndustry: Truck Transportation\nCompany type: Privately Held\nSocial profiles: www.facebook.com/bwtto2, www.youtube.com/watch?v=9rzxonwe3hk\nPhone: +45 7620 6000 [...] Description: SDK Group is a company that provides various services in the fields of project cargo, offshore energy, agency, husbandry/passage services, ship to ship services, cruise, chartering, liner services, customs, career, vacancies, trainee at SDK, board of directors, group structure, management, esg, certificates & policies, sustainability reports, whistleblower [...] ## Headcount\n- Now: 128 · +8 yearly (6.7%) · +1 quarterly · 0 monthly\n  - Northern Europe: 71\n  - Southern Europe: 1\n  - Southern Asia: 1\n  - Eastern Europe: 0\n  - Latin America: 0\n  - Sub Saharan Africa: 0\n  - Central Asia: 0\n  - Northern America: 0\n  - Australia New Zealand: 0\n  - South Eastern Asia: 0\n  - Polynesia: 0\n  - Northern Africa: 0\n  - Melanesia: 0\n  - Western Europe: 0\n  - Western Asia: 0",
+     "score": 0.18961145
+    }
+   ]
+  },
+  {
+   "id": "E05",
+   "event": "E05",
+   "query": "San Diego Singles Event: Speed Dating Drift Cafe San Diego November 7, 2026",
+   "results": [
+    {
+     "title": "Speed Dating San Diego - Singles Events in San Diego - CitySwoon",
+     "url": "https://cityswoon.com/speed-dating-sandiego.jsp",
+     "content": "The city's speed dating scene is as diverse as its vibrant neighborhoods, ensuring you find your perfect match. CitySwoon's San Diego speed dating events cater to all types of singles from mid twenties, 30’s and 40’s right up to 55+. And connecting you with those who share your interests and values. It's time to move past endless swiping and dive into the thrilling world of San Diego speed dating with CitySwoon. So, what are you waiting for? It's time to ditch the dating apps, traditional speed [...] CitySwoon has put the sparkle back into dating for San Diego singles. With a variety of events and venues to choose from, there's never been a better time to dive into the exciting world of speed dating 2.0 in San Diego. So whether you're a beach bum from Ocean Beach or a creative soul from North Park, there's a CitySwoon singles event tailor-made for you.\n\n## Smooth, Cool & Exciting Dating in San Diego [...] traditional speed dating, and explore the electrifying world of speed dating in San Diego with CitySwoon.",
+     "score": 0.61251885
+    },
+    {
+     "title": "Speed Dating San Diego - Local singles events",
+     "url": "https://thefun.singles/san-diego",
+     "content": "Top Speed Dating events in San Diego. Join weekly events to meet single men and women. Connect through virtual and in person singles events.",
+     "score": 0.5677694
+    },
+    {
+     "title": "San Diego Singles Event: Speed Dating (Ages 22-30) at ...",
+     "url": "https://www.eventbrite.com/e/san-diego-singles-event-speed-dating-ages-22-30-at-coffee-shop-tickets-2000177736453",
+     "content": "Presented by Jigsaw Dating®. A fresh twist on dating - meet singles aged 22-30 in a cozy, intimate setting that's perfect for conversation and connection.",
+     "score": 0.52086246
+    },
+    {
+     "title": "FALL for someone new in San Diego!  ...",
+     "url": "https://www.instagram.com/reel/DQmi-ZIj8OB?hl=en",
+     "content": "Singles Arcade Night Ages 25-45: 11/20/25, 7-9 pm @ Dave and Busters, 2931 Camino Del Rio N, San Diego, CA 92108 ☕ Coffee Shop Speed Dating",
+     "score": 0.37072703
+    },
+    {
+     "title": "Home & Lifestyle: Dating Events & Tickets in San Diego, CA | Eventbrite",
+     "url": "https://www.eventbrite.com/b/ca--san-diego/home-and-lifestyle/dating",
+     "content": "# IT'S A DATE in San Diego, CA\n\nSpark something new, no matter your relationship status.\n\n!(\n\nDate\n\nToday\n\nTomorrow\n\nThis Weekend\n\nThis Month\n\n## Site Navigation\n\nUse Eventbrite\n\nPlan Events\n\nFind Events\n\nConnect With Us",
+     "score": 0.3329396
+    }
+   ]
+  },
+  {
+   "id": "E06",
+   "event": "E06",
+   "query": "On The Spot Dating Show: 1 Year Anniversary Party AleSmith Brewing Company San Diego November 7, 2026",
+   "results": [
+    {
+     "title": "On The Spot Dating Show: 1 Year Anniversary Party",
+     "url": "https://www.eventbrite.com/e/on-the-spot-dating-show-1-year-anniversary-party-tickets-2003434565717",
+     "content": "On The Spot Dating Show: 1 Year Anniversary Party - Saturday, November 7, 2026 at AleSmith Brewing Company, • 5 PM - 10 PM Overview The only. Doors at 5:00 PM,",
+     "score": 0.9522955
+    },
+    {
+     "title": "On The Spot Dating 1-Year Party in San Diego",
+     "url": "https://ma.to/event/on-the-spot-dating-08-nov-2026",
+     "content": "When Saturday, 7 November 17:00 - 22:00. The evening features a live dating show, Doors open at 5 PM, the dating show begins at 6 PM, and the event runs until",
+     "score": 0.81665546
+    },
+    {
+     "title": "On The Spot Dating Show is celebrating one year of San ...",
+     "url": "https://www.instagram.com/reel/DfCsOHHo-41",
+     "content": "🗓️ SATURDAY, NOV 7 @alesmithtastingroom Doors at 5pm IRL dating show + social mixer after party Surprises, perks, and giveaways!",
+     "score": 0.79099923
+    },
+    {
+     "title": "On the spot dating 1 year anniversary at Alesmith Brewing",
+     "url": "https://www.facebook.com/61573244720145/posts/were-turning-1-year-old-a-year-ago-today-we-hosted-our-very-first-show-we-didnt-/122134737842774824",
+     "content": "All (21+) are welcome and it's free to attend! RSVP here and share with your friends to make it an even better vibe!Pitch-A -Friend is a one-of-",
+     "score": 0.76972175
+    },
+    {
+     "title": "AleSmith Brewing Company",
+     "url": "https://tavily.com/knowledge/company/L86Dt7WdETpE",
+     "content": "# AleSmith Brewing Company\nID: L86Dt7WdETpE\nWebsite: www.alesmith.com\nHeadquarters: San Diego, CA, United States\nLinkedIn: www.linkedin.com/company/alesmithbrewing · 6,100 followers\nIndustry: Food and Beverage Services\nIndustry codes: SIC 20, 208, NAICS 31, 312\nCompany type: Privately Held\nFounded: 1995 [...] Description: AleSmith Brewing Company is a company that specializes in brewing beer. They offer a variety of beer options and provide year-round beer finders. They also offer party tricks and speedway stout versions. [...] ## Headcount\n- Now: 42 · +5 yearly (13.5%) · -1 quarterly · -1 monthly\n  - Northern America: 31\n  - Southern Asia: 1\n  - Eastern Europe: 0\n  - Latin America: 0\n  - Southern Europe: 0\n  - Sub Saharan Africa: 0\n  - Central Asia: 0\n  - Australia New Zealand: 0\n  - Northern Europe: 0\n  - South Eastern Asia: 0\n  - Polynesia: 0\n  - Northern Africa: 0\n  - Melanesia: 0\n  - Western Europe: 0\n  - Western Asia: 0\n\n## Financials\n- Annual revenue: 32.59M USD",
+     "score": 0.4457955
+    }
+   ]
+  },
+  {
+   "id": "E07",
+   "event": "E07",
+   "query": "Open Mic Night Red Silo Brewing Cookeville November 5, 2026",
+   "results": [
+    {
+     "title": "Open Mic Night – Thu, Nov 5, 2026 6:00pm",
+     "url": "https://www.1077gracefm.com/2026/10/07/open-mic-night-thu-nov-5-2026-600pm-900pm-red-silo-brewing",
+     "content": "Open Mic Night – Thu, Nov 5, 2026 6:00pm – 9:00pm @ Red Silo Brewing. Cookeville, TN, USA / 107.7 Grace FM. Hip Cookeville Community Calendar.",
+     "score": 0.959766
+    },
+    {
+     "title": "Open Mic Night – Thu, Nov 5, 2026 6:00pm",
+     "url": "https://www.countrygiant.com/2026/10/07/open-mic-night-thu-nov-5-2026-600pm-900pm-red-silo-brewing",
+     "content": "Open Mic Night – Thu, Nov 5, 2026 6:00pm – 9:00pm @ Red Silo Brewing. Cookeville, TN / 94.7 The Country Giant. Oct 7, 2026 | 12:17 AM. Latest. On Air Now.",
+     "score": 0.94314384
+    },
+    {
+     "title": "Hey Cookeville! Red Silo Brewing Company has an open mic ...",
+     "url": "https://www.facebook.com/HipCookeville/posts/hey-cookeville-red-silo-brewing-company-has-an-open-mic-every-thursday-evening-h/1143997837816283",
+     "content": "Red Silo Brewing Company has an open mic every Thursday evening! Visit www.hipcookeville.com and click on monthly calendar.",
+     "score": 0.71305263
+    },
+    {
+     "title": "EVERY THURSDAY AT RED SILO - Open Mic Night (6-9 ...",
+     "url": "https://www.instagram.com/p/CVTHS5Rs5XB",
+     "content": "Open Mic Night (6-9 pm)⠀⠀⠀⠀⠀⠀⠀⠀⠀ ... Come on down to Red Silo on Thursdays for Open Mic Night! You bring the music - we have the beer! play",
+     "score": 0.6030211
+    },
+    {
+     "title": "Red Silo Brewing",
+     "url": "https://tavily.com/knowledge/company/jThpL0IZsz5B",
+     "content": "# Red Silo Brewing, LLC\nID: jThpL0IZsz5B\nHeadquarters: Cookeville, Tennessee, United States\nLinkedIn: www.linkedin.com/company/red-silo-brewing-llc · 4 followers\nFounded: 2015 [...] ## Headcount\n- Now: 3 · -1 yearly (-25%) · 0 quarterly · 0 monthly\n  - Northern America: 1\n  - Eastern Europe: 0\n  - Latin America: 0\n  - Southern Europe: 0\n  - Sub Saharan Africa: 0\n  - Central Asia: 0\n  - Australia New Zealand: 0\n  - Northern Europe: 0\n  - South Eastern Asia: 0\n  - Polynesia: 0\n  - Southern Asia: 0\n  - Northern Africa: 0\n  - Melanesia: 0\n  - Western Europe: 0\n  - Western Asia: 0\n\n## Technology\n- Detected: 1\n- well · last seen 2024-06-03\n\n## Reputation\n- Open roles: 0",
+     "score": 0.42262435
+    }
+   ]
+  },
+  {
+   "id": "E08",
+   "event": "E08",
+   "query": "Waka Flocka Flame & Friends Live Revolver Dance Hall of Cookeville Cookeville November 5, 2026",
+   "results": [
+    {
+     "title": "waka flocka flame & friends live at revolver",
+     "url": "https://www.eventbrite.com/e/waka-flocka-flame-friends-live-at-revolver-tickets-2003442079190",
+     "content": "• 7 PM - 11:59 PM Overview Waka Flocka Flame is coming to Revolver. Join us Thursday, November 5, in Cookeville. Doors open at 7 Good to know Highlights 4",
+     "score": 0.80844593
+    },
+    {
+     "title": "Revolver of Cookeville",
+     "url": "https://www.facebook.com/p/Revolver-of-Cookeville-61586833800854",
+     "content": "Thu, Nov 5 at 7:00PM CST · WAKA FLOCKA FLAME & FRIENDS LIVE AT REVOLVER · 565 S JEFFERSON ST, Cookeville, TN · 43 people interested.Read more",
+     "score": 0.7771143
+    },
+    {
+     "title": "Revolver of Cookeville is the hottest bar and club in ...",
+     "url": "https://www.instagram.com/revolver_of_cookeville/reel/C6pqGKZOsUy",
+     "content": "Waka Flocka Flame is making his way back to Revolver of Cookeville on November 5 for the TTU Homecoming Kickoff Party! Only 100 Early Bird",
+     "score": 0.70871735
+    },
+    {
+     "title": "SOLD OUT ONLINE. FULL HOUSE LOADING. Waka ...",
+     "url": "https://www.instagram.com/reel/DXOcVgCCQNB?hl=en",
+     "content": "Waka Flocka Flame hits Revolver of Cookeville TONIGHT. SOLD OUT ONLINE. We're bringing even more major shows to Revolver this year. TICKETS ARE",
+     "score": 0.5923135
+    },
+    {
+     "title": "Get Ready, Cookeville! Australia's MAGIC HUNKS® Are ...",
+     "url": "https://avenueticket.com/event/magic-hunks-australia-takeover-cookevilletn-usa",
+     "content": "Australia's MAGIC HUNKS® Are Bringing the Heat!. 18+. Fri, May 15, 2026, 09:00 PM CST. Doors open at 7:30 PM. Revolver Dance Hall of Cookeville. Get ...Read more",
+     "score": 0.509887
+    }
+   ]
+  },
+  {
+   "id": "E09",
+   "event": "E09",
+   "query": "Bomb Shelter Comedy Open Mic Roasted Hemp Co Cookeville November 5, 2026",
+   "results": [
+    {
+     "title": "Shows",
+     "url": "https://brookjolley.com/shows",
+     "content": "November 5, 2026 7:00 pm - 9:00 pm. Roasted Hemp Co, 1068 E 10th St F, Cookeville, TN 38501, USA. Bomb Shelter Open Mic. November 5, 2026 9:00 pm - 11:00 pmRead more",
+     "score": 0.926683
+    },
+    {
+     "title": "Bomb Shelter Comedy Open Mic - Roasted Cookeville",
+     "url": "https://roastedcookeville.com/event/bomb-shelter-comedy-open-mic/2026-11-05",
+     "content": "in 4 days — Event Series: Bomb Shelter Comedy Open Mic. Bomb Shelter Comedy Open Mic. November 5 @ 9:00 pm - 10:00 pm. « Dabgo Music Bingo Thursdays ...Read more",
+     "score": 0.7946564
+    },
+    {
+     "title": "Dabgo music bingo and bomb shelter comedy open mic in ...",
+     "url": "https://www.facebook.com/bjolleycomedy/posts/im-posted-up-at-roasted-tonight-for-a-nice-little-emotional-progression-we-start/1732398302227565",
+     "content": "Tonight at Roasted Hemp: Dabgo Music Bingo at 7 Bomb Shelter Open Mic at 9 Two chances to make bad decisions in the same building. #RoastedHemp ...Read more",
+     "score": 0.5931622
+    },
+    {
+     "title": "Get Roasted (@getroastedentertainment)",
+     "url": "https://www.instagram.com/getroastedentertainment",
+     "content": "Get Roasted!, Roasted Hemp Co, Presents: is a live Entertainment&Event Venue In Cookeville Tennessee showcasing Music, Comedy, and more!Read more",
+     "score": 0.46832922
+    },
+    {
+     "title": "Roasted Hemp Co",
+     "url": "https://tavily.com/knowledge/company/lXC2h9vUKNke",
+     "content": "# Roasted Hemp Foods\nID: lXC2h9vUKNke\nWebsite: www.roastedhempfoods.com\nHeadquarters: Boulder, Colorado, United States\nLinkedIn: www.linkedin.com/company/roasted-hemp-foods · 2 followers\nIndustry: Food and Beverage Retail\nCompany type: Privately Held\n\n## Headcount\n- Now: 2 · +2 yearly · 0 quarterly · 0 monthly\n\n## Reputation\n- Open roles: 0",
+     "score": 0.13118461
+    }
+   ]
+  },
+  {
+   "id": "E10",
+   "event": "E10",
+   "query": "Veterans Day Program Cumberland County High School Crossville November 6, 2026",
+   "results": [
+    {
+     "title": "Veterans Day Program - Crossville",
+     "url": "https://allevents.in/crossville/veterans-day-program/200030859355641",
+     "content": "Veterans Day Program takes place on Fri, 06 Nov, 2026 at 02:00 pm to Fri, 06 Nov, 2026 at 02:00 pm at Cumberland County Schools, 660 Stanley St,Crossville, ...Read more",
+     "score": 0.9055316
+    },
+    {
+     "title": "Cumberland County High School Veterans Day celebration ...",
+     "url": "https://www.facebook.com/1025wowcountry/posts/-cumberland-county-high-school-veterans-day-celebration-mark-your-calendars-cumb/1782746873854446",
+     "content": "❤️     Join the CCHS faculty, staff, and students for a Veterans Day celebration on Friday, November 6, at 2:00 PM in the Jets Auditorium.Read more",
+     "score": 0.78334314
+    },
+    {
+     "title": "Military Programs and Events - Cumberland County High School",
+     "url": "https://cchs.ccs-tn.net/militaryprograms",
+     "content": "Our annual Veterans Day program at CCHS is an honored tradition in our community as our students are soon to become adults in our society, and it is very ...Read more",
+     "score": 0.6964752
+    },
+    {
+     "title": "Cumberland County High School",
+     "url": "https://tavily.com/knowledge/company/3UCz5FsCWld9",
+     "content": "# Cumberland County High School\nID: 3UCz5FsCWld9\nWebsite: www.ccs-tn.net\nHeadquarters: Crossville, Tennessee, United States\nLinkedIn: www.linkedin.com/school/cumberland-county-high-school · 394 followers\nSocial profiles: www.facebook.com/jetpride, www.instagram.com/jet_pride\nPhone: 931-484-6135, 2025-2026, 931-484-6491 [...] Description: The company provides information and services related to education, student/parent forms, health information, special education, athletics, sports, social clubs and organizations, and calendar. [...] ## Products and services\nKeywords: education, health, special education, student, parents\n\n## Headcount\n- Now: 24 · 0 yearly (0%) · -1 quarterly · 0 monthly\n  - Northern America: 4\n  - Eastern Europe: 0\n  - Latin America: 0\n  - Southern Europe: 0\n  - Sub Saharan Africa: 0\n  - Central Asia: 0\n  - Australia New Zealand: 0\n  - Northern Europe: 0\n  - South Eastern Asia: 0\n  - Polynesia: 0\n  - Southern Asia: 0\n  - Northern Africa: 0\n  - Melanesia: 0\n  - Western Europe: 0\n  - Western Asia: 0",
+     "score": 0.5189612
+    },
+    {
+     "title": "Community Calendar | 102.5 WOW COUNTRY | Today's Country & the Legends!",
+     "url": "https://1025wowcountry.com/community-calendar",
+     "content": "102.5 WOW COUNTRY | Today's Country & the Legends!\n\n# Community Calendar\n\nFor more information regarding this page please contact Main Street Media during normal business hours.  We can be reached by phone (931) 707-1102, Fax (931) 707-1220 or visit the Contact Us link on this website.\n\n# Social Media\n\nfacebook\ntwitter\ninstagram\nalexa\n\nMain Street Media LLC\nPowered by SoCast",
+     "score": 0.042344477
+    }
+   ]
+  },
+  {
+   "id": "E11",
+   "event": "E11",
+   "query": "Annual Panther Golf Tournament Bear Trace At Cumberland Mountain (TN Golf Trail) Crossville November 7, 2026",
+   "results": [
+    {
+     "title": "Bear Trace at Cumberland Mountain | Crossville, TN | ExploreCrossville",
+     "url": "https://explorecrossville.com/explore/bear-trace-at-cumberland-mountain",
+     "content": "Bear Trace at Cumberland Mountain is a Jack Nicklaus-designed masterpiece nestled within the scenic woodlands of Cumberland Mountain State Park. Known for its rolling terrain, winding creeks, and towering pines, this championship 18-hole course offers a perfect balance of natural beauty and challenging play. With bentgrass greens, five sets of tees, and strategic bunkering, golfers of all skill levels can enjoy a dynamic round in a peaceful park setting. The signature 7th hole—featuring a blind [...] a blind tee shot and a green framed by stacked stone and bunkers—is just one of many highlights that make Bear Trace a must-play destination in Tennessee’s Golf Capital. [...] Skip to content\n\nGolf\n\n# Bear Trace at Cumberland Mountain\n\n TN\n\n## About",
+     "score": 0.6479992
+    },
+    {
+     "title": "Courses - Tennessee Golf Association",
+     "url": "https://tngolf.org/courses",
+     "content": "43f2a3_cd32fb0852fe40d78e041fced96c8e5c~mv2_d_3375_2625_s_4_2\n\nSemi-Private • Knoxville Region\n\n#### Avalon Country Club\n\nLenoir City, TN\n\nVisit Website\n\n(865) 986-4653\n\nDirections to Course\n\nBearTrace (1)\n\nPublic • Middle Region\n\n#### Bear Trace at Cumberland Mountain\n\nCrossville, TN\n\nParticipates in Youth on Course Program\n\nKids Play Free\n\nVisit Website\n\n(931) 707-1640\n\nDirections to Course\n\nBearTrace (1)-1\n\nPublic • Chattanooga Region\n\n#### Bear Trace at Harrison Bay\n\nHarrison, TN [...] The Tennessee Golf Trail connects nine state park courses from one end of the state to the other: Warriors Path in Kingsport, Fall Creek Falls near Pikeville, Henry Horton in Chapel Hill, Montgomery Bell in Burns, Paris Landing in Buchanan, Pickwick Landing in Counce, Bear Trace at Cumberland Mountain, Bear Trace at Harrison Bay, and Bear Trace at Tims Ford. All nine are TGA member clubs. Whether you play one or work through all the courses, the Trail is Tennessee golf worth the trip. [...] Tennessee Golf Trail →\n\n## More Courses. More Reasons to Play.\n\nAs a member, you can browse the full TGA course directory, find a new club to play, and book your tee time directly through the myTGA app.\n\nJoin the TGA →",
+     "score": 0.51383984
+    },
+    {
+     "title": "Golfweek Amateur Tour",
+     "url": "https://www.amateurgolftour.net/nashville_tour_pages/cc_pay.aspx",
+     "content": "### 6/21/2026\n\n### The Climbing\n\n### Bear Trace at Cumberland Mountain\n\n### 7/11/2026\n\n### The Shading\n\n### WillowBrook Golf Club\n\n### 7/26/2026\n\n### The Gulf Coast Summer Championship\n\n##### (Regional or Combo Event)\n\n### Lost Key Golf Club\n\n### 8/1/2026\n\n### The Gulf Coast Summer Championship\n\n##### (Regional or Combo Event)\n\n### Lost Key Golf Club\n\n### 8/2/2026\n\n### The Challenge\n\n### Henry Horton GC\n\n### 8/29/2026\n\n### Counting Coup\n\n### Indian Hills Golf Course\n\n### 9/13/2026 [...] ### Pursell Farms (FarmLinks)\n\n### 3/14/2026\n\n### The Season Kickoff\n\n##### (Regional or Combo Event)\n\n### Pursell Farms (FarmLinks)\n\n### 3/15/2026\n\n### The Battle\n\n### Old Fort Golf Club\n\n### 4/11/2026\n\n### The Glade\n\n### Cedar Crest Golf Club\n\n### 5/2/2026\n\n### The Memorial\n\n### Towhee Club\n\n### 5/24/2026\n\n### The Masters\n\n##### (Regional or Combo Event)\n\n### Robert Trent Jones Golf Trail @ River\n\n### 6/6/2026\n\n### Tennessee Golf Trail (Bear Trace @ Tims Ford)\n\n### 6/21/2026 [...] ### 9/13/2026\n\n2026 GWAT (14) $150 Counting Coup @ Indian Hills\n\n$150.00\n\nBuy now\n\n### Nashville Golfweek Amateur Tour Championship\n\n### WillowBrook Golf Club\n\n### 9/26/2026\n\n2026 GWAT (15) $350 Nashville Golfweek Amateur Golf Tour Championship @ Greystone 2 day major\n\n$350.00\n\nBuy now",
+     "score": 0.4902606
+    },
+    {
+     "title": "Cumberland Mountain Golf",
+     "url": "https://tnstateparks.com/parks/cumberland-mountain/golf",
+     "content": "Tee off at the beautiful Cumberland Mountain golf course. Book your tee time and plan your round at this premier Tennessee State Park course.",
+     "score": 0.44898248
+    },
+    {
+     "title": "The Bear Trace at Cumberland Mountain | Crossville TN",
+     "url": "https://www.facebook.com/BearTraceCumberlandMountain",
+     "content": "The Bear Trace at Cumberland Mountain ; 90% recommend (385 reviews) ; $$ ; Closed now ; 407 Wild Plum Lane, Crossville, TN, United States, 37572",
+     "score": 0.43194416
+    }
+   ]
+  },
+  {
+   "id": "E12",
+   "event": "E12",
+   "query": "Sh-Boom! A Christmas Miracle Cumberland County Playhouse Crossville November 7, 2026",
+   "results": [
+    {
+     "title": "Sh-Boom! A Christmas Miracle Crossville Tickets",
+     "url": "https://www.stubhub.com/in/sh-boom-a-christmas-miracle-crossville-tickets-11-7-2026/event/162089003",
+     "content": "See Sh-Boom! A Christmas Miracle live at Cumberland County Playhouse in Crossville on November 7, 2026, at 2:30 pm. Sorry, there are no tickets",
+     "score": 0.91306627
+    },
+    {
+     "title": "Sh-Boom! A Christmas Miracle Tickets",
+     "url": "https://www.viagogo.com/ae/E-162068722",
+     "content": "A Christmas Miracle tickets at Cumberland County Playhouse, Crossville. Sorry, there are no tickets available for this event. Christmas Miracle 2:30 PM",
+     "score": 0.7190094
+    },
+    {
+     "title": "Sh-Boom! A Christmas Miracle - Cumberland County Playhouse",
+     "url": "https://ccplayhouse.com/sh-boom-a-christmas-miracle",
+     "content": "Skip to content\n\n[](\n\nGET TICKETS NOW\n\nDonate now\n\n \n\n## Sh-Boom! A Christmas Miracle\n\nWritten & Created by Roger Bean\n\nThe holiday sequel to 2025’s smash hit Sh-Boom! Life Could Be a Dream! [...] Mainstage\n\nCo-sponsored by: Kirk & Nancy Powell Ellis, Senator Paul & Amy Bailey, and the Preserve at Fairfield Glade\n\nYou can purchase tickets below\n\n[](\n\nor call our Box Office at 931.484.5000 [...] In this holiday sequel, the gang gets back together to perform again as a group for the Christmas Bazaar at Wally’s church. Denny and Eugene won’t speak to each other, Duke and Lois are in the middle of an unacknowledged marital spat, and Wally is left to broker the peace for Christmas.\n\n \n\nFilled with great ’60s doo-wop hits and holiday classics.\n\nNovember 6-December 19, rated PG\n\nMainstage",
+     "score": 0.6701125
+    },
+    {
+     "title": "Sh-Boom! Life Could Be A Dream",
+     "url": "https://ccplayhouse.com/life-could-be-a-dream",
+     "content": "A Christmas Miracle · It's a Wonderful Life: A Live Radio Play. 2026 Mainstage ... Friday: 10:00 AM – 7:00 PM Saturday: 10:00 AM – 7:00 PM Sunday: 12:00",
+     "score": 0.5818027
+    },
+    {
+     "title": "Live Streaming - Cumberland County Playhouse",
+     "url": "https://ccplayhouse.com/live-streaming",
+     "content": "Skip to content\n\n[](\n\nGET TICKETS NOW\n\nDonate now\n\n \n\nBelow are the links where you will both purchase your tickets and return to view the performances.\n\nElvis Has Left the Building\n\n10/20: \n\n10/22: \n\n10/23: \n\n10/27: \n\n10/31: \n\nEvery Christmas Story Ever Told and Then Some\n\n11/28: \n\n12/6: \n\n12/11: \n\n12/16: \n\n12/19: \n\n​Sanders Family Christmas\n\n11/21: \n\n11/22: \n\n11/29: \n\n12/12: \n\n12/18: \n\nMandy Barnett\n\nShare the Love",
+     "score": 0.35053307
+    }
+   ]
+  },
+  {
+   "id": "E13",
+   "event": "E13",
+   "query": "8th Annual Guns & Hoses Chili Cook-Off Fundraiser Bates Nut Farm Valley Center November 8, 2026",
+   "results": [
+    {
+     "title": "8th Annual Guns & Hoses Chili Cook-Off Fundraiser",
+     "url": "https://batesnutfarm.biz/blogs/events/annual-guns-hoses-chili-cook-off-fundraiser",
+     "content": "Date: Sunday, November 8, 2026. Time: 12:00pm - 3:00pm. Location: Bates Nut Farm. Address: 15954 Woods Valley Road, Valley Center, CA. Phone: 760-749-3333.Read more",
+     "score": 0.9615375
+    },
+    {
+     "title": "Guns and Hoses cook-off will benefit Explorers",
+     "url": "https://www.valleycenter.com/articles/guns-and-hoses-cook-off-will-benefit-explorers",
+     "content": "Oct 14, 2026 — The 8th annual Guns & Hoses Chili cook-off, Sunday, November 8, noon-3 p.m. will be at Bates Nut Farm. Entry fee is $10 per person.",
+     "score": 0.92684203
+    },
+    {
+     "title": "Events – Bates Nut Farm",
+     "url": "https://batesnutfarm.biz/blogs/events",
+     "content": "Bates Nut Farm hosts a variety of events throughout the year. Check back regularly for updates! 8th Annual Guns & Hoses Chili Cook-Off Fundraiser … 2026",
+     "score": 0.87706697
+    },
+    {
+     "title": "Valley Center's 8th Annual Guns & Hoses Chili Cook-Off on ...",
+     "url": "https://www.facebook.com/ValleyCenterFire/posts/its-starting-to-heat-up-do-you-have-what-it-takes-to-cook-a-better-chili-than-yo/1505767344910835",
+     "content": "Join us at Bates Nut Farm on Sunday, November 8th. Entry forms are now available! myVCBA.com/chili. May be an image of text ...Read more",
+     "score": 0.7999589
+    },
+    {
+     "title": "Bates Nut Farm",
+     "url": "https://tavily.com/knowledge/company/QpPCJspAhBk7",
+     "content": "# Bates Nut Farm\nID: QpPCJspAhBk7\nWebsite: www.batesnutfarm.biz\nHeadquarters: Valley Center, CA, United States\nLinkedIn: www.linkedin.com/company/bates-nut-farm · 107 followers\nIndustry: Retail\nIndustry codes: SIC 54, 544, NAICS 44, 445\nCompany type: Self-Owned\nFounded: 1921\nSocial profiles: www.facebook.com/bates-nut-farm/135770496245, www.facebook.com/batesnutfarm1921, www.twitter.com/batesnutfarm, www.crunchbase.com/organization/the-nut-farm, www.instagram.com/batesnutfarm [...] ## Web traffic\n- Monthly visits: 9,509 (-25.3% change)\n- Pages per visit: 1.95\n- Average visit duration: 60 seconds\n- Bounce rate: 63%\n- Global rank: 2,275,808\n- Country rank: 591,614\n- Category rank: 3,833\n\n## Reputation\n- Employee review score: 4.199999809265137 from 3 reviews\n- Open roles: 0 [...] ## Headcount\n- Now: 13 · +2 yearly (18.2%) · 0 quarterly · 0 monthly\n  - Northern America: 1\n  - Eastern Europe: 0\n  - Latin America: 0\n  - Southern Europe: 0\n  - Sub Saharan Africa: 0\n  - Central Asia: 0\n  - Australia New Zealand: 0\n  - Northern Europe: 0\n  - South Eastern Asia: 0\n  - Polynesia: 0\n  - Southern Asia: 0\n  - Northern Africa: 0\n  - Melanesia: 0\n  - Western Europe: 0\n  - Western Asia: 0\n\n## Financials\n- Annual revenue: 31.53M USD",
+     "score": 0.41406992
+    }
+   ]
+  },
+  {
+   "id": "E14",
+   "event": "E14",
+   "query": "Holiday Marketplace at Mission Trails Regional Park Mission Trails Regional Park Visitor Center San Diego November 14, 2026",
+   "results": [
+    {
+     "title": "Holiday Marketplace at Mission Trails Regional Park",
+     "url": "https://www.eventbrite.com/e/holiday-marketplace-at-mission-trails-regional-park-tickets-2001272952273",
+     "content": "2026 HOLIDAY MARKETPLACE Dates: Saturday, November 14 and Sunday, November 15, 2026 Time: 9 a.m.–3 p.m. both days Location: Mission Trails Regional Park",
+     "score": 0.93610436
+    },
+    {
+     "title": "Holiday Marketplace Benefiting Mission Trails Regional Park",
+     "url": "https://mtrp.org/marketplace",
+     "content": "2026 HOLIDAY MARKETPLACE Dates: Saturday, November 14 and Sunday, November 15, 2026 Time: 9 a.m.–3 p.m. both days Location: Mission Trails Regional Park",
+     "score": 0.9323611
+    },
+    {
+     "title": "Mission Trails Regional Park",
+     "url": "https://www.facebook.com/missiontrailsregionalpark/posts/-holiday-shopping-feels-even-better-when-it-supports-the-park-you-love-the-annua/1579870370838979",
+     "content": "The annual Holiday Marketplace returns to Mission Trails Regional Park on Saturday and Sunday, Nov. 14–15, from 9 a.m.–3 p.m. at the Visitor",
+     "score": 0.86108357
+    },
+    {
+     "title": "For many Mission Trails families, this has become ...",
+     "url": "https://www.facebook.com/missiontrailsregionalpark/posts/for-many-mission-trails-families-this-has-become-a-favorite-holiday-tradition-ev/1591668349659181",
+     "content": "The annual Holiday Marketplace returns to Mission Trails Regional Park on Saturday and Sunday, Nov. 14–15, from 9 a.m.–3 p.m. at the Visitor",
+     "score": 0.82391036
+    },
+    {
+     "title": "Holiday Marketplace at Mission Trails Regional Park | City of San Diego Official Website",
+     "url": "https://www.sandiego.gov/event/holiday-marketplace-mission-trails-regional-park",
+     "content": "🎨 Event Highlights:Join us for the Mission Trails Holiday Marketplace — a festive two-day celebration of local artisans, holiday cheer, and community spirit! 🎅🛍️\n\n💚 Support the Mission Trails Regional Park Foundation while discovering one-of-a-kind gifts and handmade treasures.\n\n✨ Admission: FREE   \n👨‍👩‍👧‍👦 All Ages Welcome  \n💳 Cashless Event – Card or digital payments only  \n📅 Happening November 15 and16 | 9AM to 3PM\n\nMission Trails Regional Park [...] Site Menu\n\n Parks & Recreation Home\n General Info\n Recreation Centers & Pools\n Regional and Open Space Parks\n Golf\n Programs & Events\n Design & Development\n\n# Holiday Marketplace at Mission Trails Regional Park\n\n-\n\nmtrp-holiday-marketplace \n\n|  |\n\n| 📜 Disclaimer |\n\n## 🎁 Holiday Marketplace 2025 ✨\n\n📅 Sunday, November 16, 2025  \n🕘 9:00 AM to 3:00 PM  \n📍 Mission Trails Regional Park Visitor Center  \n🏞️ 1 Father Junipero Serra Trl, San Diego, CA 92119 [...] 1 Father Junipero Serra Trl  \nSan Diego, CA 92119\n\nGet Directions",
+     "score": 0.8014549
+    }
+   ]
+  },
+  {
+   "id": "E15",
+   "event": "E15",
+   "query": "Lisa E Fine Art Birds of a Feather Exhibit Lisa E Fine Art San Diego November 6, 2026",
+   "results": [
+    {
+     "title": "Lisa E Fine Art Birds of a Feather Exhibit",
+     "url": "https://libertystation.com/do/lisa-e-fine-art-birds-of-a-feather-exhibit",
+     "content": "Join Lisa E in her studio in Barracks 16, upstairs in studio #203 ・ open from 4-7PM. Friday, Nov 6, 2026 4pm - 7pm ・ 2730 Historic Decatur Rd",
+     "score": 0.9035075
+    },
+    {
+     "title": "Lisa E Fine Art | Liberty Station | San Diego, CA",
+     "url": "https://libertystation.com/go/lisa-e-fine-art",
+     "content": "Birds of a Feather Exhibit Friday, Exhibit Friday, Nov 6, 2026 4pm - 7pm … 2730 Historic Decatur Rd 203 San Diego 92106 District Arts District Category Arts",
+     "score": 0.8773195
+    },
+    {
+     "title": "Lisa Gleim Fine Arts News and Events",
+     "url": "https://www.lisagleimfineart.com/news-events",
+     "content": "Get the latest news and exhibition details from Lisa Gleim Fine Art ... 2026 Annual Online Juried Exhibition. The online show runs until March 2027 ...Read more",
+     "score": 0.42105237
+    },
+    {
+     "title": "🎨 SAN DIEGO MESA COLLEGE FINE ART FACULTY & ...",
+     "url": "https://www.instagram.com/reel/DF6BFZkSfWG",
+     "content": "SAN DIEGO MESA COLLEGE FINE ART FACULTY & STAFF EXHIBITION 🗓️ Exhibition Dates: February 10 – March 6, 2025 Opening Reception: ...Read more",
+     "score": 0.18431228
+    },
+    {
+     "title": "Events — Joyful Fine Art",
+     "url": "https://www.joyfulfineart.com/events",
+     "content": "On my down time, you might just find me doing some plein air painting around the museum grounds. [...] The Elliot Museum (map)\n Google Calendar ICS\n\nThe 66th Annual Exhibition of the Society of Animal Artists (SAA) is an upcoming juried art show and tour featuring wildlife art worksat the Elliott Museum in Stuart, FL from October to December 2026. This prestigious annual event showcases diverse mediums and subjects, highlighting the best in animal art from SAA members. [...] View Event →\n\nHumpback Whale Excursion in Tonga \n\nSep\n\n13\n\nto Sep 20\n\n# Humpback Whale Excursion in Tonga\n\n Google Calendar ICS\n\nJoining professional photographer Nadia Aly and Humpback Swims Company to swim with Whales in Tonga. These research trip will help me to gather experiences and reference material for creating a special collection of works for a future museum exhibition.\n\n View Event →\n\nAmerican Society of Marine Artists 19th National Exhibition \n\nSep\n\n8\n\nto Dec 31",
+     "score": 0.097056314
+    }
+   ]
+  },
+  {
+   "id": "R01",
+   "event": "E01",
+   "query": "Gaslamplighter Día de los Muertos Night San Diego November 1, 2026",
+   "results": [
+    {
+     "title": "Día de los Muertos Celebration in San Diego on November ...",
+     "url": "https://www.facebook.com/groups/freeeventsinsandiego/posts/2056087218398744",
+     "content": "FREE Event: Día de los Muertos Celebration WHEN: November 1, 2026 at from 10am – 2pm WHERE: San Diego Craft Collective, 2590 Truxtun Rd., Studio ...Read more",
+     "score": 0.7171114
+    },
+    {
+     "title": "Dia de los Muertos - La Experiencia 2026 | Fiesta De Reyes",
+     "url": "https://fiestadereyes.com/dia-de-los-muertos",
+     "content": "## Plan Your Visit\n\nDates\n\nSeptember 1st – November 2nd, 2026\n\nLocation\n\nFiesta De Reyes, 754 calhoun street, old town san diego state Historic Park\n\nAdmission\n\nFree; family Frienldy\n\nBest Time to see the lighting\n\nLate Afternoon through evening\n\nMore\n\nCheck the current schedule for entertainment and special activities\n\nHours\n\nOpen Daily; Confirm Current Hours before visiting\n\nparking [...] Each fall, Fiesta de Reyes becomes a world of color, artistry and remembrance. Día de los Muertos – La Experiencia returns September 1 through November 2, 2026, filling the plaza with dozens of creative displays ranging from small discoveries to larger-than-life Catrinas, along with decorated skulls and skeletons, marigolds, altars and cultural interpretation. [...] This year, a new integrated lighting package connects the transformation across the plaza, revealing new details and creating an especially memorable atmosphere after sunset. Visit by day, return at night and experience the celebration from an entirely different perspective.\n\nLa Experiencia is free, family-friendly and available throughout the season during regular Fiesta de Reyes hours. Dining, shopping and live entertainment make it easy to turn a visit into a complete Old Town experience.",
+     "score": 0.6296157
+    },
+    {
+     "title": "Karaoke & Cocktail San Diego Gaslamp, Gaslamplighter",
+     "url": "https://www.thegaslamplighter.com",
+     "content": "Poster for “Hollywood Rising” shows zombie celebrities against a red moon, palm trees, and Hollywood sign. Text reads “Halloween 2026, Saturday, October 31.” Dark, eerie, and dramatic design.\n\nVIP Table [...] Skip to content\n\nThe word \n\nThe word \n\n Book A Reservation\n Karaoke\n Halloween 2026\n VIP Experience\n Private Events\n Menu\n Contact\n\n## San Diego’s Luxury Cocktail & Karaoke Bar\n\n# Cocktail Bar Near Me – Lounge Bars in San Diego [...] Gaslamplighter is more than a bar—it’s where the night begins. Designed for comfort and crafted for celebration, our space features bold design, curated music, and an impressive craft cocktails and food menu. Whether you're craving timeless classics or modern infusions, our drinks menu has something for every mood.",
+     "score": 0.5660431
+    },
+    {
+     "title": "Dia de los Muertos festivals scheduled across San Diego County",
+     "url": "https://fox5sandiego.com/san-diego-guide/things-to-do/dia-muertos-san-diego-festivities",
+     "content": "Cafe Coyote, located in Old Town, will also have Día de los Muertos decorations and an altar for loved ones. The restaurant also encourages people to bring a photo or memento to add to the ofrenda.\n\nThe Día de los Muertos candlelit procession will begin after sunset at 6 p.m. on Nov. 2, beginning with Danza Azteca Atlachinolli blessings and dances at Immaculate Conception Church. Those partaking in the procession will travel to the El Campo Santo Cemetery. [...] FOX 5 San Diego & KUSI News\n\nPlease enter a search term.\n\n## Primary Menu\n\nPlease enter a search term.\n\n#### \n\n#### \n\n# Upcoming Día de los Muertos events across San Diego County\n\nby: Chris Ponce\n\nPosted: Oct 22, 2026 / 10:18 PM PDT\n\nUpdated: Oct 22, 2026 / 10:18 PM PDT\n\nby: Chris Ponce\n\nPosted: Oct 22, 2026 / 10:18 PM PDT\n\nUpdated: Oct 22, 2026 / 10:18 PM PDT [...] Several communities will celebrate on Nov. 1, with Escondido, Chula Vista and the San Diego Museum of Art all having festivities that day.\n\nAdditionally, Old Town San Diego will host its annual Catrina Contest on Nov. 1. The event showcases costumes, attire and makeup in honor of the Día de los Muertos tradition. The Weekend Mercado is also open from Oct. 31 to Nov. 1 with crafts and activities for the holiday.",
+     "score": 0.53342235
+    },
+    {
+     "title": "Old Globe Día de los Muertos (Day of the Dead Celebration)",
+     "url": "https://www.sandiego.org/events-festivals/old-globe-dia-de-los-muertos-day-of-the-dead-celebration/f5a5a26e59be11f1a7f2",
+     "content": "This annual gathering fosters connection and cultural appreciation in a welcoming, festive atmosphere. Dates & Times. Nov 1, 2026 11:00am-1:30pm. 1363 ...Read more",
+     "score": 0.51413256
+    }
+   ]
+  },
+  {
+   "id": "R04",
+   "event": "E04",
+   "query": "SDK Friendsgiving Night Market Kujo Eats National City November 7, 2026",
+   "results": [
+    {
+     "title": "Pudz Pizza at SDK Friendsgiving Night Market (Nov 2026)",
+     "url": "https://www.facebook.com/sandiegokollective/posts/-vendor-spotlight-pudz-pizza-good-food-great-pizza-and-local-businesses-bringing/1168728652147366",
+     "content": "SDK FRIENDSGIVING NIGHT MARKET Saturday, November 7th ⏰ 3–8PM Kujo Eats Parking Lot 3400 E 8th St, National City, CA 91950 ...Read more",
+     "score": 0.8785752
+    },
+    {
+     "title": "San Diego Kollective",
+     "url": "https://sandiegokollective.com",
+     "content": "We're a team of individuals looking to support and help small businesses grow and thrive while at the same time enjoying life and eating amazing food!\n\n## BECOME A VENDOR OR SPONSOR, CONTACT US BELOW!\n\n## BECOME A VENDOR OR SPONSOR, CONTACT US BELOW!\n\n#### SANDIEGOKOLLECTIVE@GMAIL.COM\n\nDM us via instagram: @sd\\_kollective\n\n#### SAN DIEGO KOLLECTIVE\n\nKujo Eats, East 8th Street, National City, CA, USA\n\nCopyright © 2026 San Diego Kollective - All Rights Reserved.\n\nPowered by [...] Next Event Saturday, November 7th, 2026 3 PM to 8 PM\n\nSAN DIEGO KOLLECTIVE\n\n# SAN DIEGO FOOD FESTIVALS\n\nSAN DIEGO FOOD FESTIVALSSAN DIEGO FOOD FESTIVALSSAN DIEGO FOOD FESTIVALS\n\nContact Us\n\nCLICK HERE TO REGISTER\n\n#### Experience our food fest first by watching this video ---\n\n#### FOOD FROM OUR PREVIOUS EVENTS! ---\n\n#### WHO WE ARE ---\n\n### mission statement [...] We are a company that is focused on providing opportunities for our small business community while supporting human causes that affect the San Diego community .\n\nWe were literally born out of the pandemic, at least formally, but the idea of SDK was always there. It's just that the stars had to align, people became present in our lives, and someone had to light a fire under us to get things moving.",
+     "score": 0.63939893
+    },
+    {
+     "title": "Instagram",
+     "url": "https://www.instagram.com/p/DeGZgIVOWHK",
+     "content": "Bring ONE cake to share + your own container, then mix, mingle and leave with an assortment of cakes from the community. Because sharing is caring… especially when frosting is involved. 😂  \n  \n⚠️ Cake Social sign-up is REQUIRED to participate!  \nSpace will be limited, so make sure you sign up ahead of time- LINK IN BIO 🍰🫶🏽  \n  \n📅 Saturday, November 7th  \n⏰ 3–8PM  \n🍰 Cake Social | 4:30PM  \n📍 Kujo Eats Parking Lot @kujoeats   \n3400 E 8th St, National City, CA 91950  \n🆓 FREE ENTRY [...] 🆓 FREE ENTRY  \n  \nCome hungry, bring your people, make some new friends and spend Friendsgiving supporting the small businesses that keep our community going. 🫶🏽🍂  \n  \nEat good. Shop local. Sweeter together. 🤎  \n  \n#SDKFriendsgiving #FriendsgivingNightMarket #CakeSocial #SanDiegoNightMarket #SanDiegoEvents NationalCityEvents SupportLocalSD ShopLocalSD SanDiegoFoodie ThingsToDoInSanDiego CommunityOverCompetition [...] Log In\n\nSign Up\n\nsd_kollective's profile picture\n\nNever miss a post from sd\\_kollective\n\nSign up for Instagram to stay in the loop.\n\nSign up\n\nLog in\n\nPhoto by SAN DIEGO KOLLECTIVE FOUNDATION - San Diego Non-Profit on October 04, 2026. May be an image of text.\n\ndjdaledadreddorsett\n\noneweight7\n\neleessweets\n\nchefbuddablasiansoulfoods\n\nchefboxer\n\njudeethefoodee\n\nstefawnieescloset\n\nkujoeats\n\nmoonlithenna\n\nzazu\\_wheels\\_creations\n\njscrochets7\n\niamjudyguevarra\n\ndjgigi.sd\n\nrr.essentlz\n\nluxe.charms.co",
+     "score": 0.49992734
+    },
+    {
+     "title": "New night market brings food, music and mahjong to National City | KPBS Public Media",
+     "url": "https://www.kpbs.org/news/arts-culture/2026/07/13/new-night-market-brings-food-music-and-mahjong-to-national-city",
+     "content": "James Camanyag, an employee of the longtime Filipino restaurant Villa Manila, partnered to launch the new night market in National City, California on July 11, 2026. \"I wanted to bring people from outside National City to experience just how beautiful, vibrant, and culturally diverse our community really is,\" he said.\n\nCamanyag’s family moved to National City in the 1980s. He said he saw events like the night market as a way to bring more people to the city’s older east side. [...] ## Tags\n\nA protester holds a sign at a press conference announcing a lawsuit over the city of San Diego's use of Automated License Plate Reader technology on Sept. 30, 2026.\nCandlelight® Sets the Mood for Halloween in San Diego With a Haunting Live-Music Program\nHugh Bonneville as Brian Boyce in THE GOLD ON MASTERPIECE (Season 2)\n\n### Fact-based local news is essential [...] “There's so many day markets on the weekends too, so I feel like there's not many night markets in this area,” Woodley said. “I think it was kind of a perfect opportunity to fill a void.”\n\nAudi Bunchien and Raven Woodley, the entrepreneurs behind the pop-up cafe Thaiyo, partnered to launch a new night market in National City, California on July 11, 2026. \"We just want to make the Asian community more closer,\" Bunchien said. \"I think this is a good place to start.\"",
+     "score": 0.36697587
+    },
+    {
+     "title": "Instagram",
+     "url": "https://www.instagram.com/reel/DDn1QPXPOFW",
+     "content": "kujoeats\n\n#toogoodtogo #kujoeats #workhardeathard #sandiegofoodie #filipinofood #nationalcity #sandiego #paradisehills #chulavista #springvalley #miramesa #missionvalley #universityheights #normalheights #barriologan #sdsu\n\n## No comments yet.\n\nStart the conversation.\n\n69\n\nLog in to like or comment.\n\nMore posts from kujoeats\n\nVideo by Filipino/Hawaiian Comfort Food in San Diego on September 14, 2025.\n\nPhoto by Filipino/Hawaiian Comfort Food in San Diego on October 30, 2025. [...] Log In\n\nSign Up\n\nkujoeats's profile picture\n\nNever miss a post from kujoeats\n\nSign up for Instagram to stay in the loop.\n\nBy continuing, you agree to Instagram's Terms of Use and Privacy Policy.\n\nSign up\n\nLog in\n\nVideo by Filipino/Hawaiian Comfort Food in San Diego on December 15, 2024.\n\nkujoeats's profile picture\n\nkujoeats\n\n•\n\nFollow\n\nkujoeats's profile picture\n\nkujoeats [...] Video by Filipino/Hawaiian Comfort Food in San Diego on December 22, 2024.\n\nVideo by Filipino/Hawaiian Comfort Food in San Diego on October 31, 2026. May be an image of turnover, dumpling and text.\n\nVideo by Chelle Esteban | Food, Art & Travel on October 27, 2026. May be an image of banner, signboard, magazine, poster and text.\n\nVideo by Chelle Esteban | Food, Art & Travel on October 21, 2026. May be an image of one or more people, food, poster and text.",
+     "score": 0.23090285
+    }
+   ]
+  },
+  {
+   "id": "R05",
+   "event": "E05",
+   "query": "Speed Dating Drift Cafe San Diego November 7, 2026",
+   "results": [
+    {
+     "title": "San Diego Singles Event: Speed Dating (Ages 22-30) at Coffee Shop Tickets, Saturday, November 7  •  3 PM - 5 PM | Eventbrite",
+     "url": "https://www.eventbrite.com/e/san-diego-singles-event-speed-dating-ages-22-30-at-coffee-shop-tickets-2000177736453",
+     "content": "### Discover more events from Jigsaw Dating, from Food & Drink to other experiences you might love.\n\n## You might also like...\n\n### Browse more events with different dates, prices, and formats to find your next great experience.\n\n## Still looking for the right event?\n\n### Explore all events in San Diego and filter by date, category, and more to find the perfect fit.\n\n### Use Eventbrite\n\n### Plan Events\n\n### Find Events\n\n### Connect with Us\n\n© 2026 Eventbrite [...] These events are open to everyone 21+, age range and sexual orientation options for events are simply guidelines for comfort, not restrictions!\n\n## Good to know\n\nHighlights\n\nRefund Policy\n\nHighlights\n\nRefund Policy\n\nNo refunds\n\n### Location\n\n### Subterranean Coffee\n\n3764 30th Street\n\nSan Diego, CA 92104\n\n#### How do you want to get there?\n\nMap\n\n### Agenda\n\n03:00 PM - 03:30 PM\n\n### Check-in with host [...] You'll be greeted at the door by our friendly Jigsaw Dating host. They'll scan your QR code and hand out your event materials! This is the time to order your coffee and grab a pastry.\n\n03:30 PM - 05:00 PM\n\n### Speed Dating Rounds!\n\nYou'll get the chance to have around a 3-minute speed date with each person, timings may vary based on the size of your group. Take notes on who you felt a spark with and connect after!\n\n## More events from Jigsaw Dating",
+     "score": 0.74385756
+    },
+    {
+     "title": "MEN SOLD OUT San Diego Speed Dating | Ages 29-42",
+     "url": "https://speeddates.com/events/us/san-diego/san-diego-speed-dating-ages-29-42-fancy-a-go-2026-10-29",
+     "content": "San Diego Singles Event: Speed Dating (Ages 22-30) at Coffee Shop. Sat · Nov 7 · 3 PM. Straight singlesAges 22–30.",
+     "score": 0.52422476
+    },
+    {
+     "title": "Instagram",
+     "url": "https://www.instagram.com/reel/DQmi-ZIj8OB?hl=en",
+     "content": "☕ Coffee Shop Speed Dating Ages 40-55: 11/15/25, 3-5 pm @ Subterranean Coffee Boutique, 3764 30th St, San Diego, CA 92104  \n🥂 Singles Happy Hour Ages 40-55: 11/15/25, 7-9 pm @ Modern Times Flavordome, 3000 Upas St, San Diego, CA 992104  \n🎮 Singles Arcade Night Ages 25-45: 11/20/25, 7-9 pm @ Dave and Busters, 2931 Camino Del Rio N, San Diego, CA 92108  \n☕ Coffee Shop Speed Dating Ages 25-40: 11/22/25, 3-5 pm @ Subterranean Coffee Boutique, 3764 30th St, San Diego, CA 92104 [...] 🧩 Jigsaw wristbands + name tags: to help you spot your next connection in the crowd ✨  \n👩‍❤️‍👨 Icebreaker activities, conversation prompts, and prizes!   \n📲 Plus, a NEW & exclusive in-app Match Code - to help you connect after the event!   \n  \nSAVE THE DATES ⤵️  \n☕ Coffee Shop Speed Dating Ages 25-40: 11/8/25, 3-5 pm @ Subterranean Coffee Boutique, 3030 Grape Street, San Diego, CA 92102  \n🧠 Singles Trivia Night Ages 25-45: 11/8/25, 7-9 pm @ Whiskey Girl, 702 Fifth Ave, San Diego, CA 92101 [...] 🥂 Singles Happy Hour Ages 25-40: 11/22/25, 6-8 pm @ Thérapie Bistro, 350 Camino De La Reina #150, San Diego, CA 92108  \n  \n📌 SAVE this post, SHARE with your single friends, and TAP the link in @jigsaw.dating’s bio to lock in your spot now! 💥🧩💫",
+     "score": 0.39761147
+    },
+    {
+     "title": "Speed Dating San Diego - Singles Events in San Diego - CitySwoon",
+     "url": "https://cityswoon.com/speed-dating-sandiego.jsp",
+     "content": "The city's speed dating scene is as diverse as its vibrant neighborhoods, ensuring you find your perfect match. CitySwoon's San Diego speed dating events cater to all types of singles from mid twenties, 30’s and 40’s right up to 55+. And connecting you with those who share your interests and values. It's time to move past endless swiping and dive into the thrilling world of San Diego speed dating with CitySwoon. So, what are you waiting for? It's time to ditch the dating apps, traditional speed [...] Speed dating in San Diego is like a dating buffet - you get to sample multiple potential matches in one sitting. Not every dish may be to your taste, but you'll certainly find a few that tantalize your taste buds. It's an efficient way to meet new people and potentially find that special someone. And with CitySwoon's algorithmic magic, you'll be matched with folks who share your interests, making your speed dating experience that much more effective and enjoyable! [...] What makes CitySwoon the must-try speed dating experience in San Diego? It's their innovative approach to matchmaking that sets them apart. Using a clever algorithm, CitySwoon matches you with a select group of compatible people from a larger crowd. This means you'll more likely date those who resonate with you, making the entire experience feel like a match made in heaven (or at least in a super-intelligent AI!). And CitySwoon events aren't limited to the corner of a bar. You'll be out in",
+     "score": 0.3713423
+    },
+    {
+     "title": "Speed Dating San Diego | Shuffle Dating Events",
+     "url": "https://shuffle.dating/cities/sandiego",
+     "content": "# Shuffle\n\nIt's like speed dating but better,San Diego.\n\n### Searching events...\n\n## Ready to Meet Someone Offline?\n\nStop waiting for the perfect match to appear on your screen. Meet them in real life.",
+     "score": 0.27065745
+    }
+   ]
+  },
+  {
+   "id": "R11",
+   "event": "E11",
+   "query": "Panther Golf Tournament Bear Trace Crossville TN 2026",
+   "results": [
+    {
+     "title": "Black panther - Wikipedia",
+     "url": "https://en.wikipedia.org/wiki/Black_panther",
+     "content": "This is an accepted version of this page\n\nThis is the latest accepted revision, reviewed on 27 September 2026.\n\nVariant of leopard and jaguar\n\nFor other uses, see Black panther (disambiguation) \"Black panther (disambiguation)\"). [...] ## External links\n\n[edit] [...] Jump to content\n\n  Wikipedia The Free Encyclopedia\n\nSearch\n\n## Contents\n\n (Top)\n 1 Leopard\n 2 Jaguar\n 3 Cougar\n 4 See also\n 5 References\n 6 External links\n\n# Black panther",
+     "score": 0.14549161
+    },
+    {
+     "title": "Panther | The Complete AI SOC Platform",
+     "url": "https://panther.com",
+     "content": "Compliance\n\nManaged Detection and Response\n\nCloud Security Posture\n\nThreat Intelligence\n\nResources\n\nBlog\n\nDocumentation\n\nCustomer Stories\n\nWebinars\n\nPodcasts\n\nSupport Hub\n\nAll rights reserved © 2026 Panther, Inc\n\nTerms of Service\n\nPrivacy Policy\n\nSitemap\n\nlinkedin\n\nx-twitter\n\nyoutube\n\nmastodon [...] Analytics & Reporting\n\nIntegrations\n\nSupport\n\nRelease Notes\n\nDocumentation\n\nKnowledge Base\n\nStatus\n\nCompany\n\nAbout us\n\nTrust\n\nCareers\n\nSolutions\n\nAI SOC Transformation\n\nDetection Engineering\n\nThreat Hunting\n\nCompliance\n\nManaged Detection and Response\n\nCloud Security Posture\n\nThreat Intelligence\n\nResources\n\nBlog\n\nDocumentation\n\nCustomer Stories\n\nWebinars\n\nPodcasts\n\nSupport Hub\n\nAll rights reserved © 2026 Panther, Inc\n\nTerms of Service\n\nPrivacy Policy\n\nSitemap\n\nlinkedin\n\nx-twitter\n\nyoutube [...] Knowledge Base\n\nStatus\n\nResources\n\nBlog\n\nDocumentation\n\nCustomer Stories\n\nWebinars\n\nPodcasts\n\nSupport Hub\n\nCompany\n\nAbout us\n\nTrust\n\nCareers\n\nAll rights reserved © 2026 Panther, Inc\n\nTerms of Service\n\nPrivacy Policy\n\nSitemap\n\nlinkedin\n\nx-twitter\n\nyoutube\n\nmastodon\n\nImage 126\n\nImage 127\n\nImage 128\n\nImage 129\n\nDetect, investigate, and respond to threats at cloud scale — powered by code and AI.\n\nPlatform\n\nData Pipeline\n\nAI SOC Agent\n\nDetection Engine\n\nAlerting and Triage Automation",
+     "score": 0.12586927
+    },
+    {
+     "title": "20 Amazing Panther Facts You Probably Never Knew - Facts.net",
+     "url": "https://facts.net/panther-facts",
+     "content": "Facts.net\n\nTurn Your Curiosity Into Discovery\n\nLatest Facts\n\nVladimir Okhotnikov Entrepreneurship Beyond Borders\n\n29 Sep 2026\n\nVladimir Okhotnikov Entrepreneurship Beyond Borders\n\n30 Facts About LSU Basketball \n\n31 Jan 2026\n\n30 Facts About LSU Basketball\n\nHome Nature Facts Animals Facts\n\n# Panther Facts\n\nFacts Chief\n\nWritten by Facts Chief\n\nModified & Updated: 28 Apr 2024\n\nJessica Corbett\n\nReviewed by Jessica Corbett\n\nExpert Verified Editorial Guidelines [...] There are many panther facts relating to the use of the name, and the idea of this creature, in the world of sport. The panther is one of the most popular and enduring symbols in United States sports, with teams in various sporting disciplines incorporating the panther into their name, and as a mascot. Such teams include the Pittsburg Panthers athletic teams, Carolina Panthers in football, Florida Panthers in ice hockey, and the Milwaukee Panthers in Basketball. The use of the panther as a [...] of the panther as a symbol is hardly surprising. These animals have many qualities which are important in sport, including strength, agility, endurance, ingenuity and competitiveness.",
+     "score": 0.10279923
+    },
+    {
+     "title": "Black panther | Melanism, Frequency, & Facts | Britannica",
+     "url": "https://www.britannica.com/animal/black-panther-mammal",
+     "content": "On the Web:\n:   World Animal Rescue Network - Leopard (Oct. 16, 2026)\n\nSee all related content\n\nBritannica AI Icon\n\nAdding us as a Preferred Source tells Google you trust our content, so our articles show up more often in your Google Search, Discover feed, and AI Overviews.\n\nLeopard (Panthera pardus)\n\nLeopard (Panthera pardus)\nCleaning behaviour in leopards (Panthera pardus) usually takes the form of self-grooming.\n\n# leopard\n\nmammal [...] Britannica Editors. \"leopard\". Encyclopedia Britannica, 16 Oct. 2026,  Accessed 23 October 2026.\n\nprint\nPrint\n\nPlease select which sections you would like to print:\n\nShare\n\nShare to social media\n\nFacebook\nX\n\nURL\n\nExternal Websites [...] Rafferty, John P.. \"black panther\". Encyclopedia Britannica, 30 Aug. 2026,  Accessed 23 October 2026.\n\nprint\nPrint\n\nPlease select which sections you would like to print:\n\nShare\n\nShare to social media\n\nFacebook\nX\n\nExternal Websites",
+     "score": 0.078367025
+    },
+    {
+     "title": "Panther Animal Facts - A-Z Animals",
+     "url": "https://a-z-animals.com/animals/panther",
+     "content": "Galapagos Marine Iguana Swimming on Surface Blog\n\n### The Only Lizard on Earth That Feeds in the Ocean\n\nEndangered Red Panda in Captivity Articles\n\n### These Adorable Bamboo Bears Are Running Out of Places to Live\n\nA close up of a female Brown Bear (Grizzly) Blog\n\n### 7 Things That Can Take Down a Grizzly Bear\n\n Blog\n\n### Watch Cheetahs Leap Onto a Safari Jeep Just Inches From Tourists\n\n## Panther FAQs (Frequently Asked Questions)\n\nPanthers live in forests, swamplands, and grasslands. [...] Although technically only black Leopards and Jaguars are generally considered to be true Panthers by science, the term is also used to describe several other dark-coated cats by locals in their native habitats, including Cougars, Tigers, Pumas, lynxes, and Bobcats. The Black Panther is considered one of the most intelligent and ferocious predators in the Americas, so the image of a Panther is widely used as a logo or as a mascot for sports teams. Some Panthers are actually able to swim, [...] Our editorial team will review your suggestions and make any necessary updates.\n\nThere was an error submitting your feedback. Please try again.\n\n### Related Articles You May Find Interesting\n\n### Snow Leopards Get the Zoomies, But Why Do Big Cats Do This?\n\nSecretary bird portrait Blog\n\n### 13 Birds with Crests That Completely Steal the Show\n\nMale white lion Blog\n\n### Watch a Rare White Lion Wake Up Beside a Safari Vehicle\n\nBlack Bear in Great Smoky Mountains National Park Blog",
+     "score": 0.033834524
+    }
+   ]
+  }
+ ]
+}

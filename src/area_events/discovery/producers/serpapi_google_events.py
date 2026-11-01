@@ -27,8 +27,9 @@ is ever invented. Aggregated results are never treated as verified.
 An event's url is its own page as Google lists it: the result's `link`, else a `ticket_info` link (information before tickets), each only when its address
 names the event by its title or is a Facebook or Eventbrite event page. A search, map, SerpApi address or a page that does not name the event is never used.
 When Google lists no such page, the producer asks the shared EventLinkFinder (event_links.py) once for the event's title, date, venue and town: what
-it returns meets the same rule, and is recorded in the evidence as found by search. Without a finder, or when it finds nothing, the url stays empty.
-A link never makes an event verified.
+it returns (a page the finder confirmed by reading it) meets the same rule, and is recorded in the evidence as found by search. When Google gave no
+street address, the venue's street address that page states is used, recorded with where on the page it was read. Without a finder, or when it finds
+nothing, the url stays empty and the address as Google gave it. A link never makes an event verified.
 """
 import hashlib
 import json
@@ -45,6 +46,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ..event_links import event_page, names_event
 from ..producer import EventCandidate, ProducerResult, Provenance, stated
 from ..safe import FetchError
+from ..webpage import STREET_LINE
 
 SEARCH_URL = "https://serpapi.com/search"
 ACCOUNT_URL = "https://serpapi.com/account.json"
@@ -431,6 +433,12 @@ def _city(result, options):
     return (lines[-1] if len(lines) > 1 else options.get("location") or "").split(",")[0].strip()
 
 
+def _town_line(result):
+    """The result's last address line when it has more than one ('San Diego, CA'), else None."""
+    lines = [line for line in (result.get("address") or []) if isinstance(line, str) and line.strip()] if isinstance(result.get("address"), list) else []
+    return lines[-1].strip() if len(lines) > 1 else None
+
+
 def _event_url(result, title, place):
     """The event's own page, or None: Google's top-level `link`, else a ticket_info link, an information link ("more info") before a ticket seller's; each
     only when it names the event (a refused top-level link still lets ticket_info be read). Nothing is made up, searched for or taken from the venue, the
@@ -551,7 +559,7 @@ class SerpApiGoogleEventsProducer:
                 seen.add(candidate.local_id)
                 if candidate.url is None and self.links is not None:
                     place = " ".join(filter(None, (candidate.venue, candidate.address, options.get("location"))))
-                    candidate = self._linked(candidate, _city(result, options), place, notes)
+                    candidate = self._linked(candidate, _city(result, options), _town_line(result), place, notes)
                 candidates.append(candidate)
             if len(results) < RESULTS_PER_PAGE or not (payload.get("serpapi_pagination") or {}).get("next"):
                 break
@@ -562,16 +570,31 @@ class SerpApiGoogleEventsProducer:
             notes[f"set_aside_{number}"] = f"{count}: {reason}"
         return ProducerResult(tuple(candidates), (), notes)
 
-    def _linked(self, candidate, city, place, notes):
-        """The candidate with the event page the shared finder returns, if it meets this producer's own link rule; everything else, its identity
-        included, as it was."""
+    def _linked(self, candidate, city, town_line, place, notes):
+        """The candidate with the event page the shared finder returns, if it meets this producer's own link rule, and, when the candidate has no street
+        address, the venue's street address that page states (its street line completed with Google's own town line when the page writes none);
+        everything else, its identity, times and verification status included, as it was."""
         notes["links_looked_up"] = notes.get("links_looked_up", 0) + 1
-        url = _page(self.links.find_event_url(candidate.title, candidate.starts_at, candidate.venue, city))
+        link = self.links.find_event_link(candidate.title, candidate.starts_at, candidate.venue, city)
+        url = _page(link.url) if link else None
         if not url or not _names_event(url, candidate.title, place):
             return candidate
         notes["links_found"] = notes.get("links_found", 0) + 1
-        evidence = candidate.verification.evidence + ("Event page found by a web search for the title, date and place; Google listed none",)
-        return replace(candidate, url=url, verification=replace(candidate.verification, evidence=evidence))
+        evidence = candidate.verification.evidence + ("Event page found by a web search for the title, date and place and confirmed by reading it "
+                                                      "(its title, day and venue); Google listed none",)
+        address = candidate.address
+        if link.address and not STREET_LINE.search(candidate.address or ""):   # a street address the source gave is kept
+            town = set(re.findall(r"[a-z0-9]+", city.lower()))
+            written = set(re.findall(r"[a-z0-9]+", link.address.lower()))
+            if town and town <= written:
+                address = link.address
+            elif "," not in link.address and town_line:
+                address = f"{link.address}, {town_line}"
+            if address != candidate.address:
+                notes["addresses_found"] = notes.get("addresses_found", 0) + 1
+                evidence += (f"Street address {link.address} from {link.address_basis} on {url}"
+                             + ("" if address == link.address else f", with Google's town line {town_line}"),)
+        return replace(candidate, url=url, address=address, verification=replace(candidate.verification, evidence=evidence))
 
     @staticmethod
     def _candidate(result, options, zone, today, listing_url, retrieved_at):

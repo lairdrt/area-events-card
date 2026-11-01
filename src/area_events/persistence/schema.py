@@ -433,7 +433,9 @@ CREATE INDEX trashcan_occurrences_lookup ON trashcan_occurrences(source_key, sta
     (11, "the shared event-page finder's cache: each lookup's answer and its requests per UTC day and month", """
 CREATE TABLE event_link_lookups (
   lookup_key    TEXT PRIMARY KEY CHECK (length(lookup_key) = 64),   -- sha-256 of the event's title, day, venue and town
-  url           TEXT,                       -- the event page found, or NULL: nothing credible
+  url           TEXT,                       -- the event page found and checked against the page itself, or NULL: nothing credible
+  address       TEXT,                       -- the venue's street address as that page states it for the event, or NULL
+  address_basis TEXT,                       -- what on the page gave it: the event's structured location, a labelled location, ...
   checked_at    INTEGER NOT NULL,
   event_day     TEXT NOT NULL               -- YYYY-MM-DD, so lookups for past events are dropped
 );

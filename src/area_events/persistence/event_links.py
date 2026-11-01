@@ -1,5 +1,6 @@
-"""What the shared event-page finder (discovery/event_links.py) keeps in the one database: the answer of each lookup, and the requests counted per
-UTC day and month, so that a restart neither repeats searches nor resets the free-allowance limits. A cache: losing it costs searches, never events.
+"""What the shared event-page finder (discovery/event_links.py) keeps in the one database: the answer of each lookup (the checked page and the street
+address it states, or nothing), and the requests counted per UTC day and month, so that a restart neither repeats searches and page reads nor resets the
+free-allowance limits. A cache: losing it costs searches, never events.
 """
 import re
 
@@ -23,18 +24,22 @@ class SqliteEventLinkCache:
 
     def recall(self, key):
         with self._store.read() as connection:
-            row = connection.execute("SELECT url, checked_at FROM event_link_lookups WHERE lookup_key=?", (key,)).fetchone()
-        return (row[0], int(row[1])) if row else None
+            row = connection.execute("SELECT url, address, address_basis, checked_at FROM event_link_lookups WHERE lookup_key=?", (key,)).fetchone()
+        return (row[0], row[1], row[2], int(row[3])) if row else None
 
-    def remember(self, key, url, checked_at, event_day):
+    def remember(self, key, url, address, address_basis, checked_at, event_day):
         if not isinstance(key, str) or not _KEY.fullmatch(key) or not isinstance(event_day, str) or not _DAY.fullmatch(event_day):
             raise ValueError("invalid event link lookup")
         if url is not None and (not isinstance(url, str) or not 0 < len(url) <= 2000):
             raise ValueError("invalid event page address")
+        if address is not None and (url is None or not isinstance(address, str) or not 0 < len(address) <= 300
+                                    or not isinstance(address_basis, str) or not 0 < len(address_basis) <= 100):
+            raise ValueError("invalid street address")
         with self._store.write() as tx:
-            tx.execute("""INSERT INTO event_link_lookups (lookup_key, url, checked_at, event_day) VALUES (?, ?, ?, ?)
-                          ON CONFLICT(lookup_key) DO UPDATE SET url=excluded.url, checked_at=excluded.checked_at, event_day=excluded.event_day""",
-                       (key, url, int(checked_at), event_day))
+            tx.execute("""INSERT INTO event_link_lookups (lookup_key, url, address, address_basis, checked_at, event_day) VALUES (?, ?, ?, ?, ?, ?)
+                          ON CONFLICT(lookup_key) DO UPDATE SET url=excluded.url, address=excluded.address, address_basis=excluded.address_basis,
+                                                                checked_at=excluded.checked_at, event_day=excluded.event_day""",
+                       (key, url, address, address_basis if address is not None else None, int(checked_at), event_day))
 
     def requests(self, periods):
         periods = _periods(periods)

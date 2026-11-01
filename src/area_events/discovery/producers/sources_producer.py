@@ -31,6 +31,7 @@ from ...image_extractor.v1 import ImageRequest
 from ..producer import EventCandidate, ProducerResult, Provenance, SourceLead, stated
 from ..safe import FetchError
 from ..urls import canonical_url
+from ..webpage import JSONLD_TYPE, STREET_ADDRESS as _CONTACT_ADDRESS, PageParts as _LinksAndEvents, event_documents as _event_documents
 
 MAX_SEEDS = 12
 MAX_PAGES = 24
@@ -38,7 +39,6 @@ MAX_EVENTS = 150
 MAX_DEPTH = 2
 MAX_LINKS = 18
 EVENT_WORDS = re.compile(r"(event|calendar|what.?s.?on|festival|fair|concert|performance|meetup|workshop|activity|activities|exhibit|class|show|lecture|tour|seminar|schedule|ical|\.ics)(?:s\b|/|[-_ ]|$)", re.I)
-JSONLD_TYPE = re.compile(r"(?:^|[/#])Event$", re.I)
 ICS_START = re.compile(r"^DTSTART(?:;[^:]*)?:", re.I)
 ISO_ICAL = re.compile(r"^\d{8}T\d{6}Z?$")
 FOLD = re.compile(r"\r?\n[ \t]")
@@ -182,31 +182,6 @@ def _ics_events(page, page_url, name, retrieved_at):
     return events, skipped
 
 
-def _schema_type(value):
-    items = value if isinstance(value, list) else [value]
-    return any(isinstance(v, str) and JSONLD_TYPE.search(v) for v in items)
-
-
-def _event_documents(payload):
-    """Find @type Event in bounded JSON-LD graphs and list elements."""
-    stack = [payload]
-    seen = 0
-    while stack and seen < 1000:
-        item = stack.pop()
-        seen += 1
-        if isinstance(item, list):
-            stack.extend(reversed(item[:300]))
-        elif isinstance(item, dict):
-            if _schema_type(item.get("@type")):
-                yield item
-            # Don't scan arbitrary giant map values: these are JSON-LD graph edges.
-            for key in ("@graph", "itemListElement", "mainEntity", "subjectOf", "event", "events"):
-                if key in item:
-                    stack.append(item[key])
-            if item.get("@type") == "ListItem" and "item" in item:
-                stack.append(item["item"])
-
-
 def _field_url(value, page):
     if isinstance(value, list):
         value = next((v for v in value if isinstance(v, (str, dict))), None)
@@ -303,39 +278,6 @@ def _jsonld_events(script, page, name, retrieved_at):
             verification=stated((f"Title and offset-aware start from JSON-LD Event at {page}",),
                                 False, end, venue, address, description, image)))
     return accepted, skipped
-
-
-class _LinksAndEvents(HTMLParser):
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.scripts = []
-        self.links = []
-        self._script = None
-        self._anchor = None
-
-    def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        if tag == "script" and "ld+json" in (attrs.get("type") or "").lower():
-            self._script = []
-        if tag == "a" and attrs.get("href"):
-            self._anchor = [attrs["href"], []]
-        if tag == "link" and attrs.get("href") and (
-                attrs.get("rel") in ("next", "alternate") or "calendar" in (attrs.get("type") or "")):
-            self.links.append((attrs["href"], attrs.get("rel") or "feed"))
-
-    def handle_data(self, data):
-        if self._script is not None:
-            self._script.append(data)
-        if self._anchor is not None:
-            self._anchor[1].append(data)
-
-    def handle_endtag(self, tag):
-        if tag == "script" and self._script is not None:
-            self.scripts.append("".join(self._script))
-            self._script = None
-        if tag == "a" and self._anchor is not None:
-            self.links.append((self._anchor[0], _clean(" ".join(self._anchor[1]), 150) or ""))
-            self._anchor = None
 
 
 def _attach_page_image(events, html, page_url, fetcher, extractor):
@@ -862,8 +804,8 @@ def _labelled_facts(lines):
     return venue, address, description
 
 
-# A street address as a contact block writes it: house number and street, then "City, ST 12345" ("15602 Olde Highway 80, Flinn Springs, CA 92021").
-_CONTACT_ADDRESS = re.compile(r"(?P<street>\d{1,6}\s+[A-Za-z0-9][A-Za-z0-9 .'’#-]{1,60}?),\s*(?P<city>[A-Za-z][A-Za-z .'’-]{1,40}),\s*(?P<state>[A-Z]{2})\s+(?P<zip>\d{5})(?:-\d{4})?\b")
+# A street address as a contact block writes it (_CONTACT_ADDRESS, the shared webpage.STREET_ADDRESS): house number and street, then "City, ST 12345"
+# ("15602 Olde Highway 80, Flinn Springs, CA 92021").
 _PREMISES = r"(?:lawn|grounds|gardens?|barn|property|premises|farm|ranch|store|shop|patio|courtyard|field|orchard|vineyard|winery|venue|location)"
 _OUR_PREMISES = re.compile(rf"\b(?:at|on|in|to|around|through)\s+our\s+(?!(?:other|sister|partner|second|new)\b)(?:[a-z]+\s+){{0,2}}{_PREMISES}\b", re.I)
 

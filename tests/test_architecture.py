@@ -29,7 +29,7 @@ DISCOVERY = os.path.join(ROOT, "src", "area_events")
 # Neutral modules: generic utilities and libraries that belong to no engine and no source. They may import only each other and the standard library.
 NEUTRAL = frozenset(("discovery.safe", "common.timeutil", "common.textutil", "geolocation.textloc", "contracts.evidence", "enrichment.media", "enrichment.maps", "enrichment.images", "image_extractor", "image_extractor.v1", "image_extractor.association", "image_extractor.responsive", "image_extractor.goose3_adapter", "image_extractor.selfcheck", "classification.classify", "classification.classifiers"))
 PRODUCER_MAY_USE = frozenset(("image_extractor.v1", "image_extractor.association", "image_extractor.responsive", "discovery.safe", "common.timeutil", "common.textutil", "geolocation.textloc"))
-PRODUCER_MAY_USE_SERVICE = frozenset(("discovery.producer", "discovery.fetching", "discovery.urls", "discovery.event_links"))
+PRODUCER_MAY_USE_SERVICE = frozenset(("discovery.producer", "discovery.fetching", "discovery.urls", "discovery.event_links", "discovery.webpage"))
 COMPOSITION_ROOT = "app"
 PERSISTENCE = "persistence"
 PORTS = "persistence.ports"
@@ -56,9 +56,10 @@ ALLOWED = {
     "discovery": set(), "discovery.fetching": {"discovery.safe"}, "discovery.host": set(), "discovery.producer": set(), "discovery.producers": set(),
     "discovery.producers.city_of_san_diego": {"discovery.producer", "discovery.safe", "common.textutil", "common.timeutil", "geolocation.textloc"},
     "discovery.producers.localist": {"discovery.producer", "discovery.safe"},
-    "discovery.producers.sources_producer": {"discovery.producer", "discovery.safe", "discovery.urls"},
+    "discovery.producers.sources_producer": {"discovery.producer", "discovery.safe", "discovery.urls", "discovery.webpage"},
     "discovery.safe": set(), "discovery.scheduler": {PORTS}, "discovery.service": {"contracts.evidence", "discovery.safe", "discovery.producer", "contracts.models", "discovery.fetching", PORTS}, "discovery.urls": set(),
-    "discovery.event_links": {"discovery.safe", "discovery.urls"},   # the shared event-page finder: producer support, reaching the database only through the port it is given
+    "discovery.event_links": {"discovery.safe", "discovery.urls", "discovery.webpage"},   # the shared event-page finder: producer support, reaching the database only through the port it is given
+    "discovery.webpage": set(),   # reading a fetched page (JSON-LD events, visible text, street addresses), shared by producers and the event-page finder
     "enrichment": set(), "enrichment.images": set(), "enrichment.maps": set(), "enrichment.media": {"enrichment.maps", "geolocation.textloc", "discovery.safe"},
     "enrichment.service": {"classification.classifiers", "enrichment.images", "discovery.safe", "enrichment.media", "contracts.models", PORTS, "extraction.text"},
     "extraction": set(), "extraction.text": {"geolocation.textloc"}, "extraction.service": {"contracts.evidence", "geolocation.textloc", "contracts.models", "extraction.text"},
