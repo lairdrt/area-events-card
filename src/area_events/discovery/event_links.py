@@ -16,8 +16,10 @@ comes back. The finder owns everything about the search; a producer never sees a
   for MISS_TTL_S, since an event's page often appears nearer its date. A failure is never remembered as an answer.
 
 A search result becomes the event's url only when it could be one event's page (`event_page`), names the event (`names_event`, the rule every
-producer link meets), states no other day or year for it, and shows its day or its place. Pages that tie while agreeing only on the place are
-ambiguous and give None. Nothing found by search is invented, completed or made verified.
+producer link meets), shows its venue and no other town, and states no other day or year for it (a run such as 'November 6-December 19' includes
+its days; when a page was posted is not an event day). A page that shows the day is preferred, and among those the event's own page over a social
+post, and a post over a resale listing (`judge`). Pages that tie without showing the day are ambiguous and give None. Nothing found by search is
+invented, completed or made verified.
 """
 import hashlib
 import http.client
@@ -85,18 +87,51 @@ def names_event(url, title, place):
 _MONTHS = {name: number for number, names in enumerate((("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"), ("may",), ("jun", "june"),
                                                          ("jul", "july"), ("aug", "august"), ("sep", "sept", "september"), ("oct", "october"),
                                                          ("nov", "november"), ("dec", "december")), start=1) for name in names}
-_NAMED_DAY = re.compile(r"\b(" + "|".join(sorted(_MONTHS, key=len, reverse=True)) + r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+((?:19|20)\d{2})\b)?", re.IGNORECASE)
+_MONTH = "(" + "|".join(sorted(_MONTHS, key=len, reverse=True)) + r")\b\.?"
+_ORDINAL = r"(\d{1,2})(?:st|nd|rd|th)?\b(?!:\d)"                     # a day, not the hour of '17:00'
+_OF_YEAR = r"(?:,?\s+((?:19|20)\d{2})(?!\d))?"
+_NAMED_DAY = re.compile(r"\b" + _MONTH + r"\s+" + _ORDINAL + _OF_YEAR, re.IGNORECASE)                  # 'Nov 7', 'November 7th, 2026'
+_DAY_NAMED = re.compile(r"(?<![\d.:])" + _ORDINAL + r"\s+" + _MONTH + _OF_YEAR, re.IGNORECASE)         # '7 November', '06 Nov, 2026'
 _ISO_DAY = re.compile(r"(?<!\d)((?:19|20)\d{2})[-/](\d{1,2})[-/](\d{1,2})(?!\d)")
 _US_DAY = re.compile(r"(?<!\d)(\d{1,2})/(\d{1,2})/((?:19|20)\d{2})(?!\d)")
+# A run of days: 'November 6-December 19', 'Nov 14–15', 'November 1 – 8, 2026' (not the hours of 'Nov 6, 6 – 9 pm')
+_RUN = re.compile(r"\b" + _MONTH + r"\s+" + _ORDINAL + _OF_YEAR + r"\s*(?:-|–|—|to|through|thru|until)\s*(?:" + _MONTH + r"\s+)?" + _ORDINAL
+                  + r"(?!\s*(?:am|pm|a\.m|p\.m)\b)" + _OF_YEAR, re.IGNORECASE)
 _YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+_LONGEST_RUN_DAYS = 186
+# When a page was written, not when its event is: 'Posted: Oct 22, 2026', a snippet's leading 'Oct 14, 2026 — ', a news address's /2026/10/07/
+_PUBLISHED = re.compile(r"(?:posted|published|updated)(?:\s+on)?\s*:?\s*$", re.IGNORECASE)
+_DATELINE = re.compile(r"^\s*(?:[a-z]{3,9}\.?\s+\d{1,2},\s+(?:19|20)\d{2}|\d{1,2}\s+[a-z]{3,9}\.?\s+(?:19|20)\d{2})\s+[—–-]\s+", re.IGNORECASE)
+_NEWS_PATH = re.compile(r"^/(?:19|20)\d{2}/\d{1,2}/(?:\d{1,2}/)?")
 
 
 def _days(text):
-    """Every (year or None, month, day) the text states."""
-    found = [(int(y) if y else None, _MONTHS[m.lower()], int(d)) for m, d, y in _NAMED_DAY.findall(text)]
-    found += [(int(y), int(m), int(d)) for y, m, d in _ISO_DAY.findall(text)]
-    found += [(int(y), int(m), int(d)) for m, d, y in _US_DAY.findall(text)]
+    """Every (year or None, month, day) the text states, leaving out when it was posted or updated."""
+    found = []
+    for pattern, order in ((_NAMED_DAY, "mdy"), (_DAY_NAMED, "dmy"), (_ISO_DAY, "ymd"), (_US_DAY, "mdy")):
+        for match in pattern.finditer(text):
+            if _PUBLISHED.search(text[max(0, match.start() - 24):match.start()]):
+                continue
+            parts = dict(zip(order, match.groups()))
+            month = _MONTHS[parts["m"].lower()] if not parts["m"].isdigit() else int(parts["m"])
+            found.append((int(parts["y"]) if parts["y"] else None, month, int(parts["d"])))
     return [(y, m, d) for y, m, d in found if 1 <= m <= 12 and 1 <= d <= 31]
+
+
+def _runs(text, year):
+    """Every run of days the text states, as (first, last) dates; a run that states no year is read in the event's `year`."""
+    found = []
+    for m1, d1, y1, m2, d2, y2 in _RUN.findall(text):
+        last_year = int(y2 or y1 or year)
+        first_month, last_month = _MONTHS[m1.lower()], _MONTHS[(m2 or m1).lower()]
+        try:
+            last = date(last_year, last_month, int(d2))
+            first = date(int(y1) if y1 else last_year - ((first_month, int(d1)) > (last_month, int(d2))), first_month, int(d1))
+        except ValueError:
+            continue
+        if 0 < (last - first).days <= _LONGEST_RUN_DAYS:
+            found.append((first, last))
+    return found
 
 
 def _day(value):
@@ -123,12 +158,47 @@ def _identity(url):
         return url
 
 
+# Words that say what kind of place a venue is, not which one: 'Drift Cafe' is placed by 'drift', 'Revolver Dance Hall' by 'revolver'
+_PLACE_NOUNS = frozenset((
+    "venue", "venues", "park", "center", "centre", "hall", "church", "chapel", "school", "high", "college", "university", "company", "inc", "llc",
+    "bar", "cafe", "coffee", "shop", "restaurant", "grill", "kitchen", "pub", "lounge", "brewing", "brewery", "winery", "club", "house", "room",
+    "building", "theatre", "theater", "auditorium", "arena", "stadium", "amphitheater", "library", "museum", "gallery", "market", "farm", "hotel",
+    "community", "county", "city", "town", "north", "south", "east", "west", "regional", "visitor", "main", "street", "plaza", "square",
+    "station", "studio", "field", "course", "trail", "lot", "parking"))
+# Where a result is published: resale marketplaces list another seller's tickets, social posts talk about an event; a direct page is the event's own
+_RESALE = re.compile(r"(?:^|\.)(?:stubhub|viagogo|vividseats|tickpick|gametime|ticketnetwork|ticketsmarter|scorebig)\.[a-z.]+$")
+_SOCIAL = re.compile(r"(?:^|\.)(?:facebook|instagram|twitter|x|tiktok|threads)\.(?:com|net)$")
+_STATES = frozenset("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT "
+                    "VT VA WA WV WI WY DC".split())
+_TOWN = re.compile(r"\b([A-Z][a-z][A-Za-z.'’-]*(?:\s+[A-Z][a-z][A-Za-z.'’-]*){0,3}),\s*([A-Z]{2})\b")   # 'Valley Center, CA', 'Cookeville, TN'
+
+
+def _kind(host, path):
+    """2 for a direct page (an organizer's, venue's, calendar's or ticketing platform's), 1 for a social post, 0 for a resale listing."""
+    if _RESALE.search(host):
+        return 0
+    if _SOCIAL.search(host):
+        return 2 if path.startswith("/events/") else 1    # a Facebook event is the event's own page; a post is talk about it
+    return 2
+
+
+def _towns(text):
+    """The words of every 'Town, ST' the text writes."""
+    return [set(_WORD.findall(town.lower())) for town, state in _TOWN.findall(text) if state in _STATES]
+
+
 def judge(results, title, day, venue, city):
-    """The one credible event page among a provider's results, or None. Deterministic: the same results give the same answer."""
+    """The one credible event page among a provider's results, or None. Deterministic: the same results give the same answer.
+
+    A result is this event's page only when its address names the event (`names_event`), it shows the event's place (a word that names the venue, or,
+    without a venue, the town) and names no other town, and the days it states (single days or runs) include the event's day in the event's year. A
+    result that states no day may still be the page; among several such pages none is chosen. A page that states the day comes first; then direct pages
+    before social posts and those before resale listings; then the one whose heading carries more of the title."""
     place = " ".join(filter(None, (venue, city)))
     title_words = _distinctive(title, place)
     city_words = set(_WORD.findall(city.lower()))
     venue_words = {w for w in _WORD.findall(venue.lower()) if len(w) >= 3 and w not in _COMMON} - city_words
+    specific = venue_words - _PLACE_NOUNS
     accepted = []
     for rank, item in enumerate(results):
         if not isinstance(item, dict):
@@ -136,22 +206,37 @@ def judge(results, title, day, venue, city):
         url = event_page(item.get("url"))
         if not url or not names_event(url, title, place):
             continue
-        path = unquote(urlsplit(url).path)
+        parts = urlsplit(url)
+        path = _NEWS_PATH.sub("/", unquote(parts.path))       # a news address's /2026/10/07/ is when the story was posted
         heading = _clean(item.get("title"), 500)
-        text = " ".join((heading, _clean(item.get("content"), 2000), path, re.sub(r"[-_/]+", " ", path)))   # '2026-11-07' as written, 'nov-7' as words
-        stated = _days(text)
-        if stated and not any((y is None or y == day.year) and (m, d) == (day.month, day.day) for y, m, d in stated):
-            continue                                         # another day: another occurrence or another event
-        years = {int(y) for y in _YEAR.findall(path)}
-        if years and day.year not in years:
-            continue                                         # an address for another year's event
+        content = _DATELINE.sub("", _clean(item.get("content"), 2000))
+        text = " ".join((heading, content, path, re.sub(r"[-_/]+", " ", path)))   # '2026-11-07' as written, 'nov-7' as words
         words = _WORD.findall(text.lower())
-        dated = bool(stated)
-        placed = bool(city_words and all(w in words for w in city_words)) or bool(venue_words and all(_has(words, w) for w in venue_words))
-        if not (dated or placed):
-            continue
+        if specific:
+            placed = any(_has(words, w) for w in specific)
+        elif venue_words:
+            placed = all(_has(words, w) for w in venue_words)
+        else:
+            placed = bool(city_words) and all(w in words for w in city_words)
+        if not placed:
+            continue                                         # the title and day alone do not tell this event from another one elsewhere
+        towns = _towns(" ".join((heading, content)))
+        if city_words and towns and not any(city_words <= town for town in towns):
+            continue                                         # another town's event of the same name
+        stated, runs = _days(text), _runs(text, day.year)
+        on_day = any((y is None or y == day.year) and (m, d) == (day.month, day.day) for y, m, d in stated)
+        in_run = any(first <= day <= last for first, last in runs)
+        if (stated or runs) and not (on_day or in_run):
+            continue                                         # another day: another occurrence or another event
+        years = {y for y, _, _ in stated if y} | {d.year for run in runs for d in run}
+        if years and day.year not in years:
+            continue                                         # the days it states are another year's
+        path_years = {int(y) for y in _YEAR.findall(path)}
+        if path_years and day.year not in path_years:
+            continue                                         # an address for another year's event
         heading_words = _WORD.findall(heading.lower())
-        accepted.append(((dated, placed, sum(1 for w in title_words if _has(heading_words, w))), -rank, url))
+        dated = on_day or in_run
+        accepted.append(((dated, _kind(parts.hostname.lower(), parts.path), sum(1 for w in title_words if _has(heading_words, w))), -rank, url))
     if not accepted:
         return None
     accepted.sort(reverse=True)
