@@ -11,12 +11,17 @@ never sees a provider, key, query, ranking or page:
   most MAX_RESULTS results costs one credit; nothing billed at a higher rate (advanced depth, answers, raw content, auto parameters) is ever asked for.
 * Key: TAVILY_API_KEY in the host process's environment (as SERPAPI_API_KEY is), held in memory and sent only in the Authorization header to the
   one fixed https endpoint. Without a key nothing is searched and nothing is stored.
-* Limits: at most DAILY_LIMIT requests a UTC day and MONTHLY_LIMIT a UTC month (under the free 1,000), counted in the database, so a restart does not
-  reset them. The provider's usage-limit answer (HTTP 432) ends searching for the rest of the month; any other failure pauses searching for PAUSE_S
-  (DISABLED_S for a refused key). There are no retries: a failed lookup is None, and a later scan asks again.
+* Limits: at most DAILY_LIMIT requests a UTC day and MONTHLY_LIMIT a UTC month (under the free 1,000), reserved in the database in one transaction
+  before each request, so neither concurrent lookups nor a restart can pass them; requests are at least MIN_INTERVAL_S apart. The provider's
+  usage-limit answer (HTTP 432) ends searching for the rest of the month; any other failure pauses searching for PAUSE_S (DISABLED_S for a refused
+  key). There are no retries: a failed lookup is None, and a later scan asks again.
 * Cache: through Persistence's EventLinkCache port (one database). A page found (with its address) is reused while the event is current, so it is
-  neither searched for nor read again; "nothing credible" is reused for MISS_TTL_S, since an event's page often appears nearer its date. A provider
-  failure is never remembered as an answer; a search whose pages could not be read or confirmed is remembered as nothing credible.
+  neither searched for nor read again; "nothing credible" (no proposal, or every proposed page read and not the event's) is reused for MISS_TTL_S,
+  since an event's page often appears nearer its date. When proposed pages could not be read for a passing reason (the network, a timeout, a server
+  error, a site asking to slow down) and none was confirmed, those pages are kept and read again after REREAD_S, without a new search, at most
+  MAX_REREADS times; after that the lookup is "nothing credible". A provider failure is never remembered as an answer.
+* Threads: lookups of different events run side by side; the shared lock guards only the finder's own bookkeeping, never a search or a page read.
+  A second lookup of an event already being looked up waits for that one (LOOKUP_WAIT_S at most) and takes its answer from the cache.
 
 Two steps, and only the second can make a page the event's:
 
@@ -30,8 +35,10 @@ Two steps, and only the second can make a page the event's:
    another day, year, venue or town. A page that cannot be read or confirmed is never returned; among confirmed pages the event's own page is preferred.
 
 The street address comes only from the confirmed page, and only when it belongs to the event's venue: the event's structured location, else a labelled
-location field naming the venue, else the text written beside the venue's name; a footer or contact address only when the website is the venue's own.
-Different addresses for the venue give none. Nothing found is invented, completed or made verified.
+location field naming the venue, else the text written beside the venue's name. A footer address only when the page states none of those, the website
+is demonstrably the venue's own (its name names the venue and its domain spells it), the footer gives it as the venue's location (under a location
+label or the venue's name, not as a mailing, office or billing address) with the event's town, and it is the only one. Different addresses for the
+venue give none. Nothing found is invented, completed or made verified.
 """
 import hashlib
 import http.client
@@ -46,7 +53,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import unquote, urlsplit
 
-from .safe import USER_AGENT
+from .safe import USER_AGENT, BlockedError, FetchError
 from .urls import canonical_url
 from .webpage import EVENT_KINDS, STREET_LINE, PageParts, event_documents, page_text
 
@@ -56,6 +63,8 @@ MAX_RESULTS = 5
 MAX_PAGES = 3                 # proposed pages read for one lookup
 DAILY_LIMIT, MONTHLY_LIMIT = 40, 900
 MISS_TTL_S = 14 * 86400
+REREAD_S, MAX_REREADS = 3 * 3600, 3   # proposed pages that could not be read are read again (not searched again) after REREAD_S, at most MAX_REREADS times
+LOOKUP_WAIT_S = 180           # how long a lookup waits for another thread's lookup of the same event (one search: up to MAX_PAGES bounded reads)
 KEEP_PAST_DAYS = 30           # a lookup is dropped this long after its event's day
 PAUSE_S, DISABLED_S = 3600, 86400
 TIMEOUT_S, MAX_BYTES = 15, 500_000
@@ -207,7 +216,7 @@ class _Event:
     """What a page is compared with: the event's distinctive title words, its day, and the words of its venue and town."""
 
     def __init__(self, title, day, venue, city):
-        self.title, self.day, self.place = title, day, " ".join(filter(None, (venue, city)))
+        self.title, self.day, self.venue, self.place = title, day, venue, " ".join(filter(None, (venue, city)))
         self.title_words = _distinctive(title, self.place)
         self.city_words = set(_WORD.findall(city.lower()))
         self.venue_words = {w for w in _WORD.findall(venue.lower()) if len(w) >= 3 and w not in _COMMON} - self.city_words
@@ -429,15 +438,61 @@ def _beside_venue(event, pieces, index, prefix):
     return LABELLED if labelled else BESIDE_VENUE
 
 
-def _venue_site(event, reader):
-    """Is the website the venue's own: does its name (og:site_name, else the last part of its <title>) name the venue, every distinctive word of it?"""
+def _spells(domain, words):
+    """Does the domain name spell the venue's name, each word whole or by its initial, in order ('ccplayhouse': Cumberland County Playhouse,
+    'batesnutfarm': Bates Nut Farm)? A leading 'the' may be left out."""
+    if words and words[0] == "the":
+        return _spells(domain, words[1:]) or (domain.startswith("the") and _spells(domain[3:], words[1:]))
+    if not words:
+        return not domain
+    word = words[0]
+    return any(domain.startswith(part) and _spells(domain[len(part):], words[1:]) for part in {word, word[0]})
+
+
+def _venue_site(event, reader, host):
+    """Is the website demonstrably the venue's own: its name (og:site_name, else the last part of its <title>) names the venue, every distinctive
+    word of it, and its domain spells the venue's name?"""
     name = reader.site_name or (_TITLE_SEPARATOR.split(reader.title)[-1] if _TITLE_SEPARATOR.search(reader.title) else "")
     words = _WORD.findall(name.lower())
     wanted = event.specific or event.venue_words
-    return bool(wanted) and all(_has(words, w) for w in wanted)
+    if not wanted or not all(_has(words, w) for w in wanted):
+        return False
+    labels = [label for label in (host or "").lower().split(".") if label and label != "www"]
+    domain = re.sub(r"[^a-z0-9]", "", labels[-2]) if len(labels) >= 2 else ""
+    venue = [w for w in _WORD.findall(event.venue.lower()) if w not in event.city_words]
+    return bool(domain) and _spells(domain, venue)
 
 
-def _page_address(event, reader, structured):
+_CONTACT_LABEL = re.compile(r"\b(?:mailing|billing|office|offices|headquarters|corporate|p\.?\s?o\.?\s+box|box office|send|remit|payments?)\b", re.IGNORECASE)
+
+
+def _footer_address(event, pieces):
+    """The one street address the venue's own website writes in its footer for its location: under a location label ('LOCATION', 'Address',
+    'Visit us', 'Find us', 'Directions') or right after the venue's name, with the event's town written out; or None (none, several, a mailing, office
+    or billing address, or another town)."""
+    found = set()
+    for index in range(len(pieces)):
+        line, prefix = _street_in(pieces, index)
+        if not line or _CONTACT_LABEL.search(prefix):
+            continue
+        before = [p.strip() for p in pieces[max(0, index - 3):index] if re.search(r"[A-Za-z0-9]", p)][-2:]
+        if any(_CONTACT_LABEL.search(p) for p in before):
+            continue                                         # 'Mailing address', 'Box office', 'Office': not where the venue is
+        tied = bool(_LOCATION_LABEL.match(prefix.strip())) or any(_LOCATION_LABEL.match(p) or _VISIT_LABEL.match(p) or event.names_venue(p)
+                                                                  for p in before)
+        if tied:
+            found.add(line)
+    if len({_address_key(line) for line in found}) != 1:
+        return None
+    line = max(found, key=len)
+    town = set(_WORD.findall(line.lower()))
+    return line if event.city_words and event.city_words <= town and not _names_another_town(event, line) else None
+
+
+_VISIT_LABEL = re.compile(r"^(?:visit|find)\s+us\b|^directions\b|^getting\s+here\b", re.IGNORECASE)
+
+
+def _page_address(event, reader, structured, host=None):
     """(address, basis) for the venue as the confirmed page states it, or (None, None) when it states none, or more than one, for the venue."""
     found = []                                               # (rank, address)
     if structured is not None:
@@ -452,9 +507,10 @@ def _page_address(event, reader, structured):
             basis = _beside_venue(event, body, index, prefix)
             if basis:
                 found.append((1 if basis == LABELLED else 2, line, basis))
-    if not found and _venue_site(event, reader):
-        aside = [text for text, is_aside in reader.pieces if is_aside]
-        found += [(3, line, VENUE_SITE) for line, _ in (_street_in(aside, index) for index in range(len(aside))) if line]
+    if not found and _venue_site(event, reader, host):
+        line = _footer_address(event, [text for text, is_aside in reader.pieces if is_aside])
+        if line:
+            found.append((3, line, VENUE_SITE))
     found = [(rank, line, basis) for rank, line, basis in found if not event.other_town(line) and not _names_another_town(event, line)]
     if not found or len({_address_key(line) for _, line, _ in found}) > 1:
         return None, None                                    # none, or the venue given more than one address: which is right is not known
@@ -483,10 +539,11 @@ def _labelled_locations(pieces):
     return found
 
 
-def check_page(html, title, day, venue, city):
+def check_page(html, title, day, venue, city, url=None):
     """Is this read page the event's own page? It must name the event in its title (its <title>, an <h1> or og:title) and give the event's day and
     venue: through a structured event (JSON-LD) that names the event, or else through its text. Nothing on it may give the event another day, year,
-    venue or town. A confirmed page also gives the venue's street address when it states one for the venue (see `_page_address`)."""
+    venue or town. A confirmed page also gives the venue's street address when it states one for the venue (see `_page_address`); `url` is where the
+    page was read, so a website's own footer address can be taken only on the venue's own domain."""
     event = _Event(title, day, venue, city)
     reader = page_text(html if isinstance(html, str) else "")
     heading = " | ".join([reader.title] + reader.headings)
@@ -522,7 +579,7 @@ def check_page(html, title, day, venue, city):
             return PageCheck(False, "the page does not show the event's day")
         if other_years:
             return PageCheck(False, "the days the page shows are another year's")
-    address, basis = _page_address(event, reader, structured)
+    address, basis = _page_address(event, reader, structured, urlsplit(url).hostname if isinstance(url, str) else None)
     return PageCheck(True, "confirmed", address, basis)
 
 
@@ -559,7 +616,9 @@ class EventLinkFinder:
         self._key = key.strip() if isinstance(key, str) and key.strip() else None
         self._cache, self._clock, self._post, self._sleep, self._fetch = cache, clock, post, sleep, fetch
         self._daily, self._monthly = daily_limit, monthly_limit
-        self._lock, self._paused_until, self._last_request, self._tidied = threading.Lock(), 0.0, float("-inf"), None
+        # the lock guards only this bookkeeping (never a search or a page read): pause, request pacing, the daily tidy and the lookups in progress
+        self._lock, self._paused_until, self._next_request, self._tidied = threading.Lock(), 0.0, float("-inf"), None
+        self._looking = {}       # lookup key -> threading.Event set when that lookup ends
         self.status = "ready" if self._key and self._fetch is not None else "unconfigured"   # without a page reader nothing could be confirmed
 
     def find_event_link(self, title, date, venue, city):
@@ -582,45 +641,85 @@ class EventLinkFinder:
         if not self._key or self._fetch is None or not title or day is None:
             return None
         key = hashlib.sha256("\x1f".join((title.lower(), day.isoformat(), venue.lower(), city.lower())).encode("utf-8")).hexdigest()
-        with self._lock:
-            now = self._clock()
-            today = datetime.fromtimestamp(now, timezone.utc).date()
-            if self._tidied != today:   # once a day: lookups for long-past events and old counts go
-                self._cache.forget_before((today - timedelta(days=KEEP_PAST_DAYS)).isoformat())
-                self._tidied = today
-            known = self._cache.recall(key)
-            if known and (known[0] or now - known[3] < MISS_TTL_S):
-                self.status = "cached"
-                return EventLink(*known[:3]) if known[0] else None
-            if now < self._paused_until:
+        while True:   # one lookup of an event at a time: a second waits for the first, then reads its answer from the cache
+            with self._lock:
+                running = self._looking.get(key)
+                if running is None:
+                    self._looking[key] = threading.Event()
+                    break
+            if not running.wait(LOOKUP_WAIT_S):
+                self.status = "another lookup of this event is still running"
                 return None
-            periods = (today.isoformat(), today.isoformat()[:7])
-            used = self._cache.requests(periods)
-            if used.get(periods[0], 0) >= self._daily or used.get(periods[1], 0) >= self._monthly:
-                self.status = "limit reached"
-                return None
-            self._cache.count_request(periods)   # counted before asking: a request that fails may still cost a credit
-            self._sleep(max(0.0, self._last_request + MIN_INTERVAL_S - self._clock()))
-            self._last_request = self._clock()
-            results = self._search(title, day, venue, city, periods[1])
-            if results is None:
-                return None
-            link = self._confirmed(nominate(results, title, day, venue, city), title, day, venue, city)
-            self._cache.remember(key, link.url if link else None, link.address if link else None, link.address_basis if link else None, int(now),
-                                 day.isoformat())
-            self.status = "searched"
-            return link
+        try:
+            return self._lookup(key, title, day, venue, city)
+        finally:
+            with self._lock:
+                self._looking.pop(key).set()
 
-    def _confirmed(self, ranked, title, day, venue, city):
-        """The best proposed page that reading it confirms: at most MAX_PAGES are read, in ranking order, and reading stops at the first confirmed
-        page of the event's own (not a social post or a resale listing). A page that cannot be read is passed over, never taken on its snippet."""
+    def _lookup(self, key, title, day, venue, city):
+        now = self._clock()
+        today = datetime.fromtimestamp(now, timezone.utc).date()
+        with self._lock:
+            tidy, self._tidied = self._tidied != today, today
+        if tidy:   # once a day: lookups for long-past events and old counts go
+            self._cache.forget_before((today - timedelta(days=KEEP_PAST_DAYS)).isoformat())
+        known = self._cache.recall(key)
+        if known and known[0]:
+            self.status = "cached"
+            return EventLink(*known[:3])
+        if known and known[4]:   # pages that could not be read: read again once REREAD_S has passed, without searching again
+            if now - known[3] < REREAD_S:
+                self.status = "pages unreadable; reading them again later"
+                return None
+            return self._settle(key, day, now, *self._read(known[4], title, day, venue, city), rereads=known[5] + 1)
+        if known and now - known[3] < MISS_TTL_S:
+            self.status = "cached"
+            return None
+        with self._lock:
+            paused = now < self._paused_until
+        if paused:
+            return None
+        periods = {today.isoformat(): self._daily, today.isoformat()[:7]: self._monthly}
+        if not self._cache.reserve_request(periods):   # counted before asking (a request that fails may still cost a credit), atomically
+            self.status = "limit reached"
+            return None
+        with self._lock:   # a slot MIN_INTERVAL_S after the previous request; the wait itself is outside the lock
+            start = max(self._clock(), self._next_request)
+            self._next_request = start + MIN_INTERVAL_S
+        self._sleep(max(0.0, start - self._clock()))
+        results = self._search(title, day, venue, city, today.isoformat()[:7])
+        if results is None:
+            return None
+        ranked = [(url, kind) for (_, kind, _), url in nominate(results, title, day, venue, city)[:MAX_PAGES]]
+        return self._settle(key, day, now, *self._read(ranked, title, day, venue, city), rereads=0)
+
+    def _settle(self, key, day, now, link, unread, rereads):
+        """Remember a lookup's answer: the page found; pages to read again later (while MAX_REREADS allows); or nothing credible."""
+        if link is None and unread and rereads >= MAX_REREADS:
+            unread = ()                                      # read again often enough: nothing credible for MISS_TTL_S
+        self._cache.remember(key, link.url if link else None, link.address if link else None, link.address_basis if link else None, int(now),
+                             day.isoformat(), pending=() if link else unread, rereads=rereads if unread and not link else 0)
+        self.status = "searched" if not rereads else "pages read again"
+        if link is None and unread:
+            self.status += "; pages unreadable for now"
+        return link
+
+    def _read(self, ranked, title, day, venue, city):
+        """(the best proposed page that reading it confirms, or None; the proposed pages that could not be read for a passing reason). At most
+        MAX_PAGES are read, in ranking order, and reading stops at the first confirmed page of the event's own (not a social post or a resale
+        listing). A page that cannot be read is passed over, never taken on its snippet."""
         place = " ".join(filter(None, (venue, city)))
-        confirmed = []
-        for order, ((_, kind, _), url) in enumerate(ranked[:MAX_PAGES]):
+        confirmed, unread = [], []
+        for order, (url, kind) in enumerate(ranked[:MAX_PAGES]):
             try:
                 response = self._fetch.fetch(url)
-                check = check_page(getattr(response, "text", "") or "", title, day, venue, city)
-            except Exception:   # unreachable, refused by the site or its robots.txt, too large, not a page: not confirmed
+            except Exception as error:   # unreachable, refused by the site or its robots.txt, too large, not a page: not confirmed
+                if _passing(error):
+                    unread.append((url, kind))
+                continue
+            try:
+                check = check_page(getattr(response, "text", "") or "", title, day, venue, city, getattr(response, "url", None) or url)
+            except Exception:
                 continue
             if not check.confirmed:
                 continue
@@ -630,7 +729,7 @@ class EventLinkFinder:
             confirmed.append((kind, -order, EventLink(url, check.address, check.address_basis)))
             if kind == 2:
                 break
-        return max(confirmed, key=lambda item: item[:2])[2] if confirmed else None
+        return (max(confirmed, key=lambda item: item[:2])[2] if confirmed else None), tuple(unread)
 
     def _search(self, title, day, venue, city, month):
         query = _clean(" ".join(filter(None, (title, venue, city, f"{day:%B} {day.day}, {day.year}"))), 380)
@@ -658,6 +757,22 @@ class EventLinkFinder:
         return [item for item in results if isinstance(item, dict) and self._key not in str(item.get("url"))]
 
     def _pause(self, seconds, status):
-        self._paused_until = max(self._paused_until, self._clock() + seconds)
+        with self._lock:
+            self._paused_until = max(self._paused_until, self._clock() + seconds)
         self.status = status
         return None
+
+
+# What a page read that failed says: a passing reason (worth reading again later) or a lasting one (robots.txt, a refusal, not a page, too large)
+_LASTING = re.compile(r"HTTP 4\d\d|too large|not a text document|unexpected content type|too many redirects|redirect without|content encoding|"
+                      r"decompressed|not a public website|robots\.txt|refused access|user name or password|port \d+ is not read|only http", re.IGNORECASE)
+
+
+def _passing(error):
+    """Is a failed page read worth trying again later: the network, a timeout, a server error, or the site asking us to slow down (HTTP 429/503)?"""
+    text = str(error)
+    if isinstance(error, BlockedError):
+        return "slow down" in text or "HTTP 429" in text
+    if isinstance(error, FetchError):
+        return not _LASTING.search(text)
+    return isinstance(error, (OSError, TimeoutError))

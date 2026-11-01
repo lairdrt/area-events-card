@@ -437,7 +437,9 @@ CREATE TABLE event_link_lookups (
   address       TEXT,                       -- the venue's street address as that page states it for the event, or NULL
   address_basis TEXT,                       -- what on the page gave it: the event's structured location, a labelled location, ...
   checked_at    INTEGER NOT NULL,
-  event_day     TEXT NOT NULL               -- YYYY-MM-DD, so lookups for past events are dropped
+  event_day     TEXT NOT NULL,              -- YYYY-MM-DD, so lookups for past events are dropped
+  pending       TEXT,                       -- JSON [[url, kind], ...]: proposed pages that could not be read for a passing reason, to read again
+  rereads       INTEGER NOT NULL DEFAULT 0 CHECK (rereads >= 0)   -- how often those pages were read again
 );
 CREATE INDEX event_link_lookups_day ON event_link_lookups(event_day);
 

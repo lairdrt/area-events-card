@@ -9,12 +9,15 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from datetime import date, datetime, timezone
 
 from area_events.deduplication.exact import ExactMatch
 from area_events.discovery import producer as contract
-from area_events.discovery.event_links import MISS_TTL_S, EventLink, EventLinkFinder, check_page, judge
+from area_events.discovery.event_links import (MAX_REREADS, MIN_INTERVAL_S, MISS_TTL_S, PAUSE_S, REREAD_S, EventLink, EventLinkFinder, check_page,
+                                               judge)
 from area_events.discovery.safe import BlockedError, FetchError
 from area_events.persistence.build import open_persistence
 from tests.test_serpapi import FakeSerpApi, crawl, observed, page, setup
@@ -255,14 +258,139 @@ class Finding(unittest.TestCase):
         self.assertEqual(dict(self.rows("event_link_usage")), {"2026-10-10": 2, "2026-10-11": 1, "2026-10": 3})
 
     def test_a_page_that_cannot_be_read_is_never_taken_on_its_snippet(self):
-        for failure in (BlockedError("robots.txt of ccplayhouse.com does not allow this page"), FetchError("HTTP 404"), OSError("unreachable")):
+        for failure in (BlockedError("robots.txt of ccplayhouse.com does not allow this page"), BlockedError("ccplayhouse.com refused access (HTTP 403)"),
+                        FetchError("ccplayhouse.com: HTTP 404"), FetchError("ccplayhouse.com: not a text document (application/pdf)")):
             with self.subTest(str(failure)):
                 self.setUp()
                 fake = FakeTavily(results(CORRECT))
                 finder = self.finder(fake, pages=FakePages({SHOW: failure}))
                 self.assertIsNone(finder.find_event_link(TITLE, DAY, VENUE, CITY), "a lookup never raises")
-                self.assertEqual(self.pages.asked, [SHOW], "the page is read once, with no retry")
-                self.assertEqual([row[1:4] for row in self.rows("event_link_lookups")], [(None, None, None)], "remembered as nothing credible")
+                self.assertEqual([row[1:4] + row[6:] for row in self.rows("event_link_lookups")], [(None, None, None, None, 0)],
+                                 "a lasting refusal: nothing credible, nothing to read again")
+                self.clock.now += REREAD_S + 1
+                self.assertIsNone(finder.find_event_link(TITLE, DAY, VENUE, CITY))
+                self.assertEqual((self.pages.asked, len(fake.calls)), ([SHOW], 1), "neither read nor searched again within MISS_TTL_S")
+
+    def test_a_page_unreadable_for_a_passing_reason_is_read_again_later_without_a_new_search(self):
+        for failure in (FetchError("ccplayhouse.com: timed out"), FetchError("ccplayhouse.com: HTTP 503"), FetchError("cannot resolve ccplayhouse.com"),
+                        BlockedError("ccplayhouse.com asked us to slow down; waiting before asking again"), OSError("connection reset")):
+            with self.subTest(str(failure)):
+                self.setUp()
+                fake, pages = FakeTavily(results(CORRECT)), FakePages({SHOW: failure})
+                self.assertIsNone(self.finder(fake, pages=pages).find_event_link(TITLE, DAY, VENUE, CITY))
+                self.assertEqual([json.loads(row[6]) for row in self.rows("event_link_lookups")], [[[SHOW, 2]]], "the page is kept to read again")
+                self.clock.now += REREAD_S - 60
+                self.assertIsNone(self.find(self.finder(fake, pages=pages)), "not before REREAD_S")
+                self.restart()                                         # what waits survives a restart
+                self.clock.now += 120
+                pages.pages[SHOW] = SHOW_PAGE                          # the site is back
+                self.assertEqual(self.find(self.finder(fake, pages=pages)), SHOW)
+                self.assertEqual((len(fake.calls), pages.asked), (1, [SHOW, SHOW]), "read again, not searched again: no further credit")
+                self.assertEqual([row[1:4] + row[6:] for row in self.rows("event_link_lookups")],
+                                 [(SHOW, "221 Tennessee Ave, Crossville, TN 38555", "the venue's own website", None, 0)])
+
+    def test_a_page_that_stays_unreadable_is_read_again_a_bounded_number_of_times(self):
+        fake, pages = FakeTavily(results(CORRECT)), FakePages({SHOW: FetchError("ccplayhouse.com: the site answered too slowly")})
+        for _ in range(1 + MAX_REREADS + 2):
+            self.find(self.finder(fake, pages=pages))
+            self.clock.now += REREAD_S + 1
+        self.assertEqual((len(pages.asked), len(fake.calls)), (1 + MAX_REREADS, 1), "read at most 1 + MAX_REREADS times for one search")
+        self.assertEqual([row[1:2] + row[6:] for row in self.rows("event_link_lookups")], [(None, None, 0)], "then nothing credible, nothing waiting")
+        self.clock.now += MISS_TTL_S
+        self.find(self.finder(fake, pages=pages))
+        self.assertEqual(len(fake.calls), 2, "searched again only once the miss is old")
+
+    def test_a_genuine_miss_is_not_read_again(self):
+        fake, pages = FakeTavily(results(CORRECT)), FakePages({SHOW: saved("E07_1077gracefm_open-mic.html")})   # read: another event's page
+        self.assertIsNone(self.find(self.finder(fake, pages=pages)))
+        self.clock.now += REREAD_S + 1
+        self.assertIsNone(self.find(self.finder(fake, pages=pages)))
+        self.assertEqual((pages.asked, len(fake.calls)), ([SHOW], 1))
+        self.assertEqual([row[1:2] + row[6:] for row in self.rows("event_link_lookups")], [(None, None, 0)])
+
+    # --- threads ---------------------------------------------------------------------------------------------------------------
+
+    def test_lookups_of_different_events_run_side_by_side_while_a_page_is_being_read(self):
+        reading, release = threading.Event(), threading.Event()
+        other = hit("https://leslietowncentre.example/events/mistletoe-market", "Mistletoe Market | Leslie Town Centre",
+                    "Mistletoe Market at Leslie Town Centre, Cookeville, Friday November 6, 2026.")
+
+        class SlowPage(FakePages):
+            def fetch(self, url):
+                if "mistletoe" in url:
+                    reading.set()
+                    release.wait(10)
+                return super().fetch(url)
+
+        fake = FakeTavily(results(CORRECT, other))
+        finder = self.finder(fake, pages=SlowPage({SHOW: SHOW_PAGE}))
+        slow = threading.Thread(target=lambda: self.find(finder, title="Mistletoe Market", day="2026-11-06", venue="Leslie Town Centre", city="Cookeville"))
+        slow.start()
+        self.assertTrue(reading.wait(5))
+        started = time.monotonic()
+        self.assertEqual(self.find(finder), SHOW, "another event is looked up while that page is still being read")
+        self.assertLess(time.monotonic() - started, 5)
+        release.set()
+        slow.join(10)
+        self.assertFalse(slow.is_alive())
+
+    def test_simultaneous_lookups_of_one_event_make_one_search_and_one_read(self):
+        searching, release = threading.Event(), threading.Event()
+        fake = FakeTavily(results(CORRECT))
+
+        def post(host, path, headers, body):
+            searching.set()
+            release.wait(10)
+            return fake(host, path, headers, body)
+
+        finder = EventLinkFinder(self.persistence.event_links, api_key=KEY, clock=self.clock, post=post, sleep=lambda s: None,
+                                 fetch=(pages := FakePages({SHOW: SHOW_PAGE})))
+        answers = []
+        threads = [threading.Thread(target=lambda: answers.append(self.find(finder))) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        self.assertTrue(searching.wait(5))
+        time.sleep(0.2)                                            # the others reach the wait
+        release.set()
+        for thread in threads:
+            thread.join(10)
+        self.assertEqual(answers, [SHOW] * 6)
+        self.assertEqual((len(fake.calls), pages.asked), (1, [SHOW]), "one search, one page read, one credit")
+
+    def test_concurrent_lookups_never_pass_the_limits_even_from_two_finders_on_one_database(self):
+        self.clock.now = int(datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc).timestamp())
+        fake = FakeTavily(results())
+        finders = [self.finder(fake, daily_limit=3, monthly_limit=50), self.finder(fake, daily_limit=3, monthly_limit=50)]   # as two processes would
+        threads = [threading.Thread(target=self.find, args=(finders[n % 2],), kwargs={"title": f"Holiday Market {n}"}) for n in range(12)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        self.assertEqual(len(fake.calls), 3, "the daily limit, exactly")
+        self.assertEqual(dict(self.rows("event_link_usage")), {"2026-10-10": 3, "2026-10": 3})
+
+    def test_requests_stay_spaced_and_a_network_failure_in_one_thread_leaves_the_others_safe(self):
+        waits = []
+        fake = FakeTavily(results())
+        finder = EventLinkFinder(self.persistence.event_links, api_key=KEY, clock=self.clock, post=fake, sleep=waits.append, fetch=FakePages())
+        for n in range(3):
+            self.find(finder, title=f"Holiday Market {n}")
+        self.assertEqual(waits, [0.0, MIN_INTERVAL_S, 2 * MIN_INTERVAL_S], "a slot MIN_INTERVAL_S after the last, on a clock that does not move")
+        self.setUp()
+        fake = FakeTavily((0, OSError("network is unreachable")))
+        finder = self.finder(fake)
+        answers = []
+        threads = [threading.Thread(target=lambda n=n: answers.append(self.find(finder, title=f"Holiday Market {n}"))) for n in range(5)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        self.assertEqual(answers, [None] * 5, "no lookup raises")
+        self.assertLessEqual(len(fake.calls), 5)
+        self.assertEqual(finder._looking, {}, "no lookup is left marked as running")
+        self.clock.now += PAUSE_S + 1
+        fake.answers = [results(CORRECT)]
+        self.assertEqual(self.find(finder), SHOW, "after the pause the finder works again")
         self.setUp()
         self.assertIsNone(self.find(EventLinkFinder(self.persistence.event_links, api_key=KEY, clock=self.clock, post=FakeTavily(results(CORRECT)),
                                                     sleep=lambda s: None)), "without a page reader nothing can be confirmed, so nothing is searched")
@@ -333,15 +461,18 @@ class Cache:
     def recall(self, key):
         return self.rows.get(key)
 
-    def remember(self, key, url, address, address_basis, checked_at, event_day):
-        self.rows[key] = (url, address, address_basis, checked_at)
+    def remember(self, key, url, address, address_basis, checked_at, event_day, pending=(), rereads=0):
+        self.rows[key] = (url, address, address_basis, checked_at, tuple(pending), rereads)
 
     def requests(self, periods):
         return {p: self.used.get(p, 0) for p in periods}
 
-    def count_request(self, periods):
-        for p in periods:
+    def reserve_request(self, limits):
+        if any(self.used.get(p, 0) >= limit for p, limit in limits.items()):
+            return False
+        for p in limits:
             self.used[p] = self.used.get(p, 0) + 1
+        return True
 
     def use_up(self, period, requests):
         self.used[period] = max(self.used.get(period, 0), requests)
@@ -390,17 +521,33 @@ class ReadingThePage(unittest.TestCase):
         self.assertEqual(check_page(saved("E07_1077gracefm_open-mic.html"), "Open Mic Night", date(2026, 10, 7), "Red Silo Brewing", "Cookeville").reason,
                          "its title gives another day")
 
-    def test_a_footer_address_is_the_venue_s_only_on_the_venue_s_own_website(self):
+    def test_a_footer_address_is_the_venue_s_only_on_the_venue_s_own_website_and_only_as_its_location(self):
         body = "<h1>Harvest Night Market</h1><p>Saturday, November 7, 2026</p><p>Location</p><p>Drift Cafe</p>"
+        own_site = "https://www.driftcafe.com/events/harvest-night-market"         # the domain spells the venue
+        located = "<p>LOCATION</p><p>4200 Park Blvd</p><p>San Diego, CA 92103</p>"
+        own = page_of("Harvest Night Market | Drift Cafe", body, located)
+        check = check_page(own, *HARVEST, url=own_site)
+        self.assertEqual((check.address, check.address_basis), ("4200 Park Blvd, San Diego, CA 92103", "the venue's own website"))
+        self.assertEqual(check_page(own, *HARVEST, url="https://valleyevents.com/harvest-night-market").address, None,
+                         "a site that calls itself Drift Cafe on another domain is not shown to be the venue's")
         organizer = page_of("Harvest Night Market | Valley Events Co", body, "Valley Events Co<br>771 Jamacha Road #301, El Cajon, CA 92019")
-        check = check_page(organizer, *HARVEST)
+        check = check_page(organizer, *HARVEST, url="https://valleyevents.com/harvest-night-market")
         self.assertEqual((check.confirmed, check.address), (True, None), "an organizer's office address is not the venue's")
-        own = page_of("Harvest Night Market | Drift Cafe", body, "Drift Cafe<br>4200 Park Blvd<br>San Diego, CA 92103")
-        self.assertEqual((check_page(own, *HARVEST).address, check_page(own, *HARVEST).address_basis), ("4200 Park Blvd, San Diego, CA 92103", "the venue's own website"))
-        elsewhere = page_of("Harvest Night Market | Drift Cafe", body, "Drift Cafe<br>771 Jamacha Road<br>El Cajon, CA 92019")
-        self.assertIsNone(check_page(elsewhere, *HARVEST).address, "the footer's address is in another town")
-        stated = page_of("Harvest Night Market | Drift Cafe", body + "<p>Address: 3810 Ray St, San Diego, CA 92104</p>", "Drift Cafe<br>4200 Park Blvd<br>San Diego, CA 92103")
-        self.assertEqual(check_page(stated, *HARVEST).address, "3810 Ray St, San Diego, CA 92104", "what the event states comes before the website's footer")
+        for footer, why in (("<p>Mailing address</p><p>4200 Park Blvd</p><p>San Diego, CA 92103</p>", "a mailing address"),
+                            ("<p>Box Office</p><p>4200 Park Blvd</p><p>San Diego, CA 92103</p>", "an office"),
+                            ("<p>Ph. 619-555-0100</p><p>4200 Park Blvd</p><p>San Diego, CA 92103</p>", "a contact block that does not say it is the location"),
+                            ("<p>LOCATION</p><p>4200 Park Blvd</p>", "no town written: none is added"),
+                            ("<p>LOCATION</p><p>771 Jamacha Road</p><p>El Cajon, CA 92019</p>", "another town"),
+                            (located + "<p>Parking</p><p>Drift Cafe</p><p>4300 Park Blvd</p><p>San Diego, CA 92103</p>", "two addresses")):
+            with self.subTest(why):
+                self.assertIsNone(check_page(page_of("Harvest Night Market | Drift Cafe", body, footer), *HARVEST, url=own_site).address)
+        stated = page_of("Harvest Night Market | Drift Cafe", body + "<p>Address: 3810 Ray St, San Diego, CA 92104</p>", located)
+        self.assertEqual(check_page(stated, *HARVEST, url=own_site).address, "3810 Ray St, San Diego, CA 92104",
+                         "what the event states comes before the website's footer")
+        playhouse = check_page(SHOW_PAGE, TITLE, date(2026, 11, 7), VENUE, CITY, url="https://ccplayhouse.com/sh-boom-a-christmas-miracle/")
+        self.assertEqual((playhouse.address, playhouse.address_basis), ("221 Tennessee Ave, Crossville, TN 38555", "the venue's own website"),
+                         "E12: ccplayhouse.com spells Cumberland County Playhouse; its footer gives LOCATION 221 Tennessee Ave, Crossville, TN 38555")
+        self.assertIsNone(check_page(SHOW_PAGE, TITLE, date(2026, 11, 7), VENUE, CITY, url="https://tickets.example/sh-boom").address, "the same page elsewhere")
 
     def test_an_address_is_taken_only_beside_the_venue_and_only_when_the_venue_has_one(self):
         dated = "<h1>Harvest Night Market</h1><p>Saturday, November 7, 2026 at Drift Cafe.</p>"

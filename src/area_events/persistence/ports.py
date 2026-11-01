@@ -223,13 +223,14 @@ class EventLinkCache(Protocol):
     """What the shared event-page finder keeps: the answer of each lookup (an event page and its street address, or None) and the requests counted
     per UTC day and month."""
 
-    def recall(self, key: str): ...   # (url or None, address or None, address_basis or None, checked_at) or None
+    def recall(self, key: str): ...   # (url or None, address or None, address_basis or None, checked_at, pending ((url, kind), ...), rereads) or None
 
-    def remember(self, key: str, url: Optional[str], address: Optional[str], address_basis: Optional[str], checked_at: int, event_day: str) -> None: ...
+    def remember(self, key: str, url: Optional[str], address: Optional[str], address_basis: Optional[str], checked_at: int, event_day: str,
+                 pending=(), rereads: int = 0) -> None: ...
 
     def requests(self, periods) -> dict: ...
 
-    def count_request(self, periods) -> None: ...
+    def reserve_request(self, limits) -> bool: ...   # {period: limit}: count one request in each, atomically, unless one is at its limit
 
     def use_up(self, period: str, requests: int) -> None: ...
 
