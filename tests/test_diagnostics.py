@@ -120,6 +120,22 @@ class Classifier(unittest.TestCase):
         found = classify([source("cityweb", last_error="x" * 5000)], [area("sd", "San Diego", ["cityweb"])])
         self.assertLessEqual(len(found["issues"][0]["detail"]), diagnostics.DETAIL_LIMIT)
 
+    def test_a_robots_txt_refusal_says_the_site_prohibits_automated_access(self):
+        error = "all configured websites failed: robots.txt of www.facebook.com does not allow this page (2 URL reads)"
+        found = classify([source("cityweb", last_error=error)], [area("jt", "Jamestown", ["cityweb"])])
+        failing = found["issues"][0]
+        self.assertEqual((failing["kind"], failing["detail"]), ("source_failing", error), "the recorded failure is shown as it is")
+        self.assertEqual(failing["action"], "This website prohibits automated access. Use another event source that permits collection.")
+        for advice in ("retries", "URL", "settings"):
+            self.assertNotIn(advice, failing["action"], "never suggests retrying, changing addresses or working around robots.txt")
+
+    def test_an_ordinary_source_error_keeps_its_guidance(self):
+        for error in ("HTTP 503 from the calendar", "all configured websites failed: example.org: timed out", "robots.txt could not be read: timed out"):
+            with self.subTest(error):
+                failing = classify([source("cityweb", last_error=error)], [area("jt", "Jamestown", ["cityweb"])])["issues"][0]
+                self.assertEqual(failing["action"],
+                                 "Open Sources and check this producer's settings and the site it reads. The next scheduled scan retries by itself.")
+
 
 class MemoryRead:
     """The read client's interface over plain data: one area per test, its sources' status, and an optional usage report."""

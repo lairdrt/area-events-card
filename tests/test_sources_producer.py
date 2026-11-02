@@ -10,8 +10,8 @@ from area_events.control.service import CreateAreaRequest, CreateSourceRequest
 from area_events.contracts.models import ValidationFailed
 from area_events.discovery import producer
 from area_events.discovery.fetching import RecordingFetcher
-from area_events.discovery.producers.sources_producer import SourcesProducer, _timestamp
-from area_events.discovery.safe import FetchError, Response
+from area_events.discovery.producers.sources_producer import SourcesProducer, _failure_summary, _timestamp
+from area_events.discovery.safe import BlockedError, FetchError, Response
 from tests.test_discovery_service import Clock
 
 SEED = "https://example.org/events"
@@ -88,6 +88,8 @@ class FakeClient:
         self.requests.append(url)
         if url not in self.pages:
             raise FetchError(f"missing {url}")
+        if isinstance(self.pages[url], Exception):
+            raise self.pages[url]
         return Response(url, 200, "text/calendar" if url.endswith(".ics") else "text/html; charset=utf-8", self.pages[url])
 
 
@@ -392,6 +394,52 @@ END:VCALENDAR"""
     def test_all_inaccessible_pages_report_failure_without_faking_success(self):
         with self.assertRaises(FetchError):
             run_crawl({})
+
+
+ROBOTS = "robots.txt of www.facebook.com does not allow this page"
+FACEBOOK = [f"https://www.facebook.com/jamestown{n}/events" for n in range(4)]
+
+
+class AggregateFailure(unittest.TestCase):
+    """When no configured page could be read, the scan's one failure line names each distinct reason once, with how many reads gave it."""
+
+    def failure(self, pages, urls):
+        with self.assertRaises(FetchError) as raised:
+            run_crawl(pages, urls=urls, max_depth=0)
+        return str(raised.exception)
+
+    def test_two_identical_robots_refusals_are_reported_once_with_their_count(self):
+        message = self.failure({url: BlockedError(ROBOTS) for url in FACEBOOK[:2]}, FACEBOOK[:2])
+        self.assertEqual(message, f"all configured websites failed: {ROBOTS} (2 URL reads)")
+
+    def test_many_identical_failures_are_reported_once_with_their_count(self):
+        message = self.failure({url: BlockedError(ROBOTS) for url in FACEBOOK}, FACEBOOK)
+        self.assertEqual(message, f"all configured websites failed: {ROBOTS} (4 URL reads)")
+
+    def test_distinct_reasons_are_each_kept(self):
+        message = self.failure({FACEBOOK[0]: BlockedError(ROBOTS), OTHER: FetchError("another.org: HTTP 404")}, (FACEBOOK[0], OTHER))
+        self.assertEqual(message, f"all configured websites failed: {ROBOTS}; another.org: HTTP 404")
+
+    def test_repeated_and_distinct_reasons_together(self):
+        pages = {FACEBOOK[0]: BlockedError(ROBOTS), OTHER: FetchError("another.org: timed out"), FACEBOOK[1]: BlockedError(ROBOTS)}
+        message = self.failure(pages, (FACEBOOK[0], OTHER, FACEBOOK[1]))
+        self.assertEqual(message, f"all configured websites failed: {ROBOTS} (2 URL reads); another.org: timed out")
+
+    def test_the_line_stays_bounded_and_deterministic(self):
+        errors = ["a: HTTP 404", "b: timed out", "a: HTTP 404", "c: HTTP 500", "d: HTTP 503", "b: timed out", "a: HTTP 404"]
+        expected = "a: HTTP 404 (3 URL reads); b: timed out (2 URL reads); 2 other failure reasons"
+        self.assertEqual(_failure_summary(errors), expected)
+        self.assertEqual(_failure_summary(list(errors)), expected, "the same failures always give the same line")
+        self.assertEqual(_failure_summary(errors[:4]), "a: HTTP 404 (2 URL reads); b: timed out; 1 other failure reason")
+
+    def test_a_readable_page_alongside_failed_ones_is_no_failure_and_each_url_keeps_its_own_evidence(self):
+        pages = {SEED: HTML, FACEBOOK[0]: BlockedError(ROBOTS), FACEBOOK[1]: BlockedError(ROBOTS)}
+        result, _ = run_crawl(pages, urls=(SEED, FACEBOOK[0], FACEBOOK[1]), max_depth=0)
+        self.assertEqual([c.title for c in result.candidates], ["Autumn Fair"])
+        self.assertEqual(result.notes["failed_pages"], 2)
+        rejected = [(lead.url, lead.decision, lead.reasons, lead.fetched) for lead in result.leads if not lead.fetched]
+        self.assertEqual(rejected, [(FACEBOOK[0], "rejected", (ROBOTS,), False), (FACEBOOK[1], "rejected", (ROBOTS,), False)],
+                         "every failed read is still its own record, with its own unconsolidated reason")
 
     def test_persistence_and_scheduler_use_single_existing_database(self):
         with tempfile.TemporaryDirectory() as tmp:

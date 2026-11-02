@@ -12,6 +12,7 @@ is one issue for the account however many SerpApi sources it stops; a stale area
 only that is reported: what was last read is no longer current. A stale area becomes an issue 12 hours after its newest successful scan: until
 then it is listed under `upcoming` with that moment as `active_from`, so a card's age timer can count it without a new read.
 """
+import re
 import types
 
 SCHEMA = "area_events.diagnostics.v1"
@@ -20,6 +21,10 @@ DETAIL_LIMIT = 300
 SERPAPI_TYPE = "serpapi_google_events"
 _ORDER = types.MappingProxyType({"service_unreachable": 0, "discovery_paused": 1, "area_no_sources": 2, "source_failing": 3, "serpapi_held": 4,
                                  "area_stale": 5})
+# The Discovery Service's own wording when a site's robots.txt refuses a page (safe.py BlockedError).
+ROBOTS_REFUSED = re.compile(r"robots\.txt of \S+ does not allow this page")
+SOURCE_FAILING_ACTION = "Open Sources and check this producer's settings and the site it reads. The next scheduled scan retries by itself."
+ROBOTS_REFUSED_ACTION = "This website prohibits automated access. Use another event source that permits collection."
 
 # The SerpApi usage states that hold a source's searches (the usage report's own vocabulary), with what to do about each.
 SERPAPI_HELD = types.MappingProxyType({
@@ -101,7 +106,7 @@ def classify(connected, last_error, status, areas, names=None, types=None, usage
         state = found["state"]
         label = names.get(source) or source
         issues.append(_issue(f"source:{source}:failing", "error", "source_failing", label, f"{label} — last scan failed",
-                             "Open Sources and check this producer's settings and the site it reads. The next scheduled scan retries by itself.",
+                             ROBOTS_REFUSED_ACTION if ROBOTS_REFUSED.search(state.get("last_error") or "") else SOURCE_FAILING_ACTION,
                              area_keys=found["areas"], source_key=source, detail=state.get("last_error"), last_success_at=state.get("last_success_at")))
     for hold, found in holds.items():
         summary, action = SERPAPI_HELD[hold]

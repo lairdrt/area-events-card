@@ -1222,6 +1222,17 @@ def _page_key(url):
     return (parts.scheme, parts.netloc, parts.path.rstrip("/") or "/", parts.query)
 
 
+def _failure_summary(errors, shown=2):
+    """The scan's failed page reads as one bounded line: each distinct reason once, in the order first seen, with how many reads gave it."""
+    counts = {}
+    for error in errors:
+        counts[error] = counts.get(error, 0) + 1
+    parts = [reason if n == 1 else f"{reason} ({n} URL reads)" for reason, n in list(counts.items())[:shown]]
+    if len(counts) > shown:
+        parts.append(f"{len(counts) - shown} other failure reason{'s' if len(counts) - shown > 1 else ''}")
+    return "; ".join(parts)
+
+
 class _Frontier:
     """The pages still to be fetched. Every starting URL comes first, in order. After them the websites take turns, one page each, and a website offers its event-detail links
     (a listing card's own link) before its generic discovery links, so that a website with many links cannot use up the budget of another."""
@@ -1569,7 +1580,7 @@ class SourcesProducer:
                 frontier.push(target, depth + 1, seed, page_url, False)
                 added += 1
         if not any(lead.fetched for lead in leads) and errors:
-            raise FetchError("all configured websites failed: " + "; ".join(errors[:2]))
+            raise FetchError("all configured websites failed: " + _failure_summary(errors))
         unvisited = [row for row in frontier.waiting() if _page_key(row[0]) not in seen]
         for row in unvisited:
             site_of(row[2])["pages_unvisited"] += 1
