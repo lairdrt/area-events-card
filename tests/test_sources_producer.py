@@ -395,6 +395,33 @@ END:VCALENDAR"""
         with self.assertRaises(FetchError):
             run_crawl({})
 
+    def test_persistence_and_scheduler_use_single_existing_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = FakeClient({SEED: HTML})
+            app = app_module.build(os.path.join(tmp, "discovery.db"), clock=Clock(),
+                                   fetch_client=client, request_interval=0)
+            try:
+                app.register_known_sources()
+                config = app.control.create_source(CreateSourceRequest(
+                    "generic_sites", "sources_producer", "Site Events", True, 60,
+                    {"urls": [SEED], "max_depth": 0}))
+                self.assertEqual(config.source.adapter, "sources_producer")
+                self.assertEqual(config.source.options_dict()["urls"], [SEED])
+                app.control.create_area(CreateAreaRequest(
+                    "Example City", 32.71, -117.16, 20, sources=("generic_sites",)))
+                app.scheduler.plan()
+                reports = app.service.run_until_idle(3)
+                self.assertTrue(any(r.outcome == "completed" for r in reports), reports)
+                with app.persistence._store.read() as db:
+                    self.assertEqual(db.execute(
+                        "SELECT COUNT(*) FROM candidates c JOIN sources s USING(source_id) "
+                        "WHERE s.source_key='generic_sites'").fetchone()[0], 1)
+                    self.assertEqual(db.execute(
+                        "SELECT COUNT(*) FROM source_leads sl JOIN sources s USING(source_id) "
+                        "WHERE s.source_key='generic_sites'").fetchone()[0], 1)
+            finally:
+                app.close()
+
 
 ROBOTS = "robots.txt of www.facebook.com does not allow this page"
 FACEBOOK = [f"https://www.facebook.com/jamestown{n}/events" for n in range(4)]
@@ -440,33 +467,6 @@ class AggregateFailure(unittest.TestCase):
         rejected = [(lead.url, lead.decision, lead.reasons, lead.fetched) for lead in result.leads if not lead.fetched]
         self.assertEqual(rejected, [(FACEBOOK[0], "rejected", (ROBOTS,), False), (FACEBOOK[1], "rejected", (ROBOTS,), False)],
                          "every failed read is still its own record, with its own unconsolidated reason")
-
-    def test_persistence_and_scheduler_use_single_existing_database(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            client = FakeClient({SEED: HTML})
-            app = app_module.build(os.path.join(tmp, "discovery.db"), clock=Clock(),
-                                   fetch_client=client, request_interval=0)
-            try:
-                app.register_known_sources()
-                config = app.control.create_source(CreateSourceRequest(
-                    "generic_sites", "sources_producer", "Site Events", True, 60,
-                    {"urls": [SEED], "max_depth": 0}))
-                self.assertEqual(config.source.adapter, "sources_producer")
-                self.assertEqual(config.source.options_dict()["urls"], [SEED])
-                app.control.create_area(CreateAreaRequest(
-                    "Example City", 32.71, -117.16, 20, sources=("generic_sites",)))
-                app.scheduler.plan()
-                reports = app.service.run_until_idle(3)
-                self.assertTrue(any(r.outcome == "completed" for r in reports), reports)
-                with app.persistence._store.read() as db:
-                    self.assertEqual(db.execute(
-                        "SELECT COUNT(*) FROM candidates c JOIN sources s USING(source_id) "
-                        "WHERE s.source_key='generic_sites'").fetchone()[0], 1)
-                    self.assertEqual(db.execute(
-                        "SELECT COUNT(*) FROM source_leads sl JOIN sources s USING(source_id) "
-                        "WHERE s.source_key='generic_sites'").fetchone()[0], 1)
-            finally:
-                app.close()
 
 
 if __name__ == "__main__":
