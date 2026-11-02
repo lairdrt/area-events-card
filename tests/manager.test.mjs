@@ -341,6 +341,133 @@ test("saving a SerpApi producer saves a changed policy through the existing sett
   }
 });
 
+// --- Active issues on the Overview, and the Sources status --------------------------------------------------------------
+
+const issue = (id, extra = {}) => ({ id, severity: "error", kind: "source_failing", area_keys: ["abcdefghi1"], source_key: "test-source", component: "Example Campus",
+  summary: "Example Campus — last scan failed", detail: "HTTP 503 from https://example.org", last_success_at: 1793000000,
+  action: "Open Sources and check this producer's settings and the site it reads.", ...extra });
+const withIssues = (issues, upcoming = []) => {
+  const manager = setup();
+  manager._snapshot.areas.push({ area_key: "otherarea01", name: "Other Area", enabled: true, sources: [], revision: 1 });
+  manager._snapshot.diagnostics = { schema: "area_events.diagnostics.v1", issues, upcoming };
+  return manager;
+};
+const rows = (html) => (html.match(/class='issue-row /g) || []).length;
+const withLocation = (search, run) => {
+  const saved = globalThis.window;
+  globalThis.window = { location: { search } };
+  try { return run(); } finally { if (saved === undefined) delete globalThis.window; else globalThis.window = saved; }
+};
+
+test("the Overview keeps its service summary and lists each active issue with its evidence, last success and next step", () => {
+  const stale = issue("area:abcdefghi1:stale", { severity: "warning", kind: "area_stale", source_key: null, component: "Example Area",
+    summary: "Example Area — event information is stale", detail: "No source of this area has completed a scan in the last 12 hours.", action: "Check that discovery is running." });
+  const manager = withIssues([issue("source:test-source:failing"), stale]);
+  const html = manager.renderOverview();
+  assert.match(html, /Service overview/);
+  assert.match(html, /Backend build:/);
+  assert.ok(html.indexOf("Service overview") < html.indexOf("Active issues"), "below the existing service summary");
+  assert.match(html, /<h2>Active issues — All areas<\/h2>/);
+  assert.equal(rows(html), 2);
+  assert.match(html, /Error · Example Campus/);
+  assert.match(html, /Example Campus — last scan failed/);
+  assert.match(html, /Evidence:<\/span> HTTP 503 from https:\/\/example.org/);
+  assert.match(html, /Last successful scan:<\/span> /);
+  assert.match(html, /Next step:<\/strong> Open Sources and check this producer/);
+  assert.match(html, /Warning · Example Area/);
+  assert.match(html, /mdi:alert-circle/);
+  manager._snapshot.diagnostics.issues = [];
+  assert.match(manager.renderOverview(), /No active issues\./);
+  assert.doesNotMatch(manager.render() || manager.shadowRoot.innerHTML, /Issues<\/button>/, "no separate Issues tab");
+});
+
+test("K, J: the badge's address opens the Overview on that area, which lists exactly the card's issues", () => {
+  const global = issue("discovery:paused", { severity: "warning", kind: "discovery_paused", area_keys: [], component: "Discovery", summary: "Discovery is paused" });
+  const elsewhere = issue("source:other:failing", { area_keys: ["otherarea01"], summary: "Other source — last scan failed" });
+  const card = [issue("source:test-source:failing"), global];   // what the card's own view (for_area) holds for abcdefghi1
+  const manager = withLocation("?tab=overview&area=abcdefghi1", () => {
+    const m = new Registered();
+    m._snapshot = withIssues([...card, elsewhere])._snapshot;
+    return m;
+  });
+  assert.equal(manager._tab, "overview");
+  manager.render();
+  const html = manager.shadowRoot.innerHTML;
+  assert.match(html, /<h2>Active issues — Example Area<\/h2>/);
+  assert.equal(rows(html), card.length, "the same count as the card's badge");
+  assert.doesNotMatch(html, /Other source/);
+  assert.match(html, /<option value='abcdefghi1' selected>Example Area/);
+  manager.handleChange({ target: { name: "issue-area", value: "" } });
+  assert.equal(rows(manager.shadowRoot.innerHTML), 3, "every area");
+  manager.handleChange({ target: { name: "issue-area", value: "otherarea01" } });
+  assert.equal(rows(manager.shadowRoot.innerHTML), 2, "Other Area: its own source and the shared pause");
+});
+
+test("an address that names no known area, or something that is not an identifier, falls back to all areas", () => {
+  for (const search of ["?tab=overview&area=%3Cscript%3E", "?tab=overview&area=unknownarea", "?tab=nonsense"]) {
+    const manager = withLocation(search, () => new Registered());
+    manager._snapshot = withIssues([issue("source:test-source:failing")])._snapshot;
+    assert.equal(manager._tab, "overview");
+    manager.render();
+    assert.match(manager.shadowRoot.innerHTML, /Active issues — All areas/, search);
+    assert.doesNotMatch(manager.shadowRoot.innerHTML, /<script/);
+  }
+});
+
+test("an unreachable Discovery Service is explained on the Overview, never shown as no issues", async () => {
+  const manager = new Registered();
+  manager._hass = { callWS: async () => { throw new Error("the Discovery Service is not reachable (connection refused)"); } };
+  await manager.refresh();
+  const html = manager.shadowRoot.innerHTML;
+  assert.match(html, /Area Events could not read the Discovery Service/);
+  assert.match(html, /Evidence:<\/span> the Discovery Service is not reachable \(connection refused\)/);
+  assert.match(html, /Next step:<\/strong> Check that the Discovery Service host is running/);
+  assert.doesNotMatch(html, /No active issues/);
+});
+
+test("a stale area that became due since the snapshot was read is listed, as the card counts it", () => {
+  const stale = issue("area:abcdefghi1:stale", { severity: "warning", kind: "area_stale", summary: "Example Area — event information is stale" });
+  const manager = withIssues([], [{ ...stale, active_from: Date.now() / 1000 - 60 }, { ...stale, id: "later", summary: "Later", active_from: Date.now() / 1000 + 3600 }]);
+  const html = manager.renderOverview();
+  assert.equal(rows(html), 1);
+  assert.match(html, /event information is stale/);
+});
+
+test("issue text is HTML escaped", () => {
+  const manager = withIssues([issue("x", { summary: "<img src=x onerror=alert(1)>", detail: "<script>alert(2)</script>", component: "<b>c</b>" })]);
+  const html = manager.renderOverview();
+  assert.doesNotMatch(html, /<img|<script|<b>c/);
+  assert.match(html, /&lt;img src=x/);
+});
+
+test("Sources shows a recorded scan error as Failing, a usage hold distinctly, and the last error and success of the selected producer", () => {
+  const manager = serpapiManager({ sources: { serpapi_sd: { state: "blocked_free_tier", reason: "5 free searches remain" } } });
+  manager._snapshot.status.sources = [
+    { source_key: "test-source", eligible: true, last_error: "HTTP 503 from https://example.org", last_success_at: 1793000000 },
+    { source_key: "serpapi_sd", eligible: true, last_error: "SerpApi search not made: 5 free searches remain", last_success_at: 1793000000 }];
+  manager.render();
+  let html = manager.shadowRoot.innerHTML;
+  assert.match(html, /<span class='state bad'>Failing<\/span>/, "eligible, but its last scan failed: not Ready");
+  assert.match(html, /<span class='state warn'>Blocked · free-tier limit<\/span>/, "a usage hold is not shown as a plain failure");
+  manager._selectedSource = "test-source";
+  manager.render();
+  html = manager.shadowRoot.innerHTML;
+  assert.match(html, /Last scan error:<\/span> <strong class='state bad'>HTTP 503 from https:\/\/example.org/);
+  assert.match(html, /Last successful scan:<\/span> /);
+  manager._snapshot.status.sources[0].last_error = null;
+  manager.render();
+  assert.match(manager.shadowRoot.innerHTML, /<span class='state good'>Ready<\/span>/, "no known failure: Ready");
+  assert.doesNotMatch(manager.shadowRoot.innerHTML, /Last scan error/);
+  manager._snapshot.sources[0].enabled = false;
+  manager._snapshot.status.sources[0].last_error = "an old failure";
+  manager.render();
+  assert.match(manager.shadowRoot.innerHTML, /<span class='state '>Disabled<\/span>/, "deliberately disabled wins over an old error");
+  manager._snapshot.sources[0].enabled = true;
+  manager._snapshot.status.sources[0] = { source_key: "test-source", eligible: false };
+  manager.render();
+  assert.match(manager.shadowRoot.innerHTML, /<span class='state '>Idle<\/span>/);
+});
+
 test("Sources and Areas share one 50/50 split that still stacks on narrow screens", () => {
   const manager = serpapiManager();
   manager.render();

@@ -295,7 +295,10 @@ class TwoCards(Service):
         self.assertIn("Boise", inbox.last["area"]["name"])
         self.assertEqual(len(inbox.last["events"]), 4, "a shared source serves every area that uses it, without copying its events")
         self.assertEqual(bare.last["events"], [])
-        self.assertIn("No event sources are attached", bare.last["notice"])
+        issues = bare.last["diagnostics"]["issues"]
+        self.assertEqual([i["kind"] for i in issues], ["area_no_sources"], "an area without sources is an issue an administrator can act on")
+        self.assertIn("Assign at least one producer to Nowhere", issues[0]["action"])
+        self.assertIsNone(bare.last["notice"], "said once, as the issue, not again as a notice")
         self.assertEqual(self.count("events"), 7)
 
     def test_an_unknown_area_lists_what_exists(self):

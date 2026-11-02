@@ -12,7 +12,7 @@
 
 import { PRESENTATIONS } from "./presentation/manifest.js?v=4430e03b0f1e";
 import { PRESETS as DATE_PRESETS, calendarDate, eventOverlapsWindow, normalizeSelection, resolveWindow } from "./filters/date-windows.js?v=9d4d01da8a5d";
-const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-10d2c608";
+const AREA_EVENTS_CARD_BUILD = "AREA-EVENTS 0.2.0-e4fb4599";
 const CARD_TAG = "area-events-card";
 
 // Diagnostics for "Custom element doesn't exist": window.__AREA_EVENTS_CARD_LOAD__ is missing when this module was never
@@ -59,11 +59,22 @@ const STYLES = `
   }
   .head-meta .updated { color: var(--primary-text-color); font-weight: min(var(--ha-font-weight-medium, 500), 600); }
   .head-meta ha-icon { --mdc-icon-size: 16px; vertical-align: -3px; }
-  .badge {
-    padding: 1px 8px; border-radius: 10px; font-size: 0.8125rem;
-    border: 1px solid var(--warning-color, var(--divider-color)); color: var(--primary-text-color);
+  /* The one issue badge: an HA-style chip in the theme's warning (or error) colour, with its icon and count as text, so colour is never the only signal. */
+  .issue-badge {
+    --ae-issue: var(--warning-color, var(--primary-color));
+    display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 0 12px 0 8px; border-radius: 16px;
+    font-size: 0.8125rem; font-weight: min(var(--ha-font-weight-medium, 500), 600);
+    color: var(--primary-text-color); border: 1px solid var(--ae-issue);
+    background: color-mix(in srgb, var(--ae-issue) 14%, transparent);
   }
-  .badge.error { border-color: var(--error-color, var(--divider-color)); }
+  .issue-badge.error { --ae-issue: var(--error-color, var(--primary-color)); }
+  .issue-badge ha-icon { --mdc-icon-size: 18px; color: var(--ae-issue); vertical-align: 0; }
+  .issues-note {
+    margin: 0 0 8px; padding: 8px 12px; border-radius: 8px; font-size: 0.875rem; overflow-wrap: anywhere;
+    border: 1px solid var(--divider-color); color: var(--primary-text-color);
+  }
+  .issues-note ul { margin: 4px 0; padding-left: 20px; }
+  .issues-note .contact { color: var(--secondary-text-color); }
   @container (min-width: 560px) {
     .sticky-header { flex-direction: row; align-items: baseline; justify-content: space-between; gap: 16px; }
     .head-meta { justify-content: flex-end; }
@@ -205,7 +216,6 @@ const STYLES = `
 
 const POLL_READY_MS = 5 * 60 * 1000;
 const POLL_RETRY_MS = 30 * 1000;
-const FEED_STALE_MS = 12 * 60 * 60 * 1000; // each source is read about hourly; quiet ones less often
 const SAVE_DEBOUNCE_MS = 300;
 const AGE_TICK_MS = 60 * 1000;
 const EDITOR_DEBOUNCE_MS = 700;
@@ -226,6 +236,11 @@ const DELETE_REASONS = [
 // Errors the user must fix; polling faster would not help.
 const ACTIVE_PHASES = ["queued", "searching", "processing"];
 const PERMANENT_ERRORS = new Set(["invalid_profile", "rejected", "not_configured", "unauthorized", "unknown_area"]);
+// A card configured wrongly says so in place, for whoever edits the dashboard; it is not a problem of the discovery system.
+const CARD_CONFIG_ERRORS = new Set(["invalid_profile", "unknown_area"]);
+// The management panel (administrators only) and the area key it may be given: never more than an identifier in the address.
+const MANAGE_PATH = "/area-events-manage";
+const AREA_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 
 /*
  * Categories. Defaults are fixed; users add custom ones. An event matches a
@@ -526,6 +541,19 @@ function safeMedia(raw, event) {
   return out.photo || out.map ? out : undefined;
 }
 
+/** The area's issues as the integration classified them (diagnostics.py), kept only in the shape the card shows: short, bounded text. */
+function safeDiagnostics(raw) {
+  if (!raw || typeof raw !== "object" || raw.schema !== "area_events.diagnostics.v1") return undefined;
+  const text = (value, limit) => (typeof value === "string" && value.trim() ? value.trim().slice(0, limit) : undefined);
+  const issue = (item) => item && typeof item === "object" && text(item.id, 120) && text(item.summary, 200) ? {
+    id: text(item.id, 120), severity: item.severity === "error" ? "error" : "warning", summary: text(item.summary, 200),
+    detail: text(item.detail, 300), action: text(item.action, 300),
+    activeFrom: Number.isFinite(item.active_from) ? item.active_from * 1000 : undefined,
+  } : undefined;
+  const list = (items) => (Array.isArray(items) ? items.slice(0, 50).map(issue).filter(Boolean) : []);
+  return { issues: list(raw.issues), upcoming: list(raw.upcoming).filter((item) => item.activeFrom !== undefined) };
+}
+
 const IMAGE_RETRIES = 3;
 const IMAGE_RETRY_MS = 60000;
 
@@ -539,6 +567,8 @@ class AreaEventsCard extends HTMLElement {
     this._status = undefined;
     this._feedError = undefined;
     this._feedErrorCode = undefined;
+    this._diagnostics = undefined;
+    this._issuesOpen = false;
     this._previewWaited = false;
     this._filterOpen = false;
     this._dateOpen = false;
@@ -747,13 +777,14 @@ class AreaEventsCard extends HTMLElement {
 
   _onFeed(run, reply, error, code) {
     if (run !== this._feedRun) return;
-    const before = JSON.stringify([this._status, this._feedError, this._feed && this._feed.key]);
+    const before = JSON.stringify([this._status, this._feedError, this._feed && this._feed.key, this._diagnostics]);
     if (reply) {
       this._status = {
         state: reply.state, message: reply.message, refreshing: Boolean(reply.refreshing), connected: reply.connected !== false,
         initial: reply.initial !== false, outcome: reply.outcome || undefined, progress: reply.progress || undefined,
         notice: reply.notice || undefined, service: reply.service,
       };
+      this._diagnostics = safeDiagnostics(reply.diagnostics);
       this._feedError = this._feedErrorCode = undefined;
       if (Array.isArray(reply.events)) {
         // `key` changes whenever the area's view does, so an unchanged push changes nothing on screen
@@ -764,7 +795,7 @@ class AreaEventsCard extends HTMLElement {
       this._feedError = error;
       this._feedErrorCode = code;
     }
-    const after = JSON.stringify([this._status, this._feedError, this._feed && this._feed.key]);
+    const after = JSON.stringify([this._status, this._feedError, this._feed && this._feed.key, this._diagnostics]);
     // Nothing new changes nothing on screen; new events are merged into the existing tiles in place.
     if (before === after && this._els) {
       this._updateHeader();
@@ -936,12 +967,13 @@ class AreaEventsCard extends HTMLElement {
     const updated = this._feed && this._feed.generatedAt ? this._formatDate(this._feed.generatedAt) : undefined;
     const status = this._status || {};
     const notes = [];
-    if (this._feedError) {
-      notes.push(this._feed ? `Could not refresh events (${this._feedError}). Showing earlier data${updated ? ` from ${updated}` : ""}.` : `Events are not available: ${this._feedError}`);
+    // A failed connection is an issue on the badge (see _issues), said once; in place only a card configuration error, or a word when nothing can be shown.
+    if (this._feedError && CARD_CONFIG_ERRORS.has(this._feedErrorCode)) {
+      notes.push(this._feedError);
+    } else if (this._feedError || status.state === "unavailable") {
+      if (!this._feed) notes.push("Events are not available right now.");
     } else if (!this._status) {
       notes.push("Loading events...");
-    } else if (status.state === "unavailable") {
-      notes.push(`The Area Events app is not reachable (${status.message || "no answer"}).${this._feed ? ` Showing earlier data${updated ? ` from ${updated}` : ""}.` : ""}`);
     } else if (this._discovering()) {
       // the progress panel says what is happening; a failed earlier run is still worth a word
       if (status.message && this._feed) notes.push(`The last refresh failed (${status.message}); showing earlier data${updated ? ` from ${updated}` : ""}.`);
@@ -965,6 +997,39 @@ class AreaEventsCard extends HTMLElement {
       if (unmatched.length) notes.push(`Unknown or unattached producer instance${unmatched.length === 1 ? "" : "s"}: ${unmatched.join(", ")}. Attach the instance to this area in the Area Events options.`);
     }
     return notes.join(" ") || undefined;
+  }
+
+  /** The active issues the badge counts: the integration's diagnostics for this area (the ones the management Overview lists), with an upcoming
+   *  one once its moment has passed (a stale area, without a new read), or, when Home Assistant could not deliver the view, only that failure. */
+  _issues(now = Date.now()) {
+    if (this._usesInline()) return [];
+    if (this._feedError) {
+      if (CARD_CONFIG_ERRORS.has(this._feedErrorCode)) return [];
+      const unreachable = this._feedErrorCode === "unavailable";
+      return [{ id: unreachable ? "service:unreachable" : "ha:connection", severity: "error", detail: this._feedError,
+        summary: unreachable ? "Discovery Service is not reachable" : "Home Assistant could not deliver this area's events",
+        action: "Check the Area Events integration under Settings › Devices & services." }];
+    }
+    const found = this._diagnostics ? [...this._diagnostics.issues, ...this._diagnostics.upcoming.filter((item) => item.activeFrom <= now)] : [];
+    if (this._status && this._status.state === "unavailable" && !found.some((item) => item.id === "service:unreachable")) {
+      found.push({ id: "service:unreachable", severity: "error", summary: "Discovery Service is not reachable", detail: this._status.message });
+    }
+    const seen = new Set();
+    return found.filter((item) => !seen.has(item.id) && seen.add(item.id));
+  }
+
+  /** An administrator opens the management Overview for this card's area (inside Home Assistant); anyone else gets the short list in place. */
+  _openIssues() {
+    const user = this._hass && this._hass.user;
+    if (user && user.is_admin) {
+      const key = this._feed && this._feed.area && this._feed.area.area_key;
+      const query = typeof key === "string" && AREA_KEY.test(key) ? `?tab=overview&area=${encodeURIComponent(key)}` : "?tab=overview";
+      window.history.pushState(null, "", `${MANAGE_PATH}${query}`);
+      window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
+      return;
+    }
+    this._issuesOpen = !this._issuesOpen;
+    this._updateHeader();
   }
 
   // --- rendering ----------------------------------------------------------------
@@ -998,6 +1063,10 @@ class AreaEventsCard extends HTMLElement {
     this._tiles = [];
     this._els.header = this._el("div", "sticky-header");
     wrap.append(this._els.header);
+    this._els.issues = this._el("div", "issues-note");
+    this._els.issues.id = "ae-issues";
+    this._els.issues.hidden = true;
+    wrap.append(this._els.issues);
     if (this._config.demo) wrap.append(this._el("div", "demo-banner", "DEMONSTRATION DATA - not real events"));
 
     this._els.notice = this._el("div", "notice");
@@ -1305,10 +1374,6 @@ class AreaEventsCard extends HTMLElement {
       const updated = this._el("span", "updated");
       updated.append(document.createTextNode(`Updated ${this._formatDate(generated)} (${this._ago(age)})`));
       meta.append(updated);
-      if (age > FEED_STALE_MS) meta.append(this._el("span", "badge", "Stale"));
-    }
-    if (this._feedError || (this._status && this._status.state === "unavailable")) {
-      meta.append(this._el("span", "badge error", this._feed ? "Update failed" : "Events unavailable"));
     }
     const place = this._feed && this._feed.location && this._feed.location.display_name;
     if (place) meta.append(this._el("span", "place", this._feed.location.coverage === "sources" ? `${place} · by source` : `${place} · ${this._settings.radius} mi`));
@@ -1319,12 +1384,42 @@ class AreaEventsCard extends HTMLElement {
       meta.append(this._el("span", "counts", shown === total ? `${total} event${total === 1 ? "" : "s"}` : `${shown} of ${total} events`));
     }
     const sources = this._feed && this._feed.sources && typeof this._feed.sources === "object" ? Object.values(this._feed.sources) : [];
-    if (sources.length > 0) {
-      const failing = sources.filter((s) => s && s.ok === false).length;
-      meta.append(this._el("span", "sources", failing ? `${sources.length - failing} of ${sources.length} sources ok` : `${sources.length} sources`));
-      if (failing) meta.append(this._el("span", "badge", `${failing} source${failing > 1 ? "s" : ""} failing`));
-    }
+    if (sources.length > 0) meta.append(this._el("span", "sources", `${sources.length} source${sources.length === 1 ? "" : "s"}`));
+    const issues = this._issues();
+    if (issues.length) meta.append(this._issueBadge(issues));
     header.append(meta);
+    this._updateIssuesNote(issues);
+  }
+
+  /** The one issue indicator: "[!] 2 issues", a real button (keyboard and touch), labelled for screen readers, with no tooltip. */
+  _issueBadge(issues) {
+    const count = issues.length;
+    const words = `${count} issue${count === 1 ? "" : "s"}`;
+    const admin = Boolean(this._hass && this._hass.user && this._hass.user.is_admin);
+    const badge = this._el("button", `issue-badge${issues.some((item) => item.severity === "error") ? " error" : ""}`);
+    badge.type = "button";
+    badge.setAttribute("aria-label", `${count} Area Events issue${count === 1 ? "" : "s"} — ${admin ? "view details" : "show details"}`);
+    if (!admin) {
+      badge.setAttribute("aria-expanded", String(this._issuesOpen));
+      badge.setAttribute("aria-controls", "ae-issues");
+    }
+    badge.append(this._icon("mdi:alert-circle-outline"), this._el("span", "", words));
+    badge.addEventListener("click", () => this._openIssues());
+    return badge;
+  }
+
+  /** For a viewer who cannot open the management panel: what is wrong, in one line each, and who can fix it. */
+  _updateIssuesNote(issues) {
+    const note = this._els && this._els.issues;
+    if (!note) return;
+    const admin = Boolean(this._hass && this._hass.user && this._hass.user.is_admin);
+    if (!issues.length) this._issuesOpen = false;
+    note.hidden = admin || !this._issuesOpen;
+    note.replaceChildren();
+    if (note.hidden) return;
+    const list = this._el("ul");
+    for (const item of issues) list.append(this._el("li", "", item.detail ? `${item.summary}: ${item.detail}` : item.summary));
+    note.append(list, this._el("div", "contact", "Contact a Home Assistant administrator to fix these in Area Events."));
   }
 
   _refreshFilters() {

@@ -4,6 +4,8 @@ const escapeHtml = (value) => String(value == null ? "" : value).replace(/[&<>"'
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
 })[c]);
 const asInt = (value, fallback) => value === "" || value == null ? fallback : Number(value);
+const AREA_KEY = /^[A-Za-z0-9_-]{1,80}$/;
+const TABS = ["overview", "sources", "areas", "trashcan"];
 const REASON_LABELS = { duplicate: "Duplicate event", not_relevant: "Not relevant to my area", incorrect: "Incorrect or misleading information",
   expired_or_canceled: "Expired or canceled event", advertisement: "Advertisement / not a real event", other: "Other / don't want to see it" };
 const CSS = [
@@ -31,6 +33,12 @@ const CSS = [
   ".empty{color:var(--ae-muted);font-size:13px;padding:25px;text-align:center}.area-row{padding:13px 0;border-top:1px solid var(--ae-line)}.section-note{font-size:12px;color:var(--ae-muted);line-height:1.55}",
   "table.trash{width:100%;border-collapse:collapse;font-size:13px}table.trash th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--ae-muted);padding:10px 12px;border-bottom:1px solid var(--ae-line)}",
   "table.trash td{padding:11px 12px;border-bottom:1px solid var(--ae-line);vertical-align:top;overflow-wrap:anywhere}table.trash tr:last-child td{border-bottom:0}table.trash .num{text-align:right}",
+  ".state.bad{color:var(--error-color,#c94444)}.source-status{margin:4px 0 0;font-size:12px;line-height:1.5;overflow-wrap:anywhere}",
+  ".issues-head select{display:inline-block;width:auto;min-width:160px;margin:0 0 0 8px}.issues-head label{margin:0;display:flex;align-items:center;font-weight:550}",
+  ".issue-row{display:grid;grid-template-columns:28px minmax(0,1fr);gap:10px;padding:13px 2px;border-top:1px solid var(--ae-line)}.issue-row:first-child{border-top:0}",
+  ".issue-row ha-icon{--mdc-icon-size:22px;color:var(--warning-color,#c48e3a)}.issue-row.error ha-icon{color:var(--error-color,#c94444)}",
+  ".issue-summary{font-size:14px;font-weight:650;overflow-wrap:anywhere}.issue-detail{font-size:13px;margin-top:4px;overflow-wrap:anywhere}.issue-action{font-size:13px;margin-top:6px}",
+  ".no-issues{color:var(--ae-muted);font-size:13px;padding:6px 0}",
   "@media(max-width:540px){table.trash th:nth-child(3),table.trash td:nth-child(3),table.trash th:nth-child(5),table.trash td:nth-child(5){display:none}}",
   "@media(max-width:900px){.layout{grid-template-columns:1fr}.nav{flex-direction:row;overflow-x:auto}.split{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}",
   "@media(max-width:540px){.shell{padding:14px 12px 45px}.top{align-items:flex-start}.stats{gap:7px}.stat{padding:12px}.value{font-size:22px}.pane{padding:13px}.source-row{grid-template-columns:minmax(0,1fr) 72px 53px;padding:11px 7px;gap:4px}}"
@@ -49,6 +57,18 @@ class AreaEventsManager extends HTMLElement {
     this._snapshot = null;
     this._message = "";
     this._error = "";
+    this._loadError = "";
+    this._issueArea = null;   // the area the Overview's issues are narrowed to (from a card's badge); null: every area
+    this.readLocation();
+  }
+  /** `?tab=overview&area=<key>`, as a card's issue badge opens the panel: a known tab, and an area key that is only an identifier. */
+  readLocation() {
+    const search = typeof window !== "undefined" && window.location ? window.location.search || "" : "";
+    const query = new URLSearchParams(search);
+    const tab = query.get("tab");
+    if (TABS.includes(tab)) this._tab = tab;
+    const area = query.get("area");
+    if (area !== null) this._issueArea = AREA_KEY.test(area) ? area : null;
   }
   set hass(hass) {
     this._hass = hass;
@@ -65,6 +85,12 @@ class AreaEventsManager extends HTMLElement {
       this.shadowRoot.addEventListener("click", (ev) => this.handleClick(ev));
       this.shadowRoot.addEventListener("submit", (ev) => this.handleSubmit(ev));
       this.shadowRoot.addEventListener("change", (ev) => this.handleChange(ev));
+      // Home Assistant may keep this panel while the address changes (a card's badge opening it again for another area)
+      this._onLocation = () => { this.readLocation(); this.render(); };
+      if (typeof window !== "undefined" && window.addEventListener) {
+        window.addEventListener("location-changed", this._onLocation);
+        window.addEventListener("popstate", this._onLocation);
+      }
     }
     this.render();
     if (this._hass && !this._loaded) {
@@ -88,8 +114,11 @@ class AreaEventsManager extends HTMLElement {
       const sources = snapshot.sources || [];
       if (!sources.some((item) => item.id === this._selectedSource)) this._selectedSource = sources[0]?.id || null;
       if (!snapshot.areas?.some((item) => item.area_key === this._selectedArea)) this._selectedArea = snapshot.areas?.[0]?.area_key || null;
+      if (!snapshot.areas?.some((item) => item.area_key === this._issueArea)) this._issueArea = null;
+      this._loadError = "";
     } catch (err) {
       this._error = err.message || String(err);
+      this._loadError = this._error;
     } finally {
       this._loading = false;
       this.render();
@@ -135,6 +164,11 @@ class AreaEventsManager extends HTMLElement {
     }
   }
   handleChange(ev) {
+    if (ev.target.name === "issue-area") {
+      const value = ev.target.value;
+      this._issueArea = (this._snapshot?.areas || []).some((item) => item.area_key === value) ? value : null;
+      return void this.render();
+    }
     if (ev.target.name === "producer_type" && this._creating) {
       const preserved = this.shadowRoot.querySelector("#source-form");
       const name = preserved?.elements.namedItem("name")?.value || "";
@@ -307,12 +341,14 @@ class AreaEventsManager extends HTMLElement {
       const usage = this._snapshot?.usage?.serpapi?.sources?.[source.id];   // a SerpApi producer that its account keeps from searching says why
       const held = { paused_threshold: "Paused · usage threshold", blocked_free_tier: "Blocked · free-tier limit", usage_unavailable: "Usage unavailable",
         waiting_for_renewal: "Waiting for renewal" }[usage?.state];
+      // Deliberately off, then no adapter, then a usage hold (it also records an error), then a recorded scan error, then Ready or Idle.
+      const failing = !!state?.last_error;
       const status = !installed ? (source.enabled ? "Enabled · Retired adapter" : "Disabled · Retired adapter")
-        : !source.enabled ? "Disabled" : held ? held : state?.eligible ? "Ready" : "Idle";
+        : !source.enabled ? "Disabled" : held ? held : failing ? "Failing" : state?.eligible ? "Ready" : "Idle";
       return "<button class='source-row " + (source.id === this._selectedSource && !this._creating ? "selected" : "") +
         "' data-action='source' data-value='" + escapeHtml(source.id) + "'><span><span class='source-name'>" +
         escapeHtml(source.name) + "</span><span class='small'>" + escapeHtml(source.type) + "</span></span>" +
-        "<span class='state " + (status === "Ready" ? "good" : !installed ? "warn" : "") + "'>" +
+        "<span class='state " + (status === "Ready" ? "good" : status === "Failing" ? "bad" : !installed || held ? "warn" : "") + "'>" +
         escapeHtml(status) + "</span><span class='small'>" + escapeHtml(source.interval_minutes) + " min</span></button>";
     }).join("");
     const source = sources.find((item) => item.id === this._selectedSource);
@@ -329,7 +365,7 @@ class AreaEventsManager extends HTMLElement {
     const retired = !!source && !descriptor;
     const canControl = !!this._snapshot?.can_control;
     const header = "<div class='pane-head'><h3>" + escapeHtml(creating ? "New producer" : source.name) + "</h3>" +
-      (creating ? "<button class='button' data-action='cancel'>Cancel</button>" : "") + "</div>";
+      (creating ? "<button class='button' data-action='cancel'>Cancel</button>" : "") + "</div>" + (creating ? "" : this.scanStatusMarkup(source));
     if (retired) return header + "<p class='section-note'>This source uses an adapter that is no longer installed. " +
       "It cannot be edited or enabled. You can disable it safely without deleting events or history.</p>" +
       "<div class='actions'><button class='button danger' data-action='toggle' " +
@@ -354,6 +390,48 @@ class AreaEventsManager extends HTMLElement {
         (!canControl || this._saving ? "disabled" : "") + ">" + (source.enabled ? "Disable" : "Enable") + "</button>" : "") +
       "</div></form>";
     return header + editor;
+  }
+  /** The producer's last recorded scan error and last successful scan, as the service reports them (nothing when it reports neither). */
+  scanStatusMarkup(source) {
+    const state = (this._snapshot?.status?.sources || []).find((item) => item.source_key === source.id);
+    if (!state) return "";
+    const parts = [];
+    if (state.last_error) parts.push("<div class='source-status'><span class='muted'>Last scan error:</span> <strong class='state bad'>" + escapeHtml(state.last_error) + "</strong></div>");
+    parts.push("<div class='source-status'><span class='muted'>Last successful scan:</span> " +
+      escapeHtml(state.last_success_at ? new Date(state.last_success_at * 1000).toLocaleString() : "None recorded") + "</div>");
+    return parts.join("");
+  }
+  /** The issues to list: the snapshot's diagnostics (the same classifier as the cards' badges), with an upcoming one once its moment has passed. */
+  activeIssues(now = Date.now()) {
+    const found = this._snapshot?.diagnostics;
+    if (!found || found.schema !== "area_events.diagnostics.v1") return null;
+    return [...(found.issues || []), ...(found.upcoming || []).filter((item) => item.active_from * 1000 <= now)];
+  }
+  renderIssues() {
+    const areas = this._snapshot?.areas || [];
+    const area = areas.find((item) => item.area_key === this._issueArea);
+    const options = "<option value=''>All areas</option>" + areas.map((item) => "<option value='" + escapeHtml(item.area_key) + "' " +
+      (item.area_key === area?.area_key ? "selected" : "") + ">" + escapeHtml(item.name) + "</option>").join("");
+    const head = "<div class='pane-head issues-head'><div><h2>Active issues — " + escapeHtml(area ? area.name : "All areas") + "</h2>" +
+      "<div class='sub'>From the Discovery Service's current status. Each issue says what to check next.</div></div>" +
+      "<label>Show<select name='issue-area' aria-label='Show issues for'>" + options + "</select></label></div>";
+    const date = (epoch) => new Date(epoch * 1000).toLocaleString();
+    const row = (item) => "<div class='issue-row " + (item.severity === "error" ? "error" : "warning") + "'>" +
+      "<ha-icon icon='" + (item.severity === "error" ? "mdi:alert-circle" : "mdi:alert") + "' aria-hidden='true'></ha-icon><div>" +
+      "<div class='eyebrow'>" + (item.severity === "error" ? "Error" : "Warning") + " · " + escapeHtml(item.component || "") + "</div>" +
+      "<div class='issue-summary'>" + escapeHtml(item.summary) + "</div>" +
+      (item.detail ? "<div class='issue-detail'><span class='muted'>Evidence:</span> " + escapeHtml(item.detail) + "</div>" : "") +
+      (item.last_success_at ? "<div class='issue-detail'><span class='muted'>Last successful scan:</span> " + escapeHtml(date(item.last_success_at)) + "</div>" : "") +
+      (item.action ? "<div class='issue-action'><strong>Next step:</strong> " + escapeHtml(item.action) + "</div>" : "") + "</div></div>";
+    if (this._loadError) {   // what was read before is no longer current: say why nothing current can be listed
+      return "<div class='pane'>" + head + row({ severity: "error", component: "Home Assistant · Discovery Service",
+        summary: "Area Events could not read the Discovery Service", detail: this._loadError,
+        action: "Check that the Discovery Service host is running and that the Area Events integration is connected (Settings › Devices & services), then select Refresh." }) + "</div>";
+    }
+    const all = this.activeIssues();
+    if (all === null) return "<div class='pane'>" + head + "<div class='no-issues'>This integration does not report diagnostics.</div></div>";
+    const shown = all.filter((item) => !area || !(item.area_keys || []).length || item.area_keys.includes(area.area_key));
+    return "<div class='pane'>" + head + (shown.length ? shown.map(row).join("") : "<div class='no-issues'>No active issues.</div>") + "</div>";
   }
   renderAreas() {
     const areas = this._snapshot?.areas || [];
@@ -424,7 +502,7 @@ class AreaEventsManager extends HTMLElement {
       "<p>Data schema: <strong>" + escapeHtml(status.schema || "—") + "</strong></p>" +
       "<p>Control access: <strong>" + (s.can_control ? "Available" : "Read-only") + "</strong></p>" +
       "<p>Card build: <strong class='build-card'>" + escapeHtml(cardBuild) + "</strong></p>" +
-      "<p>Backend build: <strong class='build-backend'>" + escapeHtml(status.build || "Unavailable") + "</strong></p></div>";
+      "<p>Backend build: <strong class='build-backend'>" + escapeHtml(status.build || "Unavailable") + "</strong></p></div>" + this.renderIssues();
   }
   render() {
     const tabs = [["overview","Overview"],["sources","Sources"],["areas","Areas"],["trashcan","Trashcan"]];

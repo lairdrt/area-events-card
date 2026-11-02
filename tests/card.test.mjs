@@ -67,6 +67,15 @@ const wait = (ms = 10) => new Promise((r) => setTimeout(r, ms));
 const chip = (root, name) => byClass(root, "chip").find((c) => text(c).includes(name));
 const visibleTitles = (root) => byClass(root, "event").filter((e) => !e.hidden).map((e) => text(byClass(e, "title")[0]));
 const openFilters = (root) => click(byClass(root, "filter-toggle")[0]);
+// The integration's diagnostics for an area (custom_components/area_events/diagnostics.py), as the subscription carries them.
+const diag = (issues = [], upcoming = []) => ({ schema: "area_events.diagnostics.v1", issues, upcoming });
+const failing = (key, extra = {}) => ({ id: `source:${key}:failing`, severity: "error", kind: "source_failing", area_keys: ["san-diego"], source_key: key,
+  component: `Source ${key}`, summary: `Source ${key} — last scan failed`, detail: "HTTP 503", last_success_at: 1793000000, action: "Open Sources and check this producer.", ...extra });
+const staleIssue = (extra = {}) => ({ id: "area:san-diego:stale", severity: "warning", kind: "area_stale", area_keys: ["san-diego"], source_key: null, component: "San Diego",
+  summary: "San Diego — event information is stale", detail: "No source of this area has completed a scan in the last 12 hours.", last_success_at: 1793000000,
+  action: "Check that discovery is running.", ...extra });
+const issueBadge = (card) => byClass(card.shadowRoot, "issue-badge")[0];
+const issueCount = (card) => { const badge = issueBadge(card); return badge ? Number(/(\d+) issues?/.exec(text(badge))[1]) : 0; };
 
 /** What the integration's area_events/subscribe command sends for a feed (the first view, and again whenever the area changes). */
 const answer = (feed, extra = {}) => ({
@@ -325,7 +334,8 @@ test("a card without an area says so and subscribes to nothing", async () => {
   assert.equal(card.hassStub.eventsCalls().length, 0);
   assert.match(text(card.shadowRoot), /Set 'area' to the name of a discovery area/);
   const pending = await make({ area: "Austin" }, { reply: () => ({ state: "unavailable", connected: false, message: "the Discovery Service is not reachable", sources: {} }) });
-  assert.match(text(byClass(pending.shadowRoot, "notice")[0]), /not reachable/);
+  assert.match(text(byClass(pending.shadowRoot, "notice")[0]), /Events are not available right now/);
+  assert.equal(issueCount(pending), 1, "the unreachable service is the one issue");
 });
 
 test("the service's own notice is shown, so an area without live discoveries says so instead of implying nothing happens there", async () => {
@@ -351,8 +361,10 @@ test("a failure shows an error, never demo events", async () => {
   hass.fail = { code: "not_configured", message: "The Area Events integration is not set up" };
   const { shadowRoot: root } = await make({}, { hass });
   assert.equal(byClass(root, "event").length, 0);
-  assert.match(text(root), /Events are not available: The Area Events integration is not set up/);
-  assert.match(text(byClass(root, "sticky-header")[0]), /Events unavailable/);
+  assert.match(text(byClass(root, "notice")[0]), /Events are not available right now/);
+  assert.equal(byClass(root, "issue-badge").length, 1, "the failure is the one issue on the badge");
+  click(byClass(root, "issue-badge")[0]);   // not an administrator: the reason in place
+  assert.match(text(byClass(root, "issues-note")[0]), /could not deliver this area's events: The Area Events integration is not set up/);
 });
 
 test("discovery states are told apart: finding, not reachable, and nothing found", async () => {
@@ -361,7 +373,8 @@ test("discovery states are told apart: finding, not reachable, and nothing found
   assert.equal(byClass(pending.shadowRoot, "progress")[0].hidden, false);
 
   const down = await make({}, { reply: () => ({ state: "unavailable", connected: false, message: "connection refused", sources: {} }) });
-  assert.match(text(byClass(down.shadowRoot, "notice")[0]), /app is not reachable \(connection refused\)/);
+  click(byClass(down.shadowRoot, "issue-badge")[0]);
+  assert.match(text(byClass(down.shadowRoot, "issues-note")[0]), /Discovery Service is not reachable: connection refused/);
 
   const failed = await make({ area: "Nowhere" }, { reply: () => ({ state: "error", connected: true, message: "could not resolve location 'Nowhere'", sources: {} }) });
   assert.match(text(byClass(failed.shadowRoot, "notice")[0]), /could not be found for Nowhere: could not resolve location/);
@@ -371,9 +384,137 @@ test("a refresh failure keeps the earlier events and says so", async () => {
   const card = await make({});
   card.hassStub.fail = { code: "unknown_error", message: "offline" };
   await pollAgain(card);
-  assert.match(text(byClass(card.shadowRoot, "sticky-header")[0]), /Update failed/);
+  assert.equal(issueCount(card), 1, "I: the failed refresh is an issue, not hidden");
   assert.equal(byClass(card.shadowRoot, "event").length, 3);
-  assert.match(text(byClass(card.shadowRoot, "notice")[0]), /Showing earlier data/);
+  assert.equal(byClass(card.shadowRoot, "notice")[0].hidden, true, "and is not said again in a banner above the earlier events");
+});
+
+// --- the one issue badge -------------------------------------------------------------------------------------------
+
+const withDiag = (issues, upcoming, feed = makeFeed()) => ({ reply: () => answer(feed, { diagnostics: diag(issues, upcoming) }) });
+const admin = (options) => { const hass = fakeHass(options); hass.user = { is_admin: true }; return hass; };
+
+test("B: two failed sources and a stale area are three issues on one accessible badge with no tooltip", async () => {
+  const card = await make({}, withDiag([failing("a"), failing("b"), staleIssue()]));
+  const badges = byClass(card.shadowRoot, "issue-badge");
+  assert.equal(badges.length, 1, "only one issue indicator in the header");
+  const [badge] = badges;
+  assert.equal(badge.tag, "button");
+  assert.equal(badge.type, "button");
+  assert.match(text(badge), /3 issues/);
+  assert.match(badge.className, /\berror\b/, "an error among them: the error colour");
+  assert.equal(badge.getAttribute("aria-label"), "3 Area Events issues — show details");
+  assert.equal(badge.title, undefined, "no native tooltip");
+  assert.equal(badge.getAttribute("title"), undefined);
+  assert.ok(walk(badge).some((el) => el.tag === "ha-icon" && el.attrs.icon === "mdi:alert-circle-outline"));
+});
+
+test("C, E, N: a healthy area, a source the integration does not count, or filters that match nothing show no badge", async () => {
+  assert.equal(issueBadge(await make({}, withDiag([], [staleIssue({ active_from: Date.now() / 1000 + 3600 })]))), undefined, "C: healthy; staleness only later");
+  const disabled = await make({}, withDiag([], [], makeFeed({ sources: { a: { ok: true }, b: { ok: false } } })));
+  assert.equal(issueBadge(disabled), undefined, "E: the card counts the integration's issues, never the sources' ok flags itself");
+  const filtered = await make({}, withDiag([], [], makeFeed({ events: [event("Far off", 40)] })));
+  openDates(filtered.shadowRoot);
+  click(dateChip(filtered.shadowRoot, "this-weekend"));
+  assert.equal(byClass(filtered.shadowRoot, "event").length, 0);
+  assert.equal(issueBadge(filtered), undefined, "N: an empty filter result is information, not an issue");
+  assert.match(text(byClass(filtered.shadowRoot, "notice")[0]), /No events match the selected dates/);
+});
+
+test("D, O: a status-only update clears a source's issue without any new event, and keeps the tiles", async () => {
+  const card = await make({}, withDiag([failing("a")]));
+  assert.equal(issueCount(card), 1);
+  const tiles = byClass(card.shadowRoot, "event");
+  card.hassStub.produce = () => answer(makeFeed(), { diagnostics: diag([]) });   // the same events; only the status changed
+  await pollAgain(card);
+  assert.equal(issueBadge(card), undefined);
+  assert.deepEqual(byClass(card.shadowRoot, "event"), tiles, "the same tiles");
+  card.hassStub.produce = () => answer(makeFeed(), { diagnostics: diag([failing("a"), failing("b")]) });
+  await pollAgain(card);
+  assert.equal(issueCount(card), 2);
+});
+
+test("F, G: paused discovery and an area without sources are said accurately, once", async () => {
+  const paused = { id: "discovery:paused", severity: "warning", kind: "discovery_paused", area_keys: [], component: "Discovery", summary: "Discovery is paused",
+    detail: "No source is being scanned; events found earlier are still shown.", action: "Resume discovery once any maintenance is finished." };
+  const card = await make({}, { reply: () => answer(makeFeed(), { diagnostics: diag([paused]), notice: null }) });
+  assert.equal(issueCount(card), 1);
+  assert.match(issueBadge(card).className, /^issue-badge$/, "a warning only: the warning colour");
+  click(issueBadge(card));
+  assert.match(text(byClass(card.shadowRoot, "issues-note")[0]), /Discovery is paused: No source is being scanned/);
+  assert.equal(byClass(card.shadowRoot, "notice")[0].hidden, true, "not repeated as a banner");
+  const empty = { id: "area:san-diego:no_sources", severity: "warning", kind: "area_no_sources", area_keys: ["san-diego"], component: "San Diego",
+    summary: "San Diego has no event sources", detail: null, action: "Assign at least one producer to San Diego under Areas." };
+  const bare = await make({}, withDiag([empty], [], makeFeed({ events: [], sources: {} })));
+  click(issueBadge(bare));
+  assert.match(text(byClass(bare.shadowRoot, "issues-note")[0]), /San Diego has no event sources/);
+});
+
+test("K: an administrator's badge opens the management Overview for the card's own area, inside Home Assistant", async () => {
+  const pushed = [];
+  const events = [];
+  Object.assign(window, { history: { pushState: (state, title, url) => pushed.push(url) }, dispatchEvent: (e) => events.push(e) });
+  try {
+    const card = await make({}, { hass: admin({ reply: () => answer(makeFeed(), { diagnostics: diag([failing("a"), staleIssue()]) }) }) });
+    const badge = issueBadge(card);
+    assert.equal(badge.getAttribute("aria-label"), "2 Area Events issues — view details");
+    assert.equal(badge.getAttribute("aria-expanded"), undefined, "it navigates; it does not expand anything");
+    click(badge);
+    assert.deepEqual(pushed, ["/area-events-manage?tab=overview&area=san-diego"]);
+    assert.equal(events[0].type, "location-changed", "Home Assistant's own router follows the new address");
+    assert.equal(byClass(card.shadowRoot, "issues-note")[0].hidden, true);
+    const odd = await make({}, { hass: admin({ reply: () => answer(makeFeed({ area: { area_key: "a/b?c", name: "Odd" } }), { diagnostics: diag([failing("a")]) }) }) });
+    click(issueBadge(odd));
+    assert.equal(pushed[1], "/area-events-manage?tab=overview", "an area key that is not a plain identifier is never put in the address");
+  } finally {
+    delete window.history;
+    delete window.dispatchEvent;
+  }
+});
+
+test("L: someone who is not an administrator keeps the count, is not sent to the panel, and is told whom to ask", async () => {
+  const pushed = [];
+  window.history = { pushState: (...args) => pushed.push(args) };
+  try {
+    const card = await make({}, withDiag([failing("a"), staleIssue()]));
+    const badge = issueBadge(card);
+    assert.equal(issueCount(card), 2);
+    assert.equal(badge.getAttribute("aria-expanded"), "false");
+    click(badge);
+    assert.equal(pushed.length, 0);
+    const note = byClass(card.shadowRoot, "issues-note")[0];
+    assert.equal(note.hidden, false);
+    assert.match(text(note), /Source a — last scan failed: HTTP 503/);
+    assert.match(text(note), /Contact a Home Assistant administrator/);
+    assert.equal(issueBadge(card).getAttribute("aria-expanded"), "true");
+    click(issueBadge(card));
+    assert.equal(byClass(card.shadowRoot, "issues-note")[0].hidden, true, "a second press closes it");
+  } finally {
+    delete window.history;
+  }
+});
+
+test("P: a stale area is counted once its moment passes, by the card's own age timer, without a new reading", async () => {
+  const realNow = Date.now;
+  const start = realNow();
+  const card = await make({}, withDiag([], [staleIssue({ active_from: start / 1000 + 120 })]));
+  assert.equal(issueBadge(card), undefined);
+  try {
+    Date.now = () => start + 180 * 1000;
+    card._tick();
+    assert.equal(issueCount(card), 1);
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(card.hassStub.eventsCalls().length, 1, "no new subscription or read");
+});
+
+test("a card configuration error stays in place and is not counted as a discovery issue", async () => {
+  const hass = fakeHass();
+  hass.fail = { code: "unknown_area", message: "no discovery area 'Atlantis'; available: San Diego" };
+  const card = await make({ area: "Atlantis" }, { hass });
+  assert.match(text(byClass(card.shadowRoot, "notice")[0]), /no discovery area 'Atlantis'/);
+  assert.equal(issueBadge(card), undefined);
 });
 
 test("a configuration error is retried slowly, not hammered", async () => {
@@ -770,16 +911,19 @@ test("header time comes from generated_at, never the page-load time", async () =
   const card = await make({}, { feed: makeFeed({ generated_at: old, events: [event("Future", 5)] }) });
   const header = text(byClass(card.shadowRoot, "sticky-header")[0]);
   assert.ok(header.includes(card._formatDate(old)));
-  assert.match(header, /Stale/);
   assert.match(header, /d ago/);
+  assert.doesNotMatch(header, /Stale/, "staleness is an issue the integration reports, not a separate badge");
 });
 
-test("header marks stale data and failing sources", async () => {
-  const stale = await make({}, { feed: makeFeed({ generated_at: iso(-14 * 3600 * 1000), sources: { a: { ok: true }, b: { ok: false } } }) });
-  const header = text(byClass(stale.shadowRoot, "sticky-header")[0]);
-  assert.match(header, /Stale/);
-  assert.match(header, /1 of 2 sources ok/);
-  assert.match(header, /1 source failing/);
+test("the header has no separate warning badges: stale data and failing sources are counted on the one issue badge", async () => {
+  const card = await make({}, { reply: () => answer(makeFeed({ generated_at: iso(-14 * 3600 * 1000), sources: { a: { ok: true }, b: { ok: false } } }),
+    { diagnostics: diag([failing("b"), staleIssue()]) }) });
+  const header = text(byClass(card.shadowRoot, "sticky-header")[0]);
+  assert.doesNotMatch(header, /Stale|failing|sources ok|Update failed/);
+  assert.match(header, /2 sources/, "M: the source count stays");
+  assert.match(header, /3 events/, "M: the event count stays");
+  assert.equal(byClass(card.shadowRoot, "issue-badge").length, 1);
+  assert.equal(issueCount(card), 2, "A: one failed source and a stale area are two issues");
 });
 
 test("an unchanged answer does not rebuild tiles or images", async () => {
@@ -975,8 +1119,8 @@ test("an unreachable service keeps the earlier events, says so, and the subscrip
   const card = await make({ area: "San Diego" });
   card.hassStub.fail = { code: "unavailable", message: "the Discovery Service is down" };
   await pollAgain(card);
-  const notice = text(byClass(card.shadowRoot, "notice")[0]);
-  assert.match(notice, /Could not refresh events \(the Discovery Service is down\)\. Showing earlier data/);
+  click(byClass(card.shadowRoot, "issue-badge")[0]);
+  assert.match(text(byClass(card.shadowRoot, "issues-note")[0]), /Discovery Service is not reachable: the Discovery Service is down/);
   assert.equal(byClass(card.shadowRoot, "event").length, 3);
 
   const delays = [];

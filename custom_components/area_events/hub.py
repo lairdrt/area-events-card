@@ -16,6 +16,10 @@ filters never reach the hub, so one card cannot change what another sees, and as
 
 Source names. Event tiles and the source summary both show the name configured for the source in the service (GET /v1/sources, read once and
 again only after the change feed reports a source change), so a rename reaches every card without a code change and without touching events.
+
+Diagnostics. Each view carries its area's issues from the shared classifier (diagnostics.py), worked out from the status the refresh already reads;
+the management snapshot runs the same classifier, so the card's badge and the Overview count alike. The SerpApi usage report is read only while a
+followed area has a SerpApi source with a recorded scan error (to tell a usage hold from a failure), and at most every USAGE_MAX_AGE_S.
 """
 import hashlib
 import itertools
@@ -24,6 +28,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 
+from . import diagnostics
 from .discovery_client import DiscoveryAuthError, DiscoveryConnectionError, DiscoveryRequestError
 from .feed import UNVERIFIED_LOCATIONS, source_name, to_feed_events, with_source_names
 
@@ -34,6 +39,7 @@ EVENT_PAGE = 200
 MAX_EVENT_PAGES = 5            # a followed area holds at most this many events (1000); more is reported as truncated
 LOOKBACK_SECONDS = 6 * 3600    # only for a service that cannot select by end time (see window_floor)
 RELEVANT_KINDS = ("area.configuration_changed",)
+USAGE_MAX_AGE_S = 300          # the service reuses an account reading this long too
 
 
 def window_floor(now):
@@ -86,6 +92,8 @@ class DiscoveryHub:
         self.connected, self.last_error, self._closed = None, None, False
         self._sources = {}
         self._names, self._names_stale, self._names_seq = None, False, 0   # configured source names; the last source change they reflect
+        self._types = {}                     # {source_key: producer type}, read with the names
+        self._usage, self._usage_at = None, None   # the last SerpApi usage report, only read while it can explain a scan error
 
     @property
     def can_control(self):
@@ -123,11 +131,33 @@ class DiscoveryHub:
         """{source_key: configured name}, from GET /v1/sources: read once, and again only when a source change made it stale."""
         if self._names is None or self._names_stale:
             try:
-                self._names = {s["id"]: s.get("name") for s in await self._read.sources()}
+                listed = await self._read.sources()
+                self._names = {s["id"]: s.get("name") for s in listed}
+                self._types = {s["id"]: s.get("type") for s in listed}
             except DiscoveryRequestError:   # a service that does not list its sources to this token: names made from the keys, as before
                 self._names = self._names or {}
             self._names_stale = False
         return self._names
+
+    async def _usage_if_needed(self):
+        """Read the SerpApi usage report when a followed area's SerpApi source has a recorded scan error and the last reading is older than
+        USAGE_MAX_AGE_S; otherwise keep what is known. A healthy service is never asked."""
+        followed = {k for a in self._areas or () if a["area_key"] in self._feeds for k in a.get("sources", ())}
+        wanted = any(self._types.get(k) == diagnostics.SERPAPI_TYPE and (self._sources.get(k) or {}).get("last_error") for k in followed)
+        if not wanted:
+            self._usage = self._usage_at = None
+            return
+        if self._usage_at is not None and self._clock() - self._usage_at < USAGE_MAX_AGE_S:
+            return
+        try:
+            self._usage = await self._read.usage()
+        except DiscoveryRequestError:   # a service that does not report usage: errors are shown as failures
+            self._usage = None
+        self._usage_at = self._clock()
+
+    def _diagnostics(self):
+        return diagnostics.classify(bool(self.connected), self.last_error or "the Discovery Service is not reachable", self._status, self._areas,
+                                    self._names, self._types, self._usage, self._clock())
 
     def _remember_status(self, status):
         self.connected, self.last_error = True, None
@@ -177,6 +207,7 @@ class DiscoveryHub:
             self._processing = await self._read.processing()
         await self._source_names()
         feed = self._feeds.get(area["area_key"]) or await self._load(area)
+        await self._usage_if_needed()
         key = next(self._ids)
         sub = self._subs[key] = _Subscription(area["area_key"], send)
         self._push(sub, area, feed)
@@ -221,6 +252,7 @@ class DiscoveryHub:
             for key in (list(self._feeds) if dirty == "all" else sorted(dirty)):
                 if key in by_key and key in self._feeds:
                     await self._load(by_key[key])
+            await self._usage_if_needed()
         except (DiscoveryConnectionError, DiscoveryAuthError) as error:
             self._set_availability(False, str(error))
             raise
@@ -306,6 +338,7 @@ class DiscoveryHub:
             "events": with_source_names(feed.events, self._names), "truncated": feed.truncated,
             "area": self._area_view(area), "service": service,
             "notice": self._notice(area, feed, service),
+            "diagnostics": diagnostics.for_area(self._diagnostics(), area["area_key"]),
         }
 
     @staticmethod
@@ -315,13 +348,12 @@ class DiscoveryHub:
         return datetime.fromtimestamp(latest, tz=timezone.utc).isoformat(timespec="seconds") if latest else None
 
     def _notice(self, area, feed, service):
-        if not area.get("sources"):
-            return f"No event sources are attached to {area['name']}, so nothing is being discovered for it."
+        """What a viewer should know about the view. Problems an administrator must fix (no sources, a pause) are issues in `diagnostics`."""
         notes = []
         if not area["enabled"]:
             notes.append(f"Discovery for {area['name']} is switched off.")
-        if service["paused"]:
-            notes.append("Discovery is paused; showing what was found earlier.")
+        if not area.get("sources"):
+            return " ".join(notes) or None
         if any((e.get("source") or {}).get("key", "").endswith("_fixture") for e in feed.events):
             notes.append("Some events here are demonstration data, not live discoveries.")
         if not feed.events:
@@ -408,8 +440,12 @@ class DiscoveryHub:
             usage = await self._read.usage()
         except DiscoveryRequestError:   # a service that does not report paid-API usage
             usage = None
+        # the same classifier as the cards' views, on this fresh reading (all areas; the Overview narrows it to one)
+        found = diagnostics.classify(True, None, status, areas, {s["id"]: s.get("name") for s in sources}, {s["id"]: s.get("type") for s in sources},
+                                     usage, self._clock())
         return {"schema": "area_events.management.v1", "sources": sources, "areas": areas,
-                "status": status, "producer_types": producer_types, "can_control": self.can_control, "trashcan": trashcan, "usage": usage}
+                "status": status, "producer_types": producer_types, "can_control": self.can_control, "trashcan": trashcan, "usage": usage,
+                "diagnostics": found}
 
     async def delete_event(self, event_key, reason):
         """Delete an event into the service's trashcan. Only once the service confirms is it taken off every card's view (the change feed would do the same at the
