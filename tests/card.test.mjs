@@ -143,6 +143,16 @@ test("events render upcoming events with honest verification labels and source l
   assert.ok(byClass(root, "source").every((a) => a.href.startsWith("https://www.kpbs.org/")));
 });
 
+test("the verification label carries no native tooltip, and the evidence behind it is kept", async () => {
+  const evidence = ["Street address 10 E Broad St from Google Maps: Cookeville Performing Arts Center", "two publishers agree", "dates agree"];
+  const card = await make({}, { feed: makeFeed({ events: [event("Evidenced Concert", 1, { verified: true, verification: { status: "verified", evidence: [...evidence] } })] }) });
+  const [verify] = byClass(card.shadowRoot, "verify");
+  assert.match(text(verify), /Verified/);
+  assert.equal(verify.title, undefined, "no title tooltip");
+  assert.equal(verify.getAttribute("title"), undefined);
+  assert.deepEqual(card._normalizeEvent(card.hassStub.produce({}).events[0]).evidence, evidence, "the evidence itself is unchanged");
+});
+
 test("the source label opens the event's page when there is one and is the same label as plain text when there is not", async () => {
   const events = [
     event("Linked", 1, { url: "https://www.facebook.com/events/abode-coffee/silent-book-club/1660217212106769/", source: { name: "Google Cookeville", key: "serp_cookeville" } }),

@@ -388,8 +388,7 @@ function renderCommunityEvent(event, context) {
     else if (event.status === "corroborated") [kind, label, icon] = ["corroborated", "Source corroborated", "mdi:check-circle-outline"];
     const verify = el("div", `verify ${kind}`);
     verify.append(context.icon(icon), el("span", "", label));
-    if (event.evidence.length) verify.title = event.evidence.join("\n");
-    body.append(verify);
+    body.append(verify);   // no title: the evidence would make an oversized native tooltip
 
     if (webPage(event.url)) {
       const link = el("a", "source", `Source: ${event.sourceName || "event page"}`);
