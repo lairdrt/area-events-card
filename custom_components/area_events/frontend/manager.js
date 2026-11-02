@@ -6,6 +6,7 @@ const escapeHtml = (value) => String(value == null ? "" : value).replace(/[&<>"'
 const asInt = (value, fallback) => value === "" || value == null ? fallback : Number(value);
 const AREA_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const TABS = ["overview", "sources", "areas", "trashcan"];
+const PANEL_PATH = "/area-events-manage";
 const REASON_LABELS = { duplicate: "Duplicate event", not_relevant: "Not relevant to my area", incorrect: "Incorrect or misleading information",
   expired_or_canceled: "Expired or canceled event", advertisement: "Advertisement / not a real event", other: "Other / don't want to see it" };
 const CSS = [
@@ -58,6 +59,9 @@ class AreaEventsManager extends HTMLElement {
     this._message = "";
     this._error = "";
     this._loadError = "";
+    this._connected = false;     // the result of the latest management request, never merely "a snapshot exists"
+    this._snapshotAt = null;     // when the snapshot shown was read
+    this._refreshAgain = false;  // a refresh was asked for while one was running: run once more when it ends
     this._issueArea = null;   // the area the Overview's issues are narrowed to (from a card's badge); null: every area
     this.readLocation();
   }
@@ -85,8 +89,14 @@ class AreaEventsManager extends HTMLElement {
       this.shadowRoot.addEventListener("click", (ev) => this.handleClick(ev));
       this.shadowRoot.addEventListener("submit", (ev) => this.handleSubmit(ev));
       this.shadowRoot.addEventListener("change", (ev) => this.handleChange(ev));
-      // Home Assistant may keep this panel while the address changes (a card's badge opening it again for another area)
-      this._onLocation = () => { this.readLocation(); this.render(); };
+      // Home Assistant may keep this panel while the address changes (a card's badge opening it again for another area): take the address's
+      // tab and area, and read the service again so the issues shown are current. Navigation elsewhere in Home Assistant is ignored.
+      this._onLocation = () => {
+        if (!String(window.location?.pathname || "").startsWith(PANEL_PATH)) return;
+        this.readLocation();
+        this.render();
+        if (this._hass) this.refresh();
+      };
       if (typeof window !== "undefined" && window.addEventListener) {
         window.addEventListener("location-changed", this._onLocation);
         window.addEventListener("popstate", this._onLocation);
@@ -102,26 +112,43 @@ class AreaEventsManager extends HTMLElement {
     if (!this._hass || !this._hass.callWS) throw new Error("Home Assistant is not connected.");
     return this._hass.callWS({ type: WS + type, ...params });
   }
-  async refresh() {
-    if (this._loading || this._saving) return;
+  /** Read the management snapshot. One request at a time: a refresh asked for meanwhile (a new navigation) runs once more afterwards, so an older
+   *  answer never replaces a newer one and the last request always reflects the latest ask. */
+  refresh() {
+    if (this._saving) return Promise.resolve();
+    if (this._inflight) { this._refreshAgain = true; return this._inflight; }
     this._loading = true;
+    this._inflight = (async () => {
+      do {
+        this._refreshAgain = false;
+        await this.load();
+      } while (this._refreshAgain);
+    })().finally(() => {
+      this._inflight = null;
+      this._loading = false;
+      this.render();
+    });
+    return this._inflight;
+  }
+  async load() {
     this._error = "";
     this.render();
     try {
       const snapshot = await this.call("management");
       if (snapshot.schema !== "area_events.management.v1") throw new Error("Unsupported management contract.");
       this._snapshot = snapshot;
+      this._snapshotAt = Date.now();
+      this._connected = true;
       const sources = snapshot.sources || [];
       if (!sources.some((item) => item.id === this._selectedSource)) this._selectedSource = sources[0]?.id || null;
       if (!snapshot.areas?.some((item) => item.area_key === this._selectedArea)) this._selectedArea = snapshot.areas?.[0]?.area_key || null;
-      if (!snapshot.areas?.some((item) => item.area_key === this._issueArea)) this._issueArea = null;
+      // the requested area is judged by the newest answer only: one still to come may know an area this one does not
+      if (!this._refreshAgain && !snapshot.areas?.some((item) => item.area_key === this._issueArea)) this._issueArea = null;
       this._loadError = "";
     } catch (err) {
       this._error = err.message || String(err);
       this._loadError = this._error;
-    } finally {
-      this._loading = false;
-      this.render();
+      this._connected = false;
     }
   }
   async mutate(type, params) {
@@ -309,7 +336,7 @@ class AreaEventsManager extends HTMLElement {
   }
   renderHeader() {
     const s = this._snapshot;
-    const isReady = !!s;
+    const isReady = this._connected;   // the latest request's result: a kept snapshot from before a failure is not a connection
     const status = s?.status || {};
     const readyJobs = status.jobs?.ready ?? "—";
     const count = s?.sources?.length ?? "—";
@@ -512,6 +539,8 @@ class AreaEventsManager extends HTMLElement {
       this._tab === "trashcan" ? this.renderTrashcan() : this.renderSources();
     this.shadowRoot.innerHTML = "<style>" + CSS + "</style><div class='shell'>" + this.renderHeader() +
       (this._error ? "<div class='message error' role='alert'>" + escapeHtml(this._error) + "</div>" : "") +
+      (this._loadError && this._snapshot ? "<div class='message historical' role='status'>Showing the last successful reading, from " +
+        escapeHtml(new Date(this._snapshotAt).toLocaleString()) + ". It is not current status.</div>" : "") +
       (this._message ? "<div class='message' role='status'>" + escapeHtml(this._message) + "</div>" : "") +
       "<div class='layout'><nav class='nav' aria-label='Area Events sections'>" +
       "<button data-action='menu' class='button'>☰ HA Menu</button>" + nav + "</nav><main>" +

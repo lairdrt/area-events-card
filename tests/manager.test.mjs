@@ -468,6 +468,111 @@ test("Sources shows a recorded scan error as Failing, a usage hold distinctly, a
   assert.match(manager.shadowRoot.innerHTML, /<span class='state '>Idle<\/span>/);
 });
 
+// --- navigation into an open panel, and the connection indicator ---------------------------------------------------------
+
+/** A panel Home Assistant keeps open, a window whose address the card's badge changes, and a service that answers through `respond`. */
+const openPanel = (respond) => {
+  const listeners = {};
+  globalThis.window = { location: { pathname: "/area-events-manage", search: "" }, addEventListener: (type, fn) => { listeners[type] = fn; } };
+  const manager = new Registered();
+  const calls = { total: 0, open: 0, most: 0 };
+  manager._hass = { callWS: async (message) => {
+    assert.equal(message.type, "area_events/management");
+    calls.total++; calls.open++; calls.most = Math.max(calls.most, calls.open);
+    try { return await respond(calls.total); } finally { calls.open--; }
+  } };
+  manager.connectedCallback();
+  const navigate = (search, pathname = "/area-events-manage") => {
+    Object.assign(window.location, { search, pathname });
+    listeners["location-changed"]();
+    return manager._inflight || Promise.resolve();
+  };
+  return { manager, calls, navigate, html: () => manager.shadowRoot.innerHTML };
+};
+const snapshotWith = (...issues) => withIssues(issues)._snapshot;
+const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
+
+test("A, B: a badge opening an already-open panel reads the service again and keeps the requested area selected", async () => {
+  const answers = [snapshotWith(issue("old", { summary: "Old problem" })), snapshotWith(issue("new", { summary: "Current problem" }))];
+  const panel = openPanel((n) => answers[n - 1]);
+  try {
+    await panel.manager._inflight;
+    assert.match(panel.html(), /Old problem/);
+    await panel.navigate("?tab=overview&area=abcdefghi1");
+    assert.equal(panel.calls.total, 2, "A: the navigation asked the service again");
+    assert.match(panel.html(), /Current problem/);
+    assert.doesNotMatch(panel.html(), /Old problem/);
+    assert.match(panel.html(), /Active issues — Example Area/, "B: the requested area is still selected after the refresh");
+    assert.equal(panel.manager._issueArea, "abcdefghi1");
+    await panel.navigate("", "/lovelace/events");
+    assert.equal(panel.calls.total, 2, "navigation elsewhere in Home Assistant changes and reads nothing");
+  } finally { delete globalThis.window; }
+});
+
+test("C, D, E: a failed refresh shows Not connected and marks the kept snapshot as history; a successful retry restores Connected and current issues", async () => {
+  let failing = false;
+  const panel = openPanel(() => {
+    if (failing) throw new Error("the Discovery Service is not reachable (connection refused)");
+    return snapshotWith(issue("x", { summary: "Current problem" }));
+  });
+  try {
+    await panel.manager._inflight;
+    assert.match(panel.html(), /<span class='pill good'><span class='dot'><\/span>Cubi connected/);
+    failing = true;
+    await panel.manager.refresh();
+    let html = panel.html();
+    assert.match(html, /<span class='pill warn'><span class='dot'><\/span>Not connected/, "C: the latest request decides, not the kept snapshot");
+    assert.doesNotMatch(html, /Cubi connected/);
+    assert.match(html, /Showing the last successful reading, from .*It is not current status\./, "D: the kept data is labelled as history");
+    assert.match(html, /Area Events could not read the Discovery Service/);
+    assert.doesNotMatch(html, /Current problem/, "D: cached issues are never listed as active");
+    assert.ok(panel.manager._snapshot, "the last snapshot is kept");
+    failing = false;
+    await panel.manager.refresh();
+    html = panel.html();
+    assert.match(html, /Cubi connected/, "E: connected again");
+    assert.doesNotMatch(html, /Not connected|not current status|could not read the Discovery Service|role='alert'/);
+    assert.match(html, /Current problem/);
+  } finally { delete globalThis.window; }
+});
+
+test("F: rapid navigation never overlaps requests, and an older answer never replaces a newer one", async () => {
+  const pending = [];
+  const panel = openPanel(() => { const d = deferred(); pending.push(d); return d.promise; });
+  try {
+    pending[0].resolve(snapshotWith(issue("first", { summary: "First reading" })));
+    await panel.manager._inflight;
+    const done = panel.navigate("?tab=overview&area=abcdefghi1");
+    panel.navigate("?tab=overview&area=otherarea01");
+    panel.navigate("?tab=overview&area=abcdefghi1");
+    await Promise.resolve();
+    assert.equal(pending.length, 2, "one request in flight; the later navigations wait for it");
+    pending[1].resolve(snapshotWith(issue("stale", { summary: "Older reading" })));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(pending.length, 3, "then exactly one more, for the newest navigation");
+    pending[2].resolve(snapshotWith(issue("newest", { summary: "Newest reading" })));
+    await done;
+    assert.equal(panel.calls.most, 1, "never two requests at once");
+    assert.equal(panel.calls.total, 3);
+    assert.match(panel.html(), /Newest reading/);
+    assert.doesNotMatch(panel.html(), /Older reading|First reading/);
+    assert.match(panel.html(), /Active issues — Example Area/, "the last navigation's area");
+  } finally { delete globalThis.window; }
+});
+
+test("G: Overview, Sources, Areas and Trashcan still work after a navigation refresh", async () => {
+  const panel = openPanel(() => snapshotWith(issue("x")));
+  try {
+    await panel.navigate("?tab=sources");
+    assert.equal(panel.manager._tab, "sources");
+    assert.match(panel.html(), /Calendar URL/);
+    for (const [tab, marker] of [["areas", /Example Area/], ["trashcan", /does not report a trashcan/], ["overview", /Service overview/]]) {
+      clickTab(panel.manager, tab);
+      assert.match(panel.html(), marker, tab);
+    }
+  } finally { delete globalThis.window; }
+});
+
 test("Sources and Areas share one 50/50 split that still stacks on narrow screens", () => {
   const manager = serpapiManager();
   manager.render();
