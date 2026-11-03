@@ -1749,6 +1749,38 @@ test("an event's time is shown in the event's own time zone, not the viewer's, a
   assert.equal(new Date(card._normalizeEvent(austin).start).getTime(), Date.parse("2026-10-23T18:00:00Z"), "the stored instant is untouched");
 });
 
+test("a venue name the address already begins with is shown once; a street address keeps the venue", async () => {
+  const card = await make({});
+  const place = (fields) => card._normalizeEvent(event("Show", 1, fields)).location;
+  assert.equal(place({ venue: "Red Silo Brewing", address: "Red Silo Brewing, Cookeville, TN" }), "Red Silo Brewing, Cookeville, TN");
+  assert.equal(place({ venue: "Revolver Dance Hall of Cookeville", address: "Revolver Dance Hall of Cookeville, Cookeville, TN" }),
+    "Revolver Dance Hall of Cookeville, Cookeville, TN");
+  assert.equal(place({ venue: "Roasted Hemp Co", address: "  roasted  HEMP co , Cookeville, TN" }), "  roasted  HEMP co , Cookeville, TN",
+    "case and spacing do not matter; the address is shown as stored");
+  assert.equal(place({ venue: "Red Silo Brewing", address: "118 W 1st St, Cookeville, TN" }), "Red Silo Brewing, 118 W 1st St, Cookeville, TN");
+  assert.equal(place({ venue: "Leslie Town Centre", address: "1 W 1st St, Cookeville, TN 38501" }), "Leslie Town Centre, 1 W 1st St, Cookeville, TN 38501");
+  assert.equal(place({ venue: "Red Silo Brewing", address: "Cookeville, TN" }), "Red Silo Brewing, Cookeville, TN");
+  assert.equal(place({ venue: "Red Silo Brewing", address: "Red Silo Brewing Annex, Cookeville, TN" }), "Red Silo Brewing, Red Silo Brewing Annex, Cookeville, TN",
+    "only the complete first segment counts, never a longer name that starts the same way");
+  assert.equal(place({ venue: "Red Silo Brewing", address: "Red Silo Brewing" }), "Red Silo Brewing, Red Silo Brewing", "no comma: unchanged");
+  assert.equal(place({ location: "Explicit place", venue: "Red Silo Brewing", address: "Red Silo Brewing, Cookeville, TN" }), "Explicit place");
+  assert.equal(place({ venue: "Red Silo Brewing" }), "Red Silo Brewing");
+  assert.equal(place({ address: "118 W 1st St, Cookeville, TN" }), "118 W 1st St, Cookeville, TN");
+  assert.equal(place({}), "");
+  const stored = event("Show", 1, { venue: "Red Silo Brewing", address: "Red Silo Brewing, Cookeville, TN", verification: { status: "unverified", evidence: ["listed by Google"] } });
+  const normalized = card._normalizeEvent(stored);
+  assert.deepEqual([normalized.venue, normalized.evidence], ["Red Silo Brewing", ["listed by Google"]], "the event's own fields are untouched");
+  assert.deepEqual([stored.venue, stored.address], ["Red Silo Brewing", "Red Silo Brewing, Cookeville, TN"]);
+});
+
+test("the tile shows a venue the address repeats only once", async () => {
+  const events = [event("Trivia night", 1, { venue: "Red Silo Brewing", address: "Red Silo Brewing, Cookeville, TN" })];
+  const card = await make({ area: "San Diego" }, { reply: () => answer(makeFeed({ events })) });
+  const tile = text(byClass(card.shadowRoot, "event")[0]);
+  assert.match(tile, /Red Silo Brewing, Cookeville, TN/);
+  assert.doesNotMatch(tile, /Red Silo Brewing, Red Silo Brewing/);
+});
+
 test("an event that ends on a later day shows both its first and its last date; a one-day event shows its start as before", async () => {
   const exhibit = event("Harbor Art Exhibit", 1, { start: "2026-11-04T10:00:00-08:00", end: "2026-11-30T16:00:00-08:00", timezone: "America/Los_Angeles" });
   const evening = event("Evening Talk", 2, { start: "2026-11-05T18:00:00-08:00", end: "2026-11-05T20:00:00-08:00", timezone: "America/Los_Angeles" });

@@ -497,6 +497,12 @@ function validZone(name) {
     return undefined;
   }
 }
+/** "Venue, address", except that an address whose whole first segment is the venue name ("Red Silo Brewing, Cookeville, TN") is shown alone. */
+function venueAndAddress(venue, address) {
+  const key = (text) => String(text).replace(/\s+/g, " ").trim().toLowerCase();
+  if (venue && address && String(address).includes(",") && key(String(address).split(",", 1)[0]) === key(venue)) return address;
+  return [venue, address].filter(Boolean).join(", ");
+}
 function safeImageCredit(raw) {
   if (!raw || typeof raw !== "object") return undefined;
   const text = (value, max) => (typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "");
@@ -877,7 +883,7 @@ class AreaEventsCard extends HTMLElement {
       start: event.start,
       end: event.end,
       timezone: validZone(event.timezone),
-      location: event.location || [event.venue, event.address].filter(Boolean).join(", "),
+      location: event.location || venueAndAddress(event.venue, event.address),
       category: event.category || categories[0],
       categories,
       images: [...new Set([event.image, event.image_url, ...(Array.isArray(event.images) ? event.images : [])]
