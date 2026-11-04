@@ -6,6 +6,12 @@ Date, start time and location carry most of the weight. Before any score counts,
 tolerance, conflicting source pages (when configured), a title, address or venue that is too different, and differing numbers in a title, address or venue
 ("Night 1" and "Night 2", "500" and "501 Harbor Drive"). Every weight, tolerance and threshold lives in `MatchProfile`, so a strategy is only a profile.
 
+One identity stands apart from the score (`venue_time_identity`): the exact same start instant at the same specific physical venue, under related titles, is one
+event whichever page either cites. Both must name the venue completely alike and both must state an address with a town that agrees; a conflicting street, suite,
+room, postcode, town, written location or end time (outside the profile's tolerance) keeps them apart, and so does a missing address on either side. Related titles
+are reworded, shortened or extended forms of each other (one's words, nearly all, among the other's: `venue_time_title_min`), never two titles that differ by a
+number, a roman numeral or a year, and never two unrelated titles: two different events can share a stage and a start ("Chili Cook-Off" and "Live Music").
+
 Pure: no database, no persistence, no source knowledge.
 """
 from dataclasses import dataclass, replace
@@ -19,6 +25,10 @@ ABBREVIATIONS = {"street": "st", "avenue": "ave", "av": "ave", "drive": "dr", "r
                  "suite": "ste", "building": "bldg", "north": "n", "south": "s", "east": "e", "west": "w", "mount": "mt", "saint": "st", "center": "ctr",
                  "centre": "ctr", "park": "park", "united states": "", "usa": ""}
 NUMBER = re.compile(r"\d+")
+UNIT = re.compile(r"(?:#\s*|\b(?:suite|ste|unit|room|rm|apt|apartment|bldg|building|floor)\b\.?\s*#?\s*)([a-z0-9][a-z0-9.-]*)", re.I)   # not "FL": Florida
+POSTCODE = re.compile(r"\b\d{5}(?:-\d{4})?\b")
+YEAR = re.compile(r"\b(?:19|20)\d\d\b")
+VENUE_TIME = "the same start instant at the same venue and address, under related titles"
 GENERIC_PATH = frozenset(("", "event", "events", "calendar", "calendars", "listing", "listings", "home", "index"))
 TRACKING = frozenset(("utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid"))
 PLACE_FIELDS = (("address", "w_address", "min_address"), ("venue_name", "w_venue", "min_venue"), ("location_text", "w_location_text", "min_venue"))
@@ -56,6 +66,8 @@ class MatchProfile:
     max_compared: int = 1000              # events examined for one decision (bounded lookup)
     no_place_title_min: float = 0.0       # 0 = off. When NEITHER event states any place, the least title similarity that still counts as the same event, provided
     no_place_description_min: float = 0.80   # the start (and end) are exactly equal and, when both state a description, the descriptions agree to this degree
+    venue_time_identity: bool = True      # the same start instant at the same specific venue and address, under related titles, is one event, whatever the pages say
+    venue_time_title_min: float = 0.90    # how nearly one title's words must all be among the other's for the venue/time identity (RapidFuzz token set ratio)
 
     def with_(self, **changes):
         return replace(self, **changes)
@@ -66,6 +78,7 @@ class Score:
     matched: bool
     confidence: float
     reason: str
+    venue_time: bool = False              # matched on the venue/time identity rather than the score
 
 
 def normalize(text):
@@ -99,6 +112,38 @@ def _place(text):
     return " ".join(word for word in words if word)
 
 
+def _address_parts(address, venue):
+    """(street line, units, postcodes, town words) of a written address. A part that only repeats the venue's name ("Red Silo Brewing, Cookeville, TN") is not
+    part of the place; a suite, room or unit ("#200", "Ste H", "Room 4.244") is set apart so that it is compared on its own."""
+    units = frozenset(match.lower().rstrip(".") for match in UNIT.findall(address))
+    parts = [_place(part) for part in UNIT.sub(" ", address).split(",")]
+    parts = [part for part in parts if part and part != _place(venue)]
+    street = next((part for part in parts if part.split()[0].isdigit()), "")
+    rest = " ".join(part for part in parts if part != street)
+    return street, units, frozenset(POSTCODE.findall(rest)), frozenset(word for word in rest.split() if not word.isdigit())
+
+
+def _same_physical_place(left, right):
+    """Do both events name the same specific venue completely alike, at addresses that agree (see the module's documentation)? Incomplete evidence is no."""
+    venue = _place(getattr(left, "venue_name", None))
+    if not venue or venue != _place(getattr(right, "venue_name", None)) or not left.address or not right.address:
+        return False
+    texts = _place(getattr(left, "location_text", None)), _place(getattr(right, "location_text", None))
+    if all(texts) and texts[0] != texts[1]:
+        return False
+    (a_street, a_units, a_codes, a_town), (b_street, b_units, b_codes, b_town) = _address_parts(left.address, venue), _address_parts(right.address, venue)
+    if not a_town or not b_town or not (a_town <= b_town or b_town <= a_town):
+        return False
+    return not ((a_street and b_street and a_street != b_street) or (a_units and b_units and a_units != b_units) or (a_codes and b_codes and a_codes != b_codes))
+
+
+def _related_titles(left, right, floor):
+    """Normalized titles that can name one event at one venue and instant (see the module's documentation)."""
+    if _numbers_differ(left, right) or set(YEAR.findall(left)) != set(YEAR.findall(right)) or (set(left.split()) ^ set(right.split())) & EDITIONS:
+        return False
+    return fuzz.token_set_ratio(left, right) / 100.0 >= floor
+
+
 def _url_identity(value):
     if not value:
         return ""
@@ -130,6 +175,7 @@ def _similarity(left, right, partial=False):
 
 
 ROMAN = frozenset(("i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"))
+EDITIONS = ROMAN - {"i", "x"}   # "I" and "x" ("Melómano x UCSD") are ordinary words too
 
 
 def _numbers_differ(left, right):
@@ -193,6 +239,9 @@ def compare(left, right, profile, same_page=None):
         end_gap = abs(int(left.ends_at) - int(right.ends_at))
         if end_gap > profile.end_tolerance_s:
             return Score(False, 0.0, "the end times differ by more than the tolerance")
+    if (profile.venue_time_identity and gap == 0 and _related_titles(a_title, b_title, profile.venue_time_title_min)
+            and _same_physical_place(left, right)):
+        return Score(True, 1.0, VENUE_TIME, venue_time=True)
     page_left, page_right = _url_identity(left.source_url), _url_identity(right.source_url)
     if page_left and page_right and page_left != page_right and profile.url_conflict_vetoes:
         return Score(False, 0.0, "the events cite different pages")
@@ -253,12 +302,20 @@ def compare(left, right, profile, same_page=None):
 
 def best_match(event, candidates, profile):
     """(match, reason): the single best candidate, or None when there is none, when the best is not clearly ahead of the runner-up (ambiguous), or when it is
-    a tie. A runner-up within `ambiguity_margin` makes the answer ambiguous: the caller must not link."""
-    scored = []
+    a tie. A runner-up within `ambiguity_margin` makes the answer ambiguous: the caller must not link. A venue/time identity is never ambiguous: it is the event
+    already there, and when several are (duplicates made before the identity existed) the one whose title is nearest, then the lowest event key, so the same
+    answer every time."""
+    scored, same_place = [], []
     for other in candidates:
         result = compare(event, other, profile)
         if result.matched:
             scored.append((result.confidence, other.event_key, other))
+            if result.venue_time:
+                same_place.append(other)
+    if same_place:
+        wanted = title_key(event.title)
+        first = min(same_place, key=lambda other: (-_similarity(wanted, title_key(other.title)), other.event_key))
+        return first, VENUE_TIME + (f" (the nearest title of {len(same_place)} such events)" if len(same_place) > 1 else "")
     if not scored:
         return None, "no known event matches"
     scored.sort(key=lambda item: (-item[0], item[1]))

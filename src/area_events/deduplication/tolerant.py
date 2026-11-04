@@ -8,7 +8,7 @@ PROFILE = MatchProfile(name="tolerant", start_tolerance_s=600, end_tolerance_s=9
 
 
 class TolerantMatch:
-    name, version = "tolerant", 5
+    name, version = "tolerant", 6
 
     def __init__(self, window_s=None, profile=None, **overrides):
         if window_s is not None:

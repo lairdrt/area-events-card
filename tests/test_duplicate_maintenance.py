@@ -91,6 +91,27 @@ class DuplicateMaintenanceTests(unittest.TestCase):
         self.assertEqual([group["event_keys"] for group in groups], [("ev-maintenance-1", "ev-maintenance-2"), ("ev-maintenance-4", "ev-maintenance-5")])
         self.assertEqual(os.stat(self.db_path).st_mtime_ns, before, "scan uses a URI read-only SQLite connection")
 
+    def test_read_only_scan_finds_the_same_venue_and_instant_pair_whatever_the_titles(self):
+        """The College Takeover pair as stored in production (two Google listings of one Facebook event, 2026-11-06 20:00 at Melómano): the scan pairs them, the
+        oldest first, and pairs nothing else at that instant under a related title (another suite of the building, a venue named without an address)."""
+        start = epoch("2026-11-06T20:00:00-08:00")
+        venue, address = "Melómano Entertainment - Salsa & Bachata Lessons", "4255 Ruffin Rd #200, San Diego, CA 92123"
+        url = ("https://www.facebook.com/events/4255-ruffin-road-suite-200-san-diego-ca-united-states-california-92123/"
+               "the-college-takeover-night-fall-edition-mel%C3%B3mano-x-ucsd-x-sdsu-116/965303699984707/")
+        rows = (("ev-970a148e6ca1ed277477", "The College Takeover Night: Fall Edition", venue, address),
+                ("ev-00abe53e2317ec8fe838", "The College Takeover Night: Fall Edition (Melómano x UCSD x SDSU) 11/6", venue, address),
+                ("ev-takeover-other-suite", "The College Takeover Night", venue, "4255 Ruffin Rd Suite 300, San Diego, CA 92123"),
+                ("ev-takeover-no-address", "The College Takeover Night", venue, None))
+        with closing(sqlite3.connect(self.db_path)) as db:
+            db.executemany("""INSERT INTO events(event_key,title,starts_at,timezone,venue_name,address,location_status,source_url,status,missing_json,revision,
+                              first_extracted_at,updated_at) VALUES(?,?,?,'America/Los_Angeles',?,?,'address',?,'partial','[]',1,1,1)""",
+                           [(key, title, start, place, street, url) for key, title, place, street in rows])
+            db.commit()
+        before = os.stat(self.db_path).st_mtime_ns
+        groups = [group for group in self.maintenance.scan() if group["events"][0]["starts_at"] == start]
+        self.assertEqual([(group["event_keys"], group["eligible"]) for group in groups], [(("ev-970a148e6ca1ed277477", "ev-00abe53e2317ec8fe838"), True)])
+        self.assertEqual(os.stat(self.db_path).st_mtime_ns, before, "the scan only reads")
+
     def test_clean_preserves_candidates_sources_links_and_revision_history(self):
         before = self._counts()
         keys = (("ev-maintenance-1", "ev-maintenance-2"), ("ev-maintenance-4", "ev-maintenance-5"))

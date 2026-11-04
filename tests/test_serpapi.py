@@ -874,7 +874,7 @@ class ThroughTheService(Fixture):
         market = dict(starts_at="2026-11-07T10:00:00-08:00", ends_at="2026-11-07T16:00:00-08:00", venue="Balboa Park", address="Balboa Park, 1549 El Prado, San Diego, CA")
         self.add_candidate(self.built, "sandiego_gov", "sandiego_gov:market", document("Holiday Market", url="https://example.org/holiday-market", **market))
         self.add_candidate(self.built, "sandiego_gov", "sandiego_gov:jazz", document("Jazz Night", url="https://other.example/jazz", starts_at="2026-11-06T19:00:00-08:00",
-                                                                                     ends_at="2026-11-06T22:00:00-08:00", venue="Balboa Park",
+                                                                                     ends_at="2026-11-06T22:00:00-08:00", venue=None,
                                                                                      address="Balboa Park, 1549 El Prado, San Diego, CA"))
         self.drain(self.built)
         self.scan()
@@ -882,7 +882,7 @@ class ThroughTheService(Fixture):
         self.assertEqual(len(markets), 1, "the same event page: one event, now described by both sources")
         self.assertEqual(self.count("event_candidates ec JOIN events e USING (event_id)", f"e.event_key = '{markets[0].event_key}'"), 2)
         self.assertEqual([e.title for e in self.all_events(self.built)].count("Jazz Night"), 2,
-                         "different event pages are never merged (the existing deduplication rule is unchanged)")
+                         "different event pages are never merged outside the venue/time identity (here one names no venue)")
 
     def test_a_ticket_link_becomes_the_event_url_and_deduplication_treats_it_as_any_other_page(self):
         self.fake.pages = [page([observed("Holiday Market", "Sat, Nov 7, 10 AM – 4 PM", tickets=[("Facebook", "tickets", FACEBOOK)]),
@@ -892,14 +892,14 @@ class ThroughTheService(Fixture):
         self.add_candidate(self.built, "sandiego_gov", "sandiego_gov:market", document("Holiday Market", url=FACEBOOK, starts_at="2026-11-07T10:00:00-08:00",
                                                                                        ends_at="2026-11-07T16:00:00-08:00", **place))
         self.add_candidate(self.built, "sandiego_gov", "sandiego_gov:jazz", document("Jazz Night", url="https://other.example/jazz", starts_at="2026-11-06T19:00:00-08:00",
-                                                                                     ends_at="2026-11-06T22:00:00-08:00", **place))
+                                                                                     ends_at="2026-11-06T22:00:00-08:00", **{**place, "venue": None}))
         self.drain(self.built)
         self.scan()
         events = self.all_events(self.built)
         markets = [e for e in events if e.title == "Holiday Market"]
         self.assertEqual([e.source_url for e in markets], [FACEBOOK], "the same Facebook event page: one event")
         self.assertEqual(sorted(e.source_url for e in events if e.title == "Jazz Night"), sorted([EVENTBRITE, "https://other.example/jazz"]),
-                         "different pages stay apart, as for any producer")
+                         "different pages stay apart outside the venue/time identity (one names no venue), as for any producer")
         self.assertEqual([e.source_url for e in events if e.title == "Late Show"], [None], "a front page is no event page: no url")
         [rescan] = self.scan()
         self.assertEqual(rescan.outcome, "completed")

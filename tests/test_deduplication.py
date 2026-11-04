@@ -65,7 +65,7 @@ class Interface(unittest.TestCase):
         for name, make in STRATEGIES.items():
             with self.subTest(name):
                 strategy = make()
-                self.assertEqual((strategy.name, strategy.version), (name, 5))
+                self.assertEqual((strategy.name, strategy.version), (name, 6))
                 decision = strategy.decide(Incoming("src:a", clean(), None), Lookup())
                 self.assertIsInstance(decision, Decision)
                 self.assertEqual((decision.action, decision.event_key), ("create", None))
@@ -122,11 +122,13 @@ class Exact(unittest.TestCase):
             dataclasses.replace(first, starts_at=START + 86400),
             dataclasses.replace(first, address="900 Other Street, San Diego, CA"),
             dataclasses.replace(first, ends_at=START + 10800),
-            dataclasses.replace(first, source_url="https://other.example/marketplace/"),
+            dataclasses.replace(first, source_url="https://other.example/marketplace/", venue_name="Other Hall"),
         )
         for variant in variants:
             with self.subTest(variant=variant):
                 self.assertFalse(same_event_facts(first, variant))
+        self.assertTrue(same_event_facts(first, dataclasses.replace(first, source_url="https://other.example/marketplace/")),
+                        "another page alone does not keep the same venue, address and instant apart")
 
 
 class Tolerant(unittest.TestCase):
@@ -164,6 +166,128 @@ class Tolerant(unittest.TestCase):
                              "the permissive strategy accepts a similar title at the same time and place without a shared page")
         for other in (dataclasses.replace(changed, address="900 Other Street, San Diego, CA"), dataclasses.replace(changed, title="Spring Craft Fair at the Park")):
             self.assertEqual(TolerantMatch().decide(Incoming("o:b", other, None), Lookup(known("ev-1", original))).action, "create")
+
+
+MELOMANO = "Melómano Entertainment - Salsa & Bachata Lessons"
+RUFFIN = "4255 Ruffin Rd #200, San Diego, CA 92123"
+TAKEOVER_URL = ("https://www.facebook.com/events/4255-ruffin-road-suite-200-san-diego-ca-united-states-california-92123/"
+                "the-college-takeover-night-fall-edition-mel%C3%B3mano-x-ucsd-x-sdsu-116/965303699984707/")
+
+
+def takeover(title="The College Takeover Night: Fall Edition", **fields):
+    """The College Takeover pair as stored in production on 2026-11-04 (events ev-970a148e6ca1ed277477 and ev-00abe53e2317ec8fe838), moved to START."""
+    event = dataclasses.replace(clean(title=title, venue=MELOMANO, address=RUFFIN), source_url=TAKEOVER_URL)
+    return dataclasses.replace(event, **fields)
+
+
+LATER = "The College Takeover Night: Fall Edition (Melómano x UCSD x SDSU) 11/6"   # the second listing's title
+
+
+class VenueTimeIdentity(unittest.TestCase):
+    """The exact same start instant at the same specific venue and address, under related titles, is one event whatever the pages say; anything less keeps
+    the conservative score, and any stated location distinction, or an unrelated or differently numbered title, keeps the events apart."""
+
+    def decide(self, incoming, *existing, strategy=None):
+        return (strategy or ExactMatch()).decide(Incoming("serp_sandiego:later", incoming, None), Lookup(*existing))
+
+    def test_the_college_takeover_pair_is_one_event(self):
+        first = known("ev-970a148e6ca1ed277477", takeover())
+        later = takeover(LATER)
+        self.assertFalse(same_event_facts(takeover(), later, ExactMatch(venue_time_identity=False).profile), "the score alone keeps them apart (titles too different)")
+        for strategy in (ExactMatch(), TolerantMatch()):
+            with self.subTest(strategy.name):
+                decision = self.decide(later, first, strategy=strategy)
+                self.assertEqual((decision.action, decision.event_key), ("link", "ev-970a148e6ca1ed277477"))
+                self.assertIn("same start instant at the same venue and address", decision.reason)
+                self.assertTrue(strategy.matches(known("ev-970a148e6ca1ed277477", takeover()), known("ev-00abe53e2317ec8fe838", later)))
+
+    def test_a_reworded_title_or_another_page_does_not_keep_them_apart(self):
+        first = known("ev-1", takeover())
+        for later in (takeover(LATER, source_url="https://www.eventbrite.com/e/123"), takeover("THE COLLEGE TAKEOVER NIGHT", source_url=None),
+                      takeover("College Takeover Night: Fall Edition at Melómano")):
+            with self.subTest(later.title, url=later.source_url):
+                self.assertEqual(self.decide(later, first).action, "link")
+
+    def test_unrelated_or_differently_numbered_titles_stay_different_events(self):
+        bates = dict(venue="Bates Nut Farm", address="15954 Woods Valley Road, Valley Center, CA", ends_at=START + 3 * 3600)
+        cook_off = known("ev-1", clean(title="8th Annual Guns & Hoses Chili Cook-Off Fundraiser", **bates))
+        self.assertEqual(self.decide(clean(title="Bayou Brothers | Live Music", **bates), cook_off).action, "create",
+                         "two events on one farm at one time (production, 2026-11-08)")
+        for first, other in (("Jazz Night", "Rock Night"), ("Harbor Concert 1", "Harbor Concert 2"), ("Harbor Concert", "Harbor Concert II"),
+                             ("Harbor Concert", "Harbor Concert 2030"), ("Yoga on the Green", "Used Book Sale")):
+            with self.subTest(first=first, other=other):
+                self.assertEqual(self.decide(clean(title=other), known("ev-1", clean(title=first))).action, "create")
+
+    def test_repeated_candidates_link_to_the_first_event_and_the_choice_is_stable(self):
+        processed = run_in_memory(ExactMatch(), [stored("serp_sandiego:a", "serp_sandiego", title="The College Takeover Night: Fall Edition"),
+                                                 stored("serp_sandiego:b", "serp_sandiego", title=LATER),
+                                                 stored("serp_sandiego:c", "serp_sandiego", title="College Takeover Night", url="https://www.eventbrite.com/e/123")])
+        self.assertEqual(len(processed.events), 1, "one canonical event")
+        self.assertEqual({key: role for key, (_, role) in processed.links.items()},
+                         {"serp_sandiego:a": "primary", "serp_sandiego:b": "duplicate", "serp_sandiego:c": "duplicate"})
+        # duplicates made before the identity existed: every later candidate goes to the same one of them, never to a new event
+        twins = (known("ev-b", takeover()), known("ev-a", takeover("The College Takeover Night")))
+        decisions = {self.decide(takeover("College Takeover Night"), *order).event_key for order in (twins, twins[::-1]) for _ in range(3)}
+        self.assertEqual(decisions, {"ev-a"})
+
+    def test_different_venues_or_start_times_stay_different_events(self):
+        first = known("ev-1", takeover())
+        for other in (takeover(LATER, venue_name="Ruffin Road Studios"),                        # another business at the same address
+                      takeover(LATER, venue_name=MELOMANO + " Annex"),                           # never a longer name that starts the same way
+                      takeover(LATER, address="900 Other Street, San Diego, CA 92123"),          # the same name at another address
+                      takeover(LATER, starts_at=START + 60), takeover(LATER, starts_at=START + 1800)):
+            for strategy in (ExactMatch(), TolerantMatch()):
+                with self.subTest(other=(other.venue_name, other.address, other.starts_at - START), strategy=strategy.name):
+                    self.assertEqual(self.decide(other, first, strategy=strategy).action, "create")
+
+    def test_a_shared_building_with_different_suites_or_rooms_is_not_one_venue(self):
+        office = dataclasses.replace(takeover("Open House"), venue_name="Ruffin Business Center")
+        tour = "Open House: Meet the Tenants"   # related to "Open House", which the score alone would not accept
+        first = known("ev-1", office)
+        for other in (dataclasses.replace(office, title=tour, address="4255 Ruffin Rd Suite 300, San Diego, CA 92123"),
+                      dataclasses.replace(office, title=tour, address="4255 Ruffin Rd, Ste 300, San Diego, CA 92123")):
+            with self.subTest(other.address):
+                self.assertEqual(self.decide(other, first).action, "create")
+        in_room = known("ev-3", dataclasses.replace(office, location_text="Room 10"))
+        self.assertEqual(self.decide(dataclasses.replace(office, title=tour, location_text="Room 12"), in_room).action, "create", "another stated room")
+        seminar = known("ev-2", dataclasses.replace(office, venue_name="SEAY Library - Room 4.244", address="2400 Speedway, Austin, TX 78712"))
+        other_room = dataclasses.replace(office, title=tour, venue_name="SEAY Library - Room 2.110", address="2400 Speedway, Austin, TX 78712")
+        self.assertEqual(self.decide(other_room, seminar).action, "create", "a room within the venue's name is part of its identity")
+        same_suite = dataclasses.replace(office, title=tour, address="4255 Ruffin Road, Suite 200, San Diego, CA")
+        self.assertEqual(self.decide(same_suite, first).action, "link", "the same suite written another way, without a postcode")
+
+    def test_incomplete_location_evidence_never_stands_in_for_the_identity(self):
+        first = known("ev-1", takeover())
+        for other in (takeover(LATER, address=None),                                            # the venue name alone
+                      takeover(LATER, address="4255 Ruffin Rd #200"),                            # no town
+                      takeover(LATER, venue_name=None),                                          # the address alone
+                      takeover(LATER, venue_name="Virtual", address=None)):
+            with self.subTest(venue=other.venue_name, address=other.address):
+                self.assertEqual(self.decide(other, first).action, "create")
+        self.assertEqual(self.decide(takeover(LATER), known("ev-2", takeover(address=None))).action, "create", "nor on the existing side")
+
+    def test_conflicting_towns_postcodes_end_times_or_written_locations_keep_them_apart(self):
+        first = known("ev-1", takeover(ends_at=START + 7200, location_text="Main ballroom"))
+        for other in (takeover(LATER, ends_at=START + 7200, location_text="Main ballroom", address="4255 Ruffin Rd #200, La Mesa, CA 92123"),
+                      takeover(LATER, ends_at=START + 7200, location_text="Main ballroom", address="4255 Ruffin Rd #200, San Diego, CA 92124"),
+                      takeover(LATER, ends_at=START + 3600, location_text="Main ballroom"),
+                      takeover(LATER, ends_at=START + 7200, location_text="Back patio")):
+            with self.subTest(address=other.address, ends=other.ends_at - START, text=other.location_text):
+                self.assertEqual(self.decide(other, first).action, "create")
+
+    def test_compatible_addresses_written_differently_are_the_same_place(self):
+        cases = ((("Red Silo Brewing", "Red Silo Brewing, Cookeville, TN"), ("Red Silo Brewing", "118 W 1st St, Cookeville, TN 38501")),
+                 (("Revolver Dance Hall of Cookeville", "565 South Jefferson Avenue, Cookeville, TN 38501"),
+                  ("Revolver Dance Hall of Cookeville", "565 S Jefferson Ave Ste H, Cookeville, TN 38501")),
+                 (("Embarcadero Marina Park North", "400 Kettner Blvd, San Diego, CA 92101"), ("Embarcadero Marina Park North", "400 Kettner Blvd, San Diego, CA")),
+                 (("Bayfront Hall", "100 Bay St, Miami, FL 33101"), ("bayfront  hall", "100 Bay Street, Miami, FL")))
+        for (venue_a, address_a), (venue_b, address_b) in cases:
+            with self.subTest(venue_a, a=address_a, b=address_b):
+                first = known("ev-1", clean(title="Open Mic Night", venue=venue_a, address=address_a))
+                self.assertEqual(self.decide(clean(title="Open Mic Night (All Ages Welcome)", venue=venue_b, address=address_b), first).action, "link")
+
+    def test_the_identity_can_be_switched_off(self):
+        self.assertEqual(self.decide(takeover(LATER), known("ev-1", takeover()), strategy=ExactMatch(venue_time_identity=False)).action, "create")
 
 
 class LookupPagination(unittest.TestCase):

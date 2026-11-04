@@ -48,11 +48,17 @@ CASES = [
     ("saint abbreviation", event(venue="St. Mary's Hall"), event(venue="Saint Mary's Hall"), True, True, True),
     ("description and timezone absent on one side", BASE, event(description="An evening of music by the water.", timezone=None), True, True, True),
     ("end time absent on one side", event(ends_at=START + 7200), event(), True, True, True),
-    ("different pages cited by two sources", event(source_url="https://a.example/e/1"), event(source_url="https://b.example/shows/harbor"), True, False, True),
+    ("different pages cited by two sources", event(source_url="https://a.example/e/1"), event(source_url="https://b.example/shows/harbor"), True, True, True),
     ("address missing, same venue", BASE, event(address=None), True, False, True),
     ("start five minutes apart", BASE, event(starts_at=START + 300), True, False, True),
     ("end times ten minutes apart", event(ends_at=START + 7200), event(ends_at=START + 7800), True, False, True),
-    ("title reworded at the same time and place", event(title="Harbor Concert Series"), event(title="Harbor Concert Series Night"), True, False, True),
+    ("title reworded at the same time and place", event(title="Harbor Concert Series"), event(title="Harbor Concert Series Night"), True, True, True),
+    # the venue/time identity: at the same venue, address and instant, a title whose words all appear in the other is the same event. These three were labelled
+    # different events before it; the identity accepts them (a decision of 2026-11-04: it joins every same-venue duplicate found in production), while
+    # unrelated titles and titles that differ by a number, numeral or year stay apart below.
+    ("a children's edition, same venue and instant", BASE, event(title="Harbor Concert for Kids"), True, True, True),
+    ("a real title ending in Date, same venue and instant", event(title="Blind Date"), event(title="Blind"), True, True, True),
+    ("a real title ending in Date & Time, same venue and instant", event(title="Dinner Date"), event(title="Dinner"), True, True, True),
     ("no place on either side, identical title and start", event(venue=None, address=None), event(venue=None, address=None), True, True, True),
     ("no place, both ends stated and equal", event(ends_at=START + 7200, venue=None, address=None), event(ends_at=START + 7200, venue=None, address=None), True, True, True),
     ("no place, a scraped 'Date:' label on one title", event(title="Christmas on the Farm Arts & Crafts Fair", venue=None, address=None),
@@ -70,7 +76,6 @@ CASES = [
     ("another room of the same hall", event(venue="Hall A"), event(venue="Hall B"), False, False, False),
     ("another venue at the same address", BASE, event(venue="Pier Pavilion"), False, False, False),
     ("a different genre", event(title="Jazz Night"), event(title="Rock Night"), False, False, False),
-    ("a children's edition", BASE, event(title="Harbor Concert for Kids"), False, False, False),
     ("numbered nights", event(title="Harbor Concert 1"), event(title="Harbor Concert 2"), False, False, False),
     ("roman numeral edition", BASE, event(title="Harbor Concert II"), False, False, False),
     ("a year added", BASE, event(title="Harbor Concert 2030"), False, False, False),
@@ -85,9 +90,10 @@ CASES = [
     ("no place, same title and start but other descriptions", event(description="Live music on the harbor stage all evening.", venue=None, address=None),
      event(description="Annual clam chowder tasting with local chefs and judges.", venue=None, address=None), False, False, False),
     ("no place, an end stated on one side only", event(ends_at=START + 7200, venue=None, address=None), event(venue=None, address=None), False, False, False),
-    ("a real title ending in Date", event(title="Blind Date"), event(title="Blind"), False, False, False),
     ("a real title ending in Date, no place", event(title="Save the Date", venue=None, address=None), event(title="Save the", venue=None, address=None), False, False, False),
-    ("a real title ending in Date & Time", event(title="Dinner Date"), event(title="Dinner"), False, False, False),
+    ("a real title ending in Date, venue only", event(title="Blind Date", address=None), event(title="Blind", address=None), False, False, False),
+    ("unrelated titles, one stage and time, other pages", event(title="8th Annual Guns & Hoses Chili Cook-Off Fundraiser", source_url="https://a.example/chili"),
+     event(title="Bayou Brothers | Live Music", source_url="https://a.example/bayou"), False, False, False),
     ("a real title ending in When", event(title="Sally Knows When", venue=None, address=None), event(title="Sally Knows", venue=None, address=None), False, False, False),
     ("no place, men's and women's", event(title="Men's Swimming and Diving at the Harbor Pool", venue=None, address=None),
      event(title="Women's Swimming and Diving at the Harbor Pool", venue=None, address=None), False, False, False),
@@ -120,7 +126,7 @@ class Dataset(unittest.TestCase):
         self.assertEqual(results["exact"][0], [], "the exact strategy merged different events")
         self.assertEqual(results["tolerant"][0], [], "the tolerant strategy merged different events")
         same_events = sum(1 for case in CASES if case[3])
-        self.assertEqual((len(CASES), same_events, len(results["exact"][1]), len(results["tolerant"][1])), (len(CASES), same_events, 5, 0),
+        self.assertEqual((len(CASES), same_events, len(results["exact"][1]), len(results["tolerant"][1])), (len(CASES), same_events, 3, 0),
                          "the exact strategy is the conservative one; the tolerant strategy misses none of the labelled duplicates")
         print(f"\ndedup dataset: {len(CASES)} pairs ({same_events} same, {len(CASES) - same_events} different); false matches exact/tolerant "
               f"{len(results['exact'][0])}/{len(results['tolerant'][0])}; missed exact/tolerant {len(results['exact'][1])}/{len(results['tolerant'][1])}")
@@ -132,8 +138,9 @@ class Dataset(unittest.TestCase):
             self.assertGreater(score.confidence, strategy.profile.threshold)
 
     def test_everything_is_configurable(self):
-        stricter = ExactMatch(threshold=0.9999, min_title=0.99)
+        stricter = ExactMatch(threshold=0.9999, min_title=0.99, venue_time_title_min=0.99)
         self.assertFalse(stricter.matches(BASE, event(title="Harbor Concrt")))
+        self.assertFalse(ExactMatch(venue_time_identity=False).matches(BASE, event(title="Harbor Concert Series")), "the venue/time identity can be switched off")
         looser = ExactMatch(min_title=0.5, threshold=0.5, min_coverage=0.1)
         self.assertFalse(looser.matches(BASE, event(title="Jazz Night")), "a loose threshold still cannot override the place and number vetoes' companions: titles below the floor")
         self.assertTrue(ExactMatch(start_tolerance_s=600).matches(BASE, event(starts_at=START + 300)))
@@ -357,11 +364,18 @@ class Decisions(unittest.TestCase):
             self.assertEqual((decision.action, decision.event_key), ("link", "ev-b"), strategy.name)
 
     def test_an_ambiguous_match_is_never_linked(self):
-        twin_a, twin_b = known("ev-a", event()), known("ev-b", event())
+        twin_a, twin_b = known("ev-a", event(venue=None)), known("ev-b", event(venue=None))   # no venue named: outside the venue/time identity
         for strategy in (ExactMatch(), TolerantMatch()):
-            decision, _ = self.decide(strategy, event(), twin_a, twin_b)
+            decision, _ = self.decide(strategy, event(venue=None), twin_a, twin_b)
             self.assertEqual(decision.action, "create", strategy.name)
             self.assertIn("ambiguous", decision.reason)
+
+    def test_duplicates_at_one_venue_and_instant_take_a_later_candidate_and_never_make_another(self):
+        twin_a, twin_b = known("ev-a", event()), known("ev-b", event())
+        for strategy in (ExactMatch(), TolerantMatch()):
+            for order in ((twin_a, twin_b), (twin_b, twin_a)):
+                decision, _ = self.decide(strategy, event(), *order)
+                self.assertEqual((decision.action, decision.event_key), ("link", "ev-a"), strategy.name)
 
     def test_a_clear_winner_over_a_much_weaker_candidate_is_linked(self):
         weak = known("ev-a", event(title="Harbor Concert Series", description="Different text entirely about boats and tides."))
