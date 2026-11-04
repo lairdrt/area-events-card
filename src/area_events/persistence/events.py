@@ -261,10 +261,18 @@ def _maintenance_connection(path, mode):
 
 
 class DuplicateMaintenance:
-    """Read-only duplicate discovery and transactional reconciliation through the injected deduplicator."""
+    """Read-only duplicate discovery and transactional reconciliation through the injected deduplicator.
+
+    A group is eligible when it holds two or three events and the matcher accepts EVERY pair of them, both ways round (a chain of matches, A~B and B~C without A~C,
+    is no proof that all describe one event), and every event has candidate ownership, exactly one primary candidate and a complete revision history. Reconciling a
+    group keeps the event created first (lowest event_id) with its key, its facts, its extraction and its primary candidate: a later duplicate's description never
+    overwrites them. Each other event, in creation order, is folded in: its candidates become duplicates of the survivor, its extractions follow, its revisions are
+    appended after the survivor's (renumbered, never rewritten), one revision records `reconciled_from`, the event row is removed and the change log records the
+    survivor's upsert and the removal."""
     MAX_SCAN_EVENTS = 20000
     MAX_ANCHOR_BUCKET = 50
     MAX_PAIR_COMPARISONS = 50000
+    MAX_GROUP = 3
 
     def __init__(self, path, matcher, schema_version, clock=time.time):
         if not callable(getattr(matcher, "matches", None)) or not callable(getattr(matcher, "anchors", None)):
@@ -310,10 +318,36 @@ class DuplicateMaintenance:
                 pending.extend(links[item] - component)
             seen.update(component)
             group = tuple(by_id[event_id] for event_id in sorted(component))
+            reason = self._group_problem(group)
             groups.append({"event_keys": tuple(row["event_key"] for row in group), "event_ids": tuple(row["event_id"] for row in group),
-                           "eligible": len(group) == 2, "reason": "" if len(group) == 2 else "ambiguous match component has more than two events",
-                           "events": tuple(dict(row) for row in group)})
+                           "eligible": not reason, "reason": reason, "events": tuple(dict(row) for row in group)})
         return tuple(sorted(groups, key=lambda group: group["event_ids"]))
+
+    def _group_problem(self, rows):
+        """Why these events are not one unambiguous duplicate group by the matcher's own answers, or "" when they are."""
+        if len(rows) > self.MAX_GROUP:
+            return f"ambiguous match component has more than {self.MAX_GROUP} events"
+        facts = [self._facts(row) for row in rows]
+        if not all(self.matcher.matches(facts[i], facts[j]) and self.matcher.matches(facts[j], facts[i]) for i in range(len(facts)) for j in range(i + 1, len(facts))):
+            return "ambiguous: not every event matches every other (a chain of matches is no proof of one event)"
+        return ""
+
+    @staticmethod
+    def _ownership(tx, rows):
+        """{event_id: (candidate links, revision rows)} of each event, or DuplicateMaintenanceError when its ownership or history cannot be reconciled safely."""
+        owned = {}
+        for row in rows:
+            links = tx.execute("""SELECT ec.candidate_id, ec.role, c.candidate_key FROM event_candidates ec JOIN candidates c USING (candidate_id)
+                                  WHERE ec.event_id=? ORDER BY ec.candidate_id""", (row["event_id"],)).fetchall()
+            if not links:
+                raise DuplicateMaintenanceError("every event must have candidate ownership; refusing ambiguous reconciliation")
+            if sum(link["role"] == "primary" for link in links) != 1:
+                raise DuplicateMaintenanceError("each event must have exactly one primary candidate; refusing ambiguous reconciliation")
+            revisions = tx.execute("SELECT revision,extraction_id FROM event_revisions WHERE event_id=? ORDER BY revision", (row["event_id"],)).fetchall()
+            if [revision["revision"] for revision in revisions] != list(range(1, row["revision"] + 1)):
+                raise DuplicateMaintenanceError("event revision history is incomplete or inconsistent; refusing to discard history")
+            owned[row["event_id"]] = (links, revisions)
+        return owned
 
     def _scan(self, connection, days=180, limit=100):
         if days < 1 or days > 730 or limit < 1 or limit > 1000:
@@ -329,6 +363,11 @@ class DuplicateMaintenance:
             placeholders = ",".join("?" for _ in ids)
             group["candidate_associations"] = connection.execute(
                 f"SELECT COUNT(*) FROM event_candidates WHERE event_id IN ({placeholders})", ids).fetchone()[0]
+            if group["eligible"]:
+                try:
+                    self._ownership(connection, group["events"])
+                except DuplicateMaintenanceError as problem:
+                    group["eligible"], group["reason"] = False, str(problem)
         return groups[:limit]
 
     def scan(self, days=180, limit=100):
@@ -349,21 +388,26 @@ class DuplicateMaintenance:
                                            "extraction_id", "first_extracted_at", "updated_at")}
 
     def clean(self, selected_groups, days=180, limit=10):
-        selected = tuple(tuple(sorted(set(keys))) for keys in selected_groups)
+        requested = tuple(tuple(keys) for keys in selected_groups)
+        selected = tuple(tuple(sorted(set(keys))) for keys in requested)
         if not selected or len(selected) > limit or limit < 1 or limit > 100:
             raise DuplicateMaintenanceError("select 1..limit duplicate groups explicitly")
-        if any(len(group) != 2 or not all(group) for group in selected) or len(set(selected)) != len(selected):
-            raise DuplicateMaintenanceError("each selected group must contain two unique event keys")
+        if any(not 2 <= len(group) <= self.MAX_GROUP or len(group) != len(keys) or not all(group) for group, keys in zip(selected, requested)):
+            raise DuplicateMaintenanceError(f"each selected group must contain two to {self.MAX_GROUP} unique event keys")
+        if len({key for group in selected for key in group}) != sum(len(group) for group in selected):
+            raise DuplicateMaintenanceError("an event key appears in more than one selected group")
         connection = _maintenance_connection(self.path, "rw")
         try:
             connection.execute("BEGIN IMMEDIATE")
             if connection.execute("PRAGMA user_version").fetchone()[0] != self.schema_version:
                 raise DuplicateMaintenanceError("database schema does not match this maintenance tool")
-            groups = self._scan(connection, days, 1000)
-            available = {tuple(sorted(group["event_keys"])): group for group in groups if group["eligible"]}
-            if any(group not in available for group in selected):
+            groups = {tuple(sorted(group["event_keys"])): group for group in self._scan(connection, days, 1000)}
+            if any(keys not in groups for keys in selected):
                 raise DuplicateMaintenanceError("a selected group is no longer an unambiguous duplicate; transaction refused")
-            changed = [self._reconcile(connection, available[keys]["events"]) for keys in selected]
+            refused = next((groups[keys] for keys in selected if not groups[keys]["eligible"]), None)
+            if refused is not None:
+                raise DuplicateMaintenanceError(f"a selected group is not eligible ({refused['reason']}); transaction refused")
+            changed = [self._reconcile(connection, groups[keys]["events"]) for keys in selected]
             violations = connection.execute("PRAGMA foreign_key_check").fetchall()
             if violations:
                 raise DuplicateMaintenanceError(f"foreign-key integrity failed ({len(violations)} violations)")
@@ -382,55 +426,46 @@ class DuplicateMaintenance:
         keys = tuple(row["event_key"] for row in snapshots)
         placeholders = ",".join("?" for _ in keys)
         rows = tx.execute(f"SELECT * FROM events WHERE event_key IN ({placeholders}) ORDER BY event_id", keys).fetchall()
-        if len(rows) != 2 or {row["event_key"] for row in rows} != set(keys):
+        if len(rows) != len(keys) or {row["event_key"] for row in rows} != set(keys):
             raise DuplicateMaintenanceError("selected event identity changed during cleanup")
         current, prior = {row["event_key"]: row for row in rows}, {row["event_key"]: row for row in snapshots}
         if any(self._snapshot(current[key]) != self._snapshot(prior[key]) for key in keys):
             raise DuplicateMaintenanceError("selected event facts changed during cleanup")
-        if not self.matcher.matches(self._facts(current[keys[0]]), self._facts(current[keys[1]])):
-            raise DuplicateMaintenanceError("selected events no longer match")
+        problem = self._group_problem(rows)
+        if problem:
+            raise DuplicateMaintenanceError(f"selected events no longer match ({problem})")
+        owned = self._ownership(tx, rows)
         survivor = min(rows, key=lambda row: self._facts(row).created_order)   # the first created, as normal deduplication links to
-        loser = next(row for row in rows if row["event_id"] != survivor["event_id"])
-        latest = max(rows, key=lambda row: (row["updated_at"], row["event_id"]))
-        candidate_rows = tx.execute("SELECT candidate_id,role,linked_at FROM event_candidates WHERE event_id=? ORDER BY candidate_id", (survivor["event_id"],)).fetchall()
-        loser_candidates = tx.execute("SELECT candidate_id,role,linked_at FROM event_candidates WHERE event_id=? ORDER BY candidate_id", (loser["event_id"],)).fetchall()
-        if not candidate_rows or not loser_candidates:
-            raise DuplicateMaintenanceError("both events must have candidate ownership; refusing ambiguous reconciliation")
-        if any(sum(link["role"] == "primary" for link in links) != 1 for links in (candidate_rows, loser_candidates)):
-            raise DuplicateMaintenanceError("each event must have exactly one primary candidate; refusing ambiguous reconciliation")
-        revision_rows = tx.execute("SELECT rowid,event_id,revision,extraction_id,changed_json,created_at FROM event_revisions WHERE event_id IN (?,?) ORDER BY created_at,event_id,revision",
-                                   (survivor["event_id"], loser["event_id"])).fetchall()
-        revisions_by_event = {event["event_id"]: [item["revision"] for item in revision_rows if item["event_id"] == event["event_id"]] for event in rows}
-        if any(sorted(revisions_by_event[event["event_id"]]) != list(range(1, event["revision"] + 1)) for event in rows):
-            raise DuplicateMaintenanceError("event revision history is incomplete or inconsistent; refusing to discard history")
-        now = int(self.clock())
-        for link in loser_candidates:
-            tx.execute("UPDATE event_candidates SET event_id=? WHERE candidate_id=?", (survivor["event_id"], link["candidate_id"]))
-        all_links = tx.execute("SELECT candidate_id,role FROM event_candidates WHERE event_id=? ORDER BY candidate_id", (survivor["event_id"],)).fetchall()
-        primaries = [link["candidate_id"] for link in all_links if link["role"] == "primary"]
-        primary = primaries[0] if primaries else all_links[0]["candidate_id"]
-        tx.execute("UPDATE event_candidates SET role='duplicate' WHERE event_id=?", (survivor["event_id"],))
-        tx.execute("UPDATE event_candidates SET role='primary' WHERE event_id=? AND candidate_id=?", (survivor["event_id"], primary))
-        tx.execute("UPDATE extractions SET event_id=? WHERE event_id=?", (survivor["event_id"], loser["event_id"]))
-        for index, revision in enumerate(revision_rows, 1):
-            tx.execute("UPDATE event_revisions SET revision=? WHERE rowid=?", (-index, revision["rowid"]))
-        for revision_number, revision in enumerate(revision_rows, 1):
-            tx.execute("UPDATE event_revisions SET event_id=?, revision=? WHERE rowid=?", (survivor["event_id"], revision_number, revision["rowid"]))
-        fields = ("title", "description", "starts_at", "ends_at", "timezone", "venue_name", "location_text", "address", "location_status",
-                  "source_url", "status", "missing_json")
-        changed = {field: [survivor[field], latest[field]] for field in fields if survivor[field] != latest[field]}
-        revision = len(revision_rows) + 1
-        changed["reconciled_from"] = {"event_key": loser["event_key"], "event_id": loser["event_id"], "revision": loser["revision"]}
-        assignments = ",".join(f"{field}=?" for field in fields)
-        tx.execute(f"UPDATE events SET {assignments},revision=?,extraction_id=?,first_extracted_at=?,updated_at=? WHERE event_id=?",
-                   tuple(latest[field] for field in fields) + (revision, latest["extraction_id"], min(row["first_extracted_at"] for row in rows), now, survivor["event_id"]))
-        tx.execute("INSERT INTO event_revisions(event_id,revision,extraction_id,changed_json,created_at) VALUES(?,?,?,?,?)",
-                   (survivor["event_id"], revision, latest["extraction_id"] or revision_rows[-1]["extraction_id"],
-                    json.dumps(changed, ensure_ascii=False, sort_keys=True), now))
-        tx.execute("DELETE FROM events WHERE event_id=?", (loser["event_id"],))
-        digest = hashlib.sha256(json.dumps(changed, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-        tx.execute("INSERT INTO changes(entity,entity_key,op,kind,payload_hash,created_at) VALUES('event',?,'upsert','event.reconciled',?,?)", (survivor["event_key"], digest, now))
-        tx.execute("INSERT INTO changes(entity,entity_key,op,kind,payload_hash,created_at) VALUES('event',?,'delete','event.reconciled',?,?)", (loser["event_key"], digest, now))
-        return {"survivor": survivor["event_key"], "removed": loser["event_key"], "candidates_preserved": len(all_links),
-                "revisions_preserved": len(revision_rows)}
+        survivor_id, revision = survivor["event_id"], survivor["revision"]
+        extraction = survivor["extraction_id"] or owned[survivor_id][1][-1]["extraction_id"]
+        now, removed, moved = int(self.clock()), [], 0
+        for loser in (row for row in rows if row["event_id"] != survivor_id):   # in creation order
+            links, revisions = owned[loser["event_id"]]
+            appended = []
+            for number in (item["revision"] for item in revisions):             # after the survivor's own revisions, which keep their numbers
+                tx.execute("UPDATE event_revisions SET event_id=?, revision=? WHERE event_id=? AND revision=?", (survivor_id, revision + number, loser["event_id"], number))
+                appended.append(revision + number)
+            tx.execute("UPDATE extractions SET event_id=? WHERE event_id=?", (survivor_id, loser["event_id"]))
+            tx.execute("UPDATE event_candidates SET event_id=?, role='duplicate' WHERE event_id=?", (survivor_id, loser["event_id"]))
+            revision += len(appended) + 1
+            changed = {"reconciled_from": {"event_key": loser["event_key"], "event_id": loser["event_id"], "revision": loser["revision"], "title": loser["title"],
+                                           "appended_revisions": appended, "candidates": [link["candidate_key"] for link in links]}}
+            text = json.dumps(changed, ensure_ascii=False, sort_keys=True)
+            tx.execute("INSERT INTO event_revisions(event_id,revision,extraction_id,changed_json,created_at) VALUES(?,?,?,?,?)", (survivor_id, revision, extraction, text, now))
+            if tx.execute("SELECT COUNT(*) FROM event_candidates WHERE event_id=?", (loser["event_id"],)).fetchone()[0]:
+                raise DuplicateMaintenanceError("candidate associations remained on a removed event")
+            tx.execute("DELETE FROM events WHERE event_id=?", (loser["event_id"],))
+            digest = hashlib.sha256(text.encode()).hexdigest()
+            tx.execute("INSERT INTO changes(entity,entity_key,op,kind,payload_hash,created_at) VALUES('event',?,'upsert','event.reconciled',?,?)", (survivor["event_key"], digest, now))
+            tx.execute("INSERT INTO changes(entity,entity_key,op,kind,payload_hash,created_at) VALUES('event',?,'delete','event.reconciled',?,?)", (loser["event_key"], digest, now))
+            removed.append(loser["event_key"])
+            moved += len(revisions)
+        # The survivor keeps its facts and the extraction they came from; only its revision, its first extraction time and its update time move.
+        tx.execute("UPDATE events SET revision=?, first_extracted_at=?, updated_at=? WHERE event_id=?",
+                   (revision, min(row["first_extracted_at"] for row in rows), now, survivor_id))
+        links = tx.execute("SELECT role FROM event_candidates WHERE event_id=?", (survivor_id,)).fetchall()
+        if [link["role"] for link in links].count("primary") != 1:
+            raise DuplicateMaintenanceError("the survivor must keep exactly one primary candidate")
+        return {"survivor": survivor["event_key"], "removed": tuple(removed), "candidates_preserved": len(links),
+                "revisions_preserved": len(owned[survivor_id][1]) + moved, "revision": revision}
 

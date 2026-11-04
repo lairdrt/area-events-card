@@ -498,8 +498,8 @@ def cmd_source_cleanup(args):
 
 def _duplicate_group(value):
     keys = tuple(part.strip() for part in value.split(",") if part.strip())
-    if len(keys) != 2 or len(set(keys)) != 2:
-        raise argparse.ArgumentTypeError("--group must contain exactly two distinct event keys separated by a comma")
+    if not 2 <= len(keys) <= 3 or len(set(keys)) != len(keys):
+        raise argparse.ArgumentTypeError("--group must contain two or three distinct event keys separated by commas")
     return keys
 
 
@@ -510,7 +510,7 @@ def cmd_duplicates(args):
         selected_groups = getattr(args, "group", None)
         if applying:
             if not getattr(args, "backup_dir", None) or not selected_groups or args.limit is None:
-                print("--apply requires --backup-dir, --limit, and one or more explicit --group KEY,KEY selections", file=sys.stderr)
+                print("--apply requires --backup-dir, --limit, and one or more explicit --group KEY,KEY[,KEY] selections", file=sys.stderr)
                 return 2
             app_root = os.environ.get("AREA_EVENTS_APP_ROOT", os.path.abspath(os.path.join(os.path.dirname(args.db), os.pardir, os.pardir)))
             backup = create_verified_database_backup(args.db, args.backup_dir, app_root)
@@ -518,7 +518,7 @@ def cmd_duplicates(args):
             results = maintenance.clean(selected_groups, days=args.days, limit=args.limit)
             print(f"reconciled {len(results)} duplicate group(s)")
             for result in results:
-                print(f"survivor {result['survivor']}; removed {result['removed']}; candidates {result['candidates_preserved']}; revisions {result['revisions_preserved']}")
+                print(f"survivor {result['survivor']}; removed {', '.join(result['removed'])}; candidates {result['candidates_preserved']}; revisions {result['revisions_preserved']}")
             remaining = maintenance.scan(days=args.days, limit=1000)
             print(f"candidate associations retained: {sum(result['candidates_preserved'] for result in results)}; pruned: 0")
             print(f"remaining duplicate groups: {len(remaining)}")
@@ -533,7 +533,7 @@ def cmd_duplicates(args):
         print(f"{len(groups)} likely duplicate group(s), read-only; horizon {args.days} days")
         for group in groups:
             if group["eligible"]:
-                headline = f"eligible; keep {group['event_keys'][0]}; remove {group['event_keys'][1]}"
+                headline = f"eligible; keep {group['event_keys'][0]}; remove {', '.join(group['event_keys'][1:])}"
             else:
                 headline = "ambiguous; no automatic survivor; events " + ", ".join(group["event_keys"])
             print(headline + f"; candidate associations {group['candidate_associations']}" +
@@ -678,7 +678,7 @@ def main(argv=None):
     clean_duplicates.add_argument("--deduplication", choices=sorted(DEDUPLICATORS), default=argparse.SUPPRESS)
     clean_duplicates.add_argument("--days", type=int, default=180)
     clean_duplicates.add_argument("--limit", type=int, help="maximum selected groups; required with --apply")
-    clean_duplicates.add_argument("--group", type=_duplicate_group, action="append", help="explicit pair of event keys, repeat per group")
+    clean_duplicates.add_argument("--group", type=_duplicate_group, action="append", help="explicit group of two or three event keys, repeat per group")
     clean_duplicates.add_argument("--apply", action="store_true", help="requires --backup-dir and explicit --group selections")
     clean_duplicates.add_argument("--backup-dir", help="required for --apply; outside the active application tree")
     reviewed = duplicate_actions.add_parser("reconcile", help="preview by default; reconcile the explicitly listed, individually proven event pairs of a reviewed manifest atomically")
