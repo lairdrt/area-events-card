@@ -7,8 +7,8 @@ tolerance, conflicting source pages (when configured), a title, address or venue
 ("Night 1" and "Night 2", "500" and "501 Harbor Drive"). Every weight, tolerance and threshold lives in `MatchProfile`, so a strategy is only a profile.
 
 One identity stands apart from the score (`venue_time_identity`): the exact same start instant at the same specific physical venue, under related titles, is one
-event whichever page either cites. Both must name the venue completely alike and both must state an address with a town that agrees, the same street line and the
-same suite or room (a detail stated on one side only is no proof); a conflicting postcode, town, written location or end time (outside the profile's tolerance)
+event whichever page either cites. Both must name the venue completely alike and both must state an address with a town that agrees, the same street line (a
+venue and a town alone are no street) and the same suite or room (a detail stated on one side only is no proof); a conflicting postcode, town, written location or end time (outside the profile's tolerance)
 keeps them apart, and so does a missing address on either side. Related titles are the same words (reordered, recased, a plural), or one title followed by a
 separated subtitle the other omits ("Takeover Night: Fall Edition" / "... (Melómano x UCSD x SDSU) 11/6"), or one with "at <the venue>" appended. A date or weekday
 in a title that is the event's own date is no difference; any other differing number, edition ("II"), number word, weekday or audience qualifier ("for Kids") is,
@@ -138,8 +138,9 @@ def _address_parts(address, venue):
 
 
 def _same_physical_place(left, right):
-    """Do both events name the same specific venue completely alike, at addresses that agree (see the module's documentation)? Incomplete evidence is no: a street
-    line, suite or room stated on one side only does not show that the other means the same one. A postcode, or a state, stated on one side only is no conflict."""
+    """Do both events name the same specific venue completely alike, at addresses that agree (see the module's documentation)? Incomplete evidence is no: both must
+    state a street line (a house number and street; never inferred from the venue's name or the town) and it must be the same, and a suite or room stated on one
+    side only does not show that the other means the same one. A postcode, or a state, stated on one side only is no conflict."""
     venue = _place(getattr(left, "venue_name", None))
     if not venue or venue != _place(getattr(right, "venue_name", None)) or not left.address or not right.address:
         return False
@@ -151,7 +152,7 @@ def _same_physical_place(left, right):
     b_units |= {unit.lower().rstrip(".") for unit in UNIT.findall(getattr(right, "location_text", None) or "")}
     if not a_town or not b_town or not (a_town <= b_town or b_town <= a_town):
         return False
-    return a_street == b_street and a_units == b_units and not (a_codes and b_codes and a_codes != b_codes)
+    return bool(a_street) and a_street == b_street and a_units == b_units and not (a_codes and b_codes and a_codes != b_codes)
 
 
 def _undated(title, day):

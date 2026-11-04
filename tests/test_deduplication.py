@@ -330,11 +330,26 @@ class VenueTimeIdentity(unittest.TestCase):
                  (("Melómano", "4255 Ruffin Road #200, San Diego, CA 92123"), ("MELÓMANO", "4255  ruffin rd,  suite 200, San Diego, CA")),
                  (("Embarcadero Marina Park North", "400 Kettner Blvd, San Diego, CA 92101"), ("Embarcadero Marina Park North", "400 Kettner Blvd, San Diego, CA")),
                  (("Bayfront Hall", "100 Bay St, Miami, FL 33101"), ("bayfront  hall", "100 Bay Street, Miami, FL")),
-                 (("Red Silo Brewing", "Red Silo Brewing, Cookeville, TN"), ("Red Silo Brewing", "Cookeville, TN 38501")))   # neither states a street
+                 (("Red Silo Brewing", "118 W 1st St, Cookeville, TN"), ("Red Silo Brewing", "118 W 1st St, Cookeville, TN")),
+                 (("Red Silo Brewing", "118 West 1st Street, Cookeville, TN"), ("Red Silo Brewing", "118 W 1st St, Cookeville, TN 38501")),
+                 (("Bates Nut Farm", "15954 Woods Valley Road, Valley Center, CA"), ("Bates Nut Farm", "15954 Woods Valley Rd, Valley Center, CA 92082")))
         for (venue_a, address_a), (venue_b, address_b) in cases:
             with self.subTest(venue_a, a=address_a, b=address_b):
                 first = known("ev-1", clean(title="Open Mic Night", venue=venue_a, address=address_a))
                 self.assertEqual(self.decide(clean(title="Open Mic Night: Hosted by Sam", venue=venue_b, address=address_b), first).action, "link")
+
+    def test_a_venue_and_town_without_a_street_on_either_side_is_no_proof_of_one_place(self):
+        cases = ((("Red Silo Brewing", "Red Silo Brewing, Cookeville, TN"), ("Red Silo Brewing", "Cookeville, TN 38501")),   # production listings, 2026-11-04
+                 (("Red Silo Brewing", "Red Silo Brewing, Cookeville, TN"), ("Red Silo Brewing", "Red Silo Brewing, Cookeville, TN")),
+                 (("Red Silo Brewing", "Cookeville, TN"), ("red silo  brewing", "Cookeville, TN")),
+                 (("Red Silo Brewing", "Ste H, Cookeville, TN"), ("Red Silo Brewing", "Suite H, Cookeville, TN")))   # a suite is no street
+        for (venue_a, address_a), (venue_b, address_b) in cases:
+            first, other = clean(title="Open Mic Night", venue=venue_a, address=address_a), clean(title="Open Mic Night: Hosted by Sam", venue=venue_b, address=address_b)
+            with self.subTest(a=address_a, b=address_b):
+                self.assertFalse(same_event_facts(first, other, ExactMatch().profile))
+                for strategy in (ExactMatch(), TolerantMatch()):
+                    self.assertEqual(self.decide(other, known("ev-1", first), strategy=strategy).action, "create")
+                    self.assertEqual(self.decide(first, known("ev-1", other), strategy=strategy).action, "create")
 
     def test_a_street_or_suite_stated_on_one_side_only_is_no_proof_of_one_place(self):
         cases = ((("Red Silo Brewing", "Red Silo Brewing, Cookeville, TN"), ("Red Silo Brewing", "118 W 1st St, Cookeville, TN 38501")),
