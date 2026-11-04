@@ -8,8 +8,10 @@ import unittest
 from contextlib import closing
 
 from area_events import app as app_module
+from area_events.contracts.models import CleanEvent
+from area_events.deduplication import Incoming
 from area_events.deduplication.exact import ExactMatch
-from area_events.persistence.events import DuplicateMaintenanceError
+from area_events.persistence.events import DuplicateMaintenanceError, EventRepository, _Lookup, _maintenance_connection
 from tests.records import epoch
 from tests.test_discovery_service import Clock, FakeClient
 
@@ -111,6 +113,39 @@ class DuplicateMaintenanceTests(unittest.TestCase):
         groups = [group for group in self.maintenance.scan() if group["events"][0]["starts_at"] == start]
         self.assertEqual([(group["event_keys"], group["eligible"]) for group in groups], [(("ev-970a148e6ca1ed277477", "ev-00abe53e2317ec8fe838"), True)])
         self.assertEqual(os.stat(self.db_path).st_mtime_ns, before, "the scan only reads")
+
+    def test_normal_deduplication_and_maintenance_keep_the_same_first_created_event(self):
+        """Three listings of one event at one venue and instant, created in this order: the first has the last key and the least similar title. A later
+        candidate links to it; the scan pairs the first two (the pair the strategy's matcher accepts) and the cleanup keeps it as the survivor."""
+        start = epoch("2026-11-06T20:00:00-08:00")
+        venue, address = "Melómano Entertainment - Salsa & Bachata Lessons", "4255 Ruffin Rd #200, San Diego, CA 92123"
+        later = "The College Takeover Night: Fall Edition (Melómano x UCSD x SDSU) 11/6"
+        with closing(sqlite3.connect(self.db_path)) as db:
+            db.execute("PRAGMA foreign_keys=ON")
+            source = db.execute("SELECT source_id FROM sources WHERE source_key='sandiego_gov'").fetchone()[0]
+            for index, (event_key, title) in enumerate((("ev-zz-first-created", "The College Takeover Night"), ("ev-aa-second-created", later)), 10):
+                candidate = db.execute("""INSERT INTO candidates(candidate_key,source_id,method,extractor,title,starts_at,payload_json,payload_hash,first_seen_at,last_seen_at,
+                    updated_at) VALUES(?,?,'adapter','test',?,?,'{}',?,1,1,1) RETURNING candidate_id""", (f"takeover:{index}", source, title, start, f"{index:064}")).fetchone()[0]
+                extraction = db.execute("""INSERT INTO extractions(candidate_id,event_id,candidate_payload_hash,extractor,version,status,result_json,result_hash,created_at)
+                    VALUES(?,NULL,?,'test',1,'complete','{}',?,?) RETURNING extraction_id""", (candidate, f"{index:064}", f"{index:064}", index)).fetchone()[0]
+                event_id = db.execute("""INSERT INTO events(event_key,title,starts_at,timezone,venue_name,address,location_status,status,missing_json,revision,extraction_id,
+                    first_extracted_at,updated_at) VALUES(?,?,?,'America/Los_Angeles',?,?,'address','partial','[]',1,?,?,?) RETURNING event_id""",
+                    (event_key, title, start, venue, address, extraction, index, index)).fetchone()[0]
+                db.execute("UPDATE extractions SET event_id=? WHERE extraction_id=?", (event_id, extraction))
+                db.execute("INSERT INTO event_candidates(candidate_id,event_id,role,linked_at) VALUES(?,?,'primary',?)", (candidate, event_id, index))
+                db.execute("INSERT INTO event_revisions(event_id,revision,extraction_id,changed_json,created_at) VALUES(?,1,?,'{}',?)", (event_id, extraction, index))
+            db.commit()
+        incoming = CleanEvent(later, start, None, "America/Los_Angeles", None, venue, None, address, None, "address", (), "partial")
+        connection = _maintenance_connection(self.db_path, "ro")
+        try:
+            decision = ExactMatch().decide(Incoming("takeover:new", incoming, None), _Lookup(connection, EventRepository()))
+        finally:
+            connection.close()
+        self.assertEqual((decision.action, decision.event_key), ("link", "ev-zz-first-created"), "the first created, not the identical title nor the first key")
+        [group] = [group for group in self.maintenance.scan() if group["events"][0]["starts_at"] == start]
+        self.assertEqual((group["event_keys"], group["eligible"]), (("ev-zz-first-created", "ev-aa-second-created"), True))
+        [result] = self.maintenance.clean([group["event_keys"]])
+        self.assertEqual((result["survivor"], result["removed"]), ("ev-zz-first-created", "ev-aa-second-created"))
 
     def test_clean_preserves_candidates_sources_links_and_revision_history(self):
         before = self._counts()

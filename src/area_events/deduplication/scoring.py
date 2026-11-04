@@ -7,10 +7,12 @@ tolerance, conflicting source pages (when configured), a title, address or venue
 ("Night 1" and "Night 2", "500" and "501 Harbor Drive"). Every weight, tolerance and threshold lives in `MatchProfile`, so a strategy is only a profile.
 
 One identity stands apart from the score (`venue_time_identity`): the exact same start instant at the same specific physical venue, under related titles, is one
-event whichever page either cites. Both must name the venue completely alike and both must state an address with a town that agrees; a conflicting street, suite,
-room, postcode, town, written location or end time (outside the profile's tolerance) keeps them apart, and so does a missing address on either side. Related titles
-are reworded, shortened or extended forms of each other (one's words, nearly all, among the other's: `venue_time_title_min`), never two titles that differ by a
-number, a roman numeral or a year, and never two unrelated titles: two different events can share a stage and a start ("Chili Cook-Off" and "Live Music").
+event whichever page either cites. Both must name the venue completely alike and both must state an address with a town that agrees, the same street line and the
+same suite or room (a detail stated on one side only is no proof); a conflicting postcode, town, written location or end time (outside the profile's tolerance)
+keeps them apart, and so does a missing address on either side. Related titles are the same words (reordered, recased, a plural), or one title followed by a
+separated subtitle the other omits ("Takeover Night: Fall Edition" / "... (Melómano x UCSD x SDSU) 11/6"), or one with "at <the venue>" appended. A date or weekday
+in a title that is the event's own date is no difference; any other differing number, edition ("II"), number word, weekday or audience qualifier ("for Kids") is,
+and so is a word added without a separator ("Blind" / "Blind Date"): two different events can share a stage and a start ("Chili Cook-Off" and "Live Music").
 
 Pure: no database, no persistence, no source knowledge.
 """
@@ -27,7 +29,20 @@ ABBREVIATIONS = {"street": "st", "avenue": "ave", "av": "ave", "drive": "dr", "r
 NUMBER = re.compile(r"\d+")
 UNIT = re.compile(r"(?:#\s*|\b(?:suite|ste|unit|room|rm|apt|apartment|bldg|building|floor)\b\.?\s*#?\s*)([a-z0-9][a-z0-9.-]*)", re.I)   # not "FL": Florida
 POSTCODE = re.compile(r"\b\d{5}(?:-\d{4})?\b")
-YEAR = re.compile(r"\b(?:19|20)\d\d\b")
+SUBTITLE = re.compile(r"\s*(?::|\||\(|\)|\[|\]|\s[-–—]\s)\s*")   # what sets a subtitle apart; never the hyphen inside a word ("Cook-Off")
+NUMERIC_DATE = re.compile(r"(?<![\d/])(\d{1,2})/(\d{1,2})(?:/(\d{4}|\d{2}))?(?![\d/])")
+NAMED_DATE = re.compile(r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?"
+                        r"\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(\d{4})\b)?", re.I)
+WEEKDAY = re.compile(r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
+MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+WEEKDAYS = frozenset(("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"))
+FILLER = frozenset(("the", "a", "an", "and"))
+NUMBER_WORDS = frozenset(("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+                          "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"))
+# Words that name whom, or which performance, an event is for: an event "for Kids" or a "Matinee" is not the event without them.
+AUDIENCE = frozenset(("kids", "kid", "children", "childrens", "child", "family", "families", "teen", "teens", "youth", "junior", "juniors", "adult", "adults",
+                      "senior", "seniors", "toddler", "toddlers", "baby", "babies", "ages", "beginner", "beginners", "intermediate", "advanced", "vip",
+                      "member", "members", "student", "students", "matinee", "preview", "rehearsal", "sensory"))
 VENUE_TIME = "the same start instant at the same venue and address, under related titles"
 GENERIC_PATH = frozenset(("", "event", "events", "calendar", "calendars", "listing", "listings", "home", "index"))
 TRACKING = frozenset(("utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid"))
@@ -67,7 +82,6 @@ class MatchProfile:
     no_place_title_min: float = 0.0       # 0 = off. When NEITHER event states any place, the least title similarity that still counts as the same event, provided
     no_place_description_min: float = 0.80   # the start (and end) are exactly equal and, when both state a description, the descriptions agree to this degree
     venue_time_identity: bool = True      # the same start instant at the same specific venue and address, under related titles, is one event, whatever the pages say
-    venue_time_title_min: float = 0.90    # how nearly one title's words must all be among the other's for the venue/time identity (RapidFuzz token set ratio)
 
     def with_(self, **changes):
         return replace(self, **changes)
@@ -124,7 +138,8 @@ def _address_parts(address, venue):
 
 
 def _same_physical_place(left, right):
-    """Do both events name the same specific venue completely alike, at addresses that agree (see the module's documentation)? Incomplete evidence is no."""
+    """Do both events name the same specific venue completely alike, at addresses that agree (see the module's documentation)? Incomplete evidence is no: a street
+    line, suite or room stated on one side only does not show that the other means the same one. A postcode, or a state, stated on one side only is no conflict."""
     venue = _place(getattr(left, "venue_name", None))
     if not venue or venue != _place(getattr(right, "venue_name", None)) or not left.address or not right.address:
         return False
@@ -132,16 +147,59 @@ def _same_physical_place(left, right):
     if all(texts) and texts[0] != texts[1]:
         return False
     (a_street, a_units, a_codes, a_town), (b_street, b_units, b_codes, b_town) = _address_parts(left.address, venue), _address_parts(right.address, venue)
+    a_units |= {unit.lower().rstrip(".") for unit in UNIT.findall(getattr(left, "location_text", None) or "")}
+    b_units |= {unit.lower().rstrip(".") for unit in UNIT.findall(getattr(right, "location_text", None) or "")}
     if not a_town or not b_town or not (a_town <= b_town or b_town <= a_town):
         return False
-    return not ((a_street and b_street and a_street != b_street) or (a_units and b_units and a_units != b_units) or (a_codes and b_codes and a_codes != b_codes))
+    return a_street == b_street and a_units == b_units and not (a_codes and b_codes and a_codes != b_codes)
 
 
-def _related_titles(left, right, floor):
-    """Normalized titles that can name one event at one venue and instant (see the module's documentation)."""
-    if _numbers_differ(left, right) or set(YEAR.findall(left)) != set(YEAR.findall(right)) or (set(left.split()) ^ set(right.split())) & EDITIONS:
+def _undated(title, day):
+    """The title without the dates it states that are the event's own day ("11/6", "Nov 6th", "Sunday" for an event on Sunday 8 November), each replaced by a
+    subtitle separator. Any other date stays, so that its numbers or weekday still tell the events apart."""
+    def own(month, date, year=None):
+        return int(month) == day.month and int(date) == day.day and (not year or int(year) in (day.year, day.year % 100))
+    title = NUMERIC_DATE.sub(lambda m: " | " if own(m[1], m[2], m[3]) else m[0], title)
+    title = NAMED_DATE.sub(lambda m: " | " if own(MONTHS.index(m[1][:3].lower()) + 1, m[2], m[3]) else m[0], title)
+    return WEEKDAY.sub(lambda m: " | " if m[1].lower() == day.strftime("%A").lower() else m[0], title)
+
+
+def _title_parts(title, venue, day):
+    """The title's subtitles, each a list of normalized words without articles; without its own dates and without a closing "at <the venue>"."""
+    parts = [[word for word in normalize(part).split() if word not in FILLER] for part in SUBTITLE.split(_undated(_fielded(title).replace("@", " at "), day))]
+    parts = [part for part in parts if part]
+    if parts and "at" in parts[-1]:
+        last = parts[-1]
+        cut = len(last) - 1 - last[::-1].index("at")
+        if last[cut + 1:] and set(last[cut + 1:]) <= set(normalize(venue).split()):
+            parts[-1] = last[:cut]
+    return [part for part in parts if part]
+
+
+def _closes_with_edition(parts):
+    """A subtitle that closes with "I" or "X" after other words ("Concert X"): an edition; between words ("Melómano x UCSD") it is a collaboration."""
+    return any(len(part) > 1 and part[-1] in ("i", "x") for part in parts)
+
+
+def _plural(word, other):
+    return word in (other + "s", other + "es") or other in (word + "s", word + "es")
+
+
+def _related_titles(left, right, venue, day):
+    """Titles that can name one event at one venue and instant (see the module's documentation)."""
+    a, b = _title_parts(left, venue, day), _title_parts(right, venue, day)
+    if not a or not b:
         return False
-    return fuzz.token_set_ratio(left, right) / 100.0 >= floor
+    a_words, b_words = {word for part in a for word in part}, {word for part in b for word in part}
+    differ = a_words ^ b_words
+    if any(any(c.isdigit() for c in word) or word in EDITIONS or word in NUMBER_WORDS or word in WEEKDAYS or word in AUDIENCE for word in differ):
+        return False
+    if _closes_with_edition(a) != _closes_with_edition(b) or _qualifiers_oppose(" ".join(a_words), " ".join(b_words)):
+        return False
+    if not differ or a == b[:len(a)] or b == a[:len(b)]:     # the same words; or one title, then a subtitle the other omits
+        return True
+    return all(any(_plural(word, other) for other in b_words - a_words) for word in a_words - b_words) and \
+        all(any(_plural(word, other) for other in a_words - b_words) for word in b_words - a_words)
 
 
 def _url_identity(value):
@@ -239,8 +297,8 @@ def compare(left, right, profile, same_page=None):
         end_gap = abs(int(left.ends_at) - int(right.ends_at))
         if end_gap > profile.end_tolerance_s:
             return Score(False, 0.0, "the end times differ by more than the tolerance")
-    if (profile.venue_time_identity and gap == 0 and _related_titles(a_title, b_title, profile.venue_time_title_min)
-            and _same_physical_place(left, right)):
+    if (profile.venue_time_identity and gap == 0 and _same_physical_place(left, right)
+            and _related_titles(left.title, right.title, left.venue_name, _day(left.starts_at, getattr(left, "timezone", None) or getattr(right, "timezone", None)))):
         return Score(True, 1.0, VENUE_TIME, venue_time=True)
     page_left, page_right = _url_identity(left.source_url), _url_identity(right.source_url)
     if page_left and page_right and page_left != page_right and profile.url_conflict_vetoes:
@@ -302,9 +360,9 @@ def compare(left, right, profile, same_page=None):
 
 def best_match(event, candidates, profile):
     """(match, reason): the single best candidate, or None when there is none, when the best is not clearly ahead of the runner-up (ambiguous), or when it is
-    a tie. A runner-up within `ambiguity_margin` makes the answer ambiguous: the caller must not link. A venue/time identity is never ambiguous: it is the event
-    already there, and when several are (duplicates made before the identity existed) the one whose title is nearest, then the lowest event key, so the same
-    answer every time."""
+    a tie. A runner-up within `ambiguity_margin` makes the answer ambiguous: the caller must not link. A venue/time identity is the event already there; when
+    several are (duplicates made before the identity existed), the one created first (`created_order`), never the nearest title or a key's spelling. When the
+    lookup does not say which was created first, the answer is ambiguous."""
     scored, same_place = [], []
     for other in candidates:
         result = compare(event, other, profile)
@@ -312,10 +370,12 @@ def best_match(event, candidates, profile):
             scored.append((result.confidence, other.event_key, other))
             if result.venue_time:
                 same_place.append(other)
+    if len(same_place) == 1:
+        return same_place[0], VENUE_TIME
     if same_place:
-        wanted = title_key(event.title)
-        first = min(same_place, key=lambda other: (-_similarity(wanted, title_key(other.title)), other.event_key))
-        return first, VENUE_TIME + (f" (the nearest title of {len(same_place)} such events)" if len(same_place) > 1 else "")
+        if any(getattr(other, "created_order", None) is None for other in same_place):
+            return None, f"ambiguous: {len(same_place)} known events share the venue and instant, and which was created first is not known"
+        return min(same_place, key=lambda other: other.created_order), VENUE_TIME + f" (the first created of {len(same_place)} such events)"
     if not scored:
         return None, "no known event matches"
     scored.sort(key=lambda item: (-item[0], item[1]))

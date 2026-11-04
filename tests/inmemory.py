@@ -12,16 +12,17 @@ class _Lookup:
         self._events = events
 
     def starting_between(self, earliest, latest, after=None, limit=100):
-        matches = [self._existing(e) for e in self._events if earliest <= e["clean"].starts_at <= latest]
+        matches = [self._existing(e, order) for order, e in enumerate(self._events) if earliest <= e["clean"].starts_at <= latest]
         matches.sort(key=lambda e: (e.starts_at, e.event_key))
         if after is not None:
             matches = [e for e in matches if (e.starts_at, e.event_key) > after]
         return tuple(matches[:limit])
 
     @staticmethod
-    def _existing(e):
+    def _existing(e, order):
         clean = e["clean"]
-        return ExistingEvent(e["event_key"], clean.title, clean.starts_at, clean.ends_at, clean.venue_name, clean.address, clean.location_text, e["revision"], None, clean.description, clean.timezone)
+        return ExistingEvent(e["event_key"], clean.title, clean.starts_at, clean.ends_at, clean.venue_name, clean.address, clean.location_text, e["revision"], None, clean.description, clean.timezone,
+                             order)   # events are appended as they are created
 
 
 class InMemoryProcessing:

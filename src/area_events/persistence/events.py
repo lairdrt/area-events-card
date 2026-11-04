@@ -35,14 +35,15 @@ class EventRepository:
     @staticmethod
     def _existing(row):
         return ExistingEvent(row["event_key"], row["title"], row["starts_at"], row["ends_at"], row["venue_name"], row["address"], row["location_text"], row["revision"], row["source_url"],
-                             row["description"], row["timezone"])
+                             row["description"], row["timezone"], row["event_id"])   # event_id grows with every insert: the creation order of the events that exist
 
     def association(self, tx, candidate_id):
         row = tx.execute("SELECT e.event_key, l.role FROM event_candidates l JOIN events e USING (event_id) WHERE l.candidate_id=?", (candidate_id,)).fetchone()
         return Association(row["event_key"], row["role"]) if row else None
 
     def between(self, tx, earliest, latest, after=None, limit=LOOKUP_PAGE_SIZE):
-        sql = "SELECT event_key, title, starts_at, ends_at, venue_name, address, location_text, revision, source_url, description, timezone FROM events WHERE starts_at BETWEEN ? AND ?"
+        sql = ("SELECT event_id, event_key, title, starts_at, ends_at, venue_name, address, location_text, revision, source_url, description, timezone FROM events "
+               "WHERE starts_at BETWEEN ? AND ?")
         params = [int(earliest), int(latest)]
         if after is not None:
             sql += " AND (starts_at > ? OR (starts_at = ? AND event_key > ?))"
@@ -273,9 +274,7 @@ class DuplicateMaintenance:
 
     @staticmethod
     def _facts(row):
-        return ExistingEvent(row["event_key"], row["title"], row["starts_at"], row["ends_at"], row["venue_name"], row["address"],
-                             row["location_text"], row["revision"], row["source_url"],
-                             row["description"], row["timezone"])
+        return EventRepository._existing(row)
 
     def _eligible_pairs(self, rows):
         anchors = defaultdict(set)
@@ -390,7 +389,7 @@ class DuplicateMaintenance:
             raise DuplicateMaintenanceError("selected event facts changed during cleanup")
         if not self.matcher.matches(self._facts(current[keys[0]]), self._facts(current[keys[1]])):
             raise DuplicateMaintenanceError("selected events no longer match")
-        survivor = min(rows, key=lambda row: row["event_id"])
+        survivor = min(rows, key=lambda row: self._facts(row).created_order)   # the first created, as normal deduplication links to
         loser = next(row for row in rows if row["event_id"] != survivor["event_id"])
         latest = max(rows, key=lambda row: (row["updated_at"], row["event_id"]))
         candidate_rows = tx.execute("SELECT candidate_id,role,linked_at FROM event_candidates WHERE event_id=? ORDER BY candidate_id", (survivor["event_id"],)).fetchall()

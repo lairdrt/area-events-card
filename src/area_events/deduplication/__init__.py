@@ -69,7 +69,8 @@ def decide_by_confidence(incoming: "Incoming", lookup: "EventLookup", profile: M
 
 @dataclass(frozen=True)
 class ExistingEvent:
-    """An event already known, as much of it as matching may use. Plain facts: no key of the database, no row."""
+    """An event already known, as much of it as matching may use. Plain facts: no key of the database, no row. `created_order` only orders events by creation
+    (lower: created earlier; None: the lookup does not say); it identifies nothing and is never written back."""
     event_key: str
     title: str
     starts_at: int
@@ -81,6 +82,7 @@ class ExistingEvent:
     source_url: Optional[str] = None
     description: Optional[str] = None
     timezone: Optional[str] = None
+    created_order: Optional[int] = None
 
 
 @dataclass(frozen=True)
